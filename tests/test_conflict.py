@@ -76,6 +76,27 @@ def test_stale_agent_ignored():
     assert warnings == []
 
 
+def test_generic_dev_words_do_not_conflict():
+    now = datetime.now(timezone.utc)
+    agents = {
+        "agent-a": {
+            "project": "mindsync-mcp",
+            "branch": "main",
+            "focus": "fixing bugs and updating code",
+            "timestamp": now.isoformat(),
+        }
+    }
+    warnings = detect_focus_conflicts(
+        "agent-b",
+        "mindsync-mcp",
+        "main",
+        "fix bug in storage code",
+        agents,
+        now=now,
+    )
+    assert warnings == []
+
+
 def test_different_project_no_warning_even_with_token_overlap():
     now = datetime.now(timezone.utc)
     agents = {

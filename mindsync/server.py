@@ -251,13 +251,25 @@ def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, A
     errors: list[str] = []
 
     for fact in facts:
+        if not isinstance(fact, dict) or not all(
+            fact.get(key) for key in ("entity", "attribute", "text")
+        ):
+            failed.append(fact)
+            errors.append("Malformed queued fact (missing entity/attribute/text); kept in queue.")
+            continue
+        try:
+            conf = float(fact.get("confidence", 1.0))
+        except (TypeError, ValueError):
+            failed.append(fact)
+            errors.append("Malformed queued fact (bad confidence); kept in queue.")
+            continue
         result = write_fact_remote(
             agent=str(fact.get("agent", agent_name)),
             entity=str(fact["entity"]),
             attribute=str(fact["attribute"]),
             text=str(fact["text"]),
             source=str(fact.get("source", f"agent:{agent_name}")),
-            confidence=float(fact.get("confidence", 1.0)),
+            confidence=conf,
         )
         if result.ok:
             success_count += 1

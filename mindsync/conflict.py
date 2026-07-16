@@ -8,6 +8,19 @@ from typing import Any
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./-]{1,}")
 
+# Generic filler/dev words that don't identify a work area on their own;
+# an overlap must come from something specific (module, path, feature name).
+_STOPWORDS = {
+    "with", "from", "this", "that", "into", "about", "using", "focus",
+    "the", "and", "for", "are", "was", "will", "then", "when", "where",
+    "fix", "fixing", "fixes", "bug", "bugs", "add", "adding", "added",
+    "update", "updating", "updated", "change", "changes", "changing",
+    "work", "working", "code", "coding", "new", "old", "file", "files",
+    "implement", "implementing", "improve", "improving", "refactor",
+    "refactoring", "rewrite", "rewriting", "edit", "editing", "issue",
+    "issues", "task", "tasks", "feature", "features", "some", "more",
+}
+
 
 def _parse_ts(value: str | None) -> datetime | None:
     if not value:
@@ -22,7 +35,7 @@ def tokenize_focus(focus: str) -> set[str]:
     """Extract meaningful tokens from a free-text focus string."""
     tokens: set[str] = set()
     for raw in _TOKEN_RE.findall(focus.lower()):
-        if raw in {"with", "from", "this", "that", "into", "about", "using", "focus"}:
+        if raw in _STOPWORDS:
             continue
         if len(raw) >= 3:
             tokens.add(raw)
