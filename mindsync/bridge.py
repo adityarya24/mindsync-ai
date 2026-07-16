@@ -101,8 +101,13 @@ check_vps_online = check_remote_online
 
 
 def _ssh_script(script: str, *, timeout: float = 60) -> subprocess.CompletedProcess[str]:
-    """Run a bash script on the remote host via stdin (avoids local shell quoting)."""
-    return subprocess.run(
+    """Run a bash script on the remote host via stdin (avoids local shell quoting).
+
+    Always normalizes to LF bytes: Windows text mode would otherwise send CRLF
+    and break remote bash (`set -o pipefail\\r`).
+    """
+    normalized = script.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+    res = subprocess.run(
         [
             "ssh",
             "-o",
@@ -113,11 +118,16 @@ def _ssh_script(script: str, *, timeout: float = 60) -> subprocess.CompletedProc
             "bash",
             "-s",
         ],
-        input=script,
+        input=normalized,
         capture_output=True,
-        text=True,
         timeout=timeout,
         check=False,
+    )
+    return subprocess.CompletedProcess(
+        args=res.args,
+        returncode=res.returncode,
+        stdout=(res.stdout or b"").decode("utf-8", errors="replace"),
+        stderr=(res.stderr or b"").decode("utf-8", errors="replace"),
     )
 
 

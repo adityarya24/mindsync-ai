@@ -33,8 +33,13 @@ def test_write_fact_remote_rejects_bad_id_without_ssh():
 
 
 def test_remote_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("MINDSYNC_SSH_HOST", raising=False)
-    monkeypatch.delenv("MINDSYNC_REMOTE_ROOT", raising=False)
+    for key in (
+        "MINDSYNC_HOME",
+        "MINDSYNC_SSH_HOST",
+        "MINDSYNC_REMOTE_ROOT",
+        "MINDSYNC_REMOTE_WRITE_SCRIPT",
+    ):
+        monkeypatch.delenv(key, raising=False)
     s = Settings()
     assert s.remote_enabled is False
-    assert s.home.name == ".mindsync" or "mindsync" in str(s.home)
+    assert s.home.name == ".mindsync"

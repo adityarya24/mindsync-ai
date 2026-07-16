@@ -1,10 +1,24 @@
 from mindsync.config import Settings
 
 
+_MINDSYNC_ENV = (
+    "MINDSYNC_HOME",
+    "MINDSYNC_SSH_HOST",
+    "MINDSYNC_REMOTE_ROOT",
+    "MINDSYNC_REMOTE_ENV_FILE",
+    "MINDSYNC_REMOTE_WRITE_SCRIPT",
+    "MINDSYNC_REMOTE_CONSOLIDATE_SCRIPT",
+    "MINDSYNC_REMOTE_TRUTH_SUBDIR",
+)
+
+
+def _clear_mindsync_env(monkeypatch) -> None:
+    for key in _MINDSYNC_ENV:
+        monkeypatch.delenv(key, raising=False)
+
+
 def test_defaults_are_generic_and_local_only(monkeypatch):
-    monkeypatch.delenv("MINDSYNC_HOME", raising=False)
-    monkeypatch.delenv("MINDSYNC_SSH_HOST", raising=False)
-    monkeypatch.delenv("MINDSYNC_REMOTE_ROOT", raising=False)
+    _clear_mindsync_env(monkeypatch)
     s = Settings()
     assert s.ssh_host == ""
     assert s.remote_root == ""
