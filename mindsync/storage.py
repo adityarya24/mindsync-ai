@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,37 +20,46 @@ def file_lock(name: str, timeout: float | None = None) -> Generator[None, None, 
     settings.ensure_dirs()
     timeout = settings.lock_timeout_seconds if timeout is None else timeout
     lock_path = settings.lock_dir / f"{name}.lock"
+    # Unique token so release (and steal) only ever removes a lock we own;
+    # a bare unlink could delete a lock another process just acquired.
+    token = f"{os.getpid()}-{uuid.uuid4().hex}"
     deadline = time.time() + timeout
-    fd: int | None = None
 
     while True:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+            try:
+                os.write(fd, f"{token}\n".encode("ascii"))
+            finally:
+                os.close(fd)
             break
         except FileExistsError:
             if time.time() >= deadline:
                 # Stale lock recovery: if lock is older than 60s, steal it.
+                # os.replace is atomic, so concurrent stealers race for the
+                # rename and only the winner removes the stale file; losers
+                # just retry the acquire.
                 try:
                     age = time.time() - lock_path.stat().st_mtime
-                    if age > 60:
-                        lock_path.unlink(missing_ok=True)
-                        continue
+                except OSError:
+                    continue  # lock vanished; retry acquire
+                if age <= 60:
+                    raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
+                stale = lock_path.with_name(f"{lock_path.name}.stale-{token}")
+                try:
+                    os.replace(str(lock_path), str(stale))
+                    os.unlink(str(stale))
                 except OSError:
                     pass
-                raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
+                continue
             time.sleep(0.05)
 
     try:
         yield
     finally:
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
         try:
-            lock_path.unlink(missing_ok=True)
+            if lock_path.read_text(encoding="ascii").strip() == token:
+                lock_path.unlink(missing_ok=True)
         except OSError:
             pass
 
