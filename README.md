@@ -1,51 +1,113 @@
-# MindSync MCP Server
+# MindSync MCP
 
-MindSync is a lightweight, cross-environment durable memory and session synchronization server implementing the **Model Context Protocol (MCP)**. 
+Local-first **Model Context Protocol** server for multi-agent memory sync and focus conflict detection.
 
-It is designed to bridge local developer agent sessions (e.g., Claude Code, Antigravity CLI, Codex CLI) with remote VPS-hosted agent databases, and coordinate multiple active terminal tabs on a single developer machine.
-
----
+MindSync bridges local CLI agents (Claude Code, Codex, Grok, Antigravity, etc.) through a shared laptop state store, with best-effort sync to a remote durable gbrain/Postgres backend over SSH.
 
 ## Features
 
-1. **One-Call Context Loading (`get_sync_context`)**
-   - Fetches the entire local workspace parameters (active branch, project) and downloads/reads the compiled memory summaries from the remote server in a single call.
-2. **Conflict Focus Detection (`update_focus`)**
-   - Tracks the active files and focus areas of different local CLI agents running in separate terminal tabs in real-time. Automatically warns when two agents are claiming overlapping focuses in the same workspace.
-3. **Offline-First Durable Queue (`queue_durable_fact`)**
-   - Attempts to push high-confidence milestone facts to a remote database (e.g., PostgreSQL). If the network is down or the remote server is offline, it automatically queues the fact locally (`offline_queue.jsonl`) to ensure zero-disruption offline coding.
-4. **Resync When Online (`sync_offline_facts`)**
-   - Flushes all offline queued facts to the remote VPS database when the connection is restored, rebuilds the consolidated summaries, and pulls the fresh compiled memory files down to the laptop.
+| Tool | Purpose |
+| --- | --- |
+| `get_sync_context` | One-call load of local state + compiled truth (optional remote pull) |
+| `update_focus` | Per-agent focus/project/branch (+ optional paths); conflict warnings |
+| `queue_durable_fact` | Write fact to VPS, or queue offline if unreachable |
+| `sync_offline_facts` | Flush offline queue; consolidate + pull truth |
+| `pull_truth` | Windows-safe SCP pull of compiled-truth markdown |
+| `health` | Paths, queue depth, VPS reachability |
 
----
+Design principles:
 
-## File Structure
+1. **Offline-first** — local tools always work; remote is best-effort.
+2. **Locked local state** — exclusive lockfiles around state/queue writes.
+3. **Safe remote writes** — identifier allowlists + base64 text transport over SSH.
+4. **No false-positive conflicts** — same project alone is not a conflict; token/path overlap is.
 
-- `mindsync_server.py` — Python FastMCP server containing the tool definitions.
-- `pyproject.toml` — Standard python dependency definition.
-- `C:\Users\ADITYA\.local-gbrain\` — Shared local directory containing:
-  - `local-state.json` — Active focuses, custom overrides, and active projects.
-  - `local-audit.jsonl` — Append-only tab transaction log.
-  - `offline_queue.jsonl` — Offline facts queue.
-  - `compiled-truth/` — Consolidated markdown memory files synced from the remote server.
+## Layout
 
----
+```
+mindsync-mcp/
+├── mindsync/
+│   ├── server.py      # FastMCP tools
+│   ├── storage.py     # JSON/JSONL + locks
+│   ├── bridge.py      # SSH/SCP
+│   ├── conflict.py    # focus overlap
+│   └── config.py      # env-based settings
+├── mindsync_server.py # thin entry shim
+├── tests/
+└── pyproject.toml
+```
 
-## Installation & Setup
+Local data directory (default `~/.local-gbrain` or `%USERPROFILE%\.local-gbrain`):
 
-### 1. Register the MCP Server
-Add the server configuration to your MCP client (e.g., Claude Desktop, Antigravity config, or Claude Code):
+- `local-state.json` — active project + per-agent focus map
+- `local-audit.jsonl` — append-only action log
+- `offline_queue.jsonl` — durable facts waiting for VPS
+- `compiled-truth/*.md` — pulled remote summaries
+
+## Configuration
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `MINDSYNC_HOME` | `~/.local-gbrain` | Local data root |
+| `MINDSYNC_SSH_HOST` | `openclaw-vps` | SSH host alias |
+| `MINDSYNC_REMOTE_ROOT` | `/home/aditya/.openclaw/workspace/gbrain` | Remote gbrain root |
+| `MINDSYNC_SSH_TIMEOUT` | `3` | SSH connect timeout (seconds) |
+| `MINDSYNC_FOCUS_STALE_SECS` | `7200` | Focus entries older than this are ignored |
+| `MINDSYNC_VPS_CACHE_TTL` | `30` | Cache TTL for VPS online probe |
+
+SSH must be key-based / `BatchMode` friendly (no interactive password prompts).
+
+## Install
+
+```bash
+cd mindsync-mcp
+python -m pip install -e ".[dev]"
+```
+
+## MCP client config
 
 ```json
-"mcpServers": {
-  "mindsync": {
-    "command": "python",
-    "args": [
-      "C:\\Users\\ADITYA\\mindsync-mcp\\mindsync_server.py"
-    ]
+{
+  "mcpServers": {
+    "mindsync": {
+      "command": "python",
+      "args": ["C:\\Users\\ADITYA\\mindsync-mcp\\mindsync_server.py"]
+    }
   }
 }
 ```
 
-### 2. Configure SSH Access (Optional)
-MindSync relies on SSH to communicate with the remote server database. Ensure you have your remote host configuration (e.g. `openclaw-vps`) set up in your SSH config file (`~/.ssh/config`) with public-key authentication so that connection checks and file transfers run without interactive passphrase prompts.
+Or after install:
+
+```json
+{
+  "mcpServers": {
+    "mindsync": {
+      "command": "mindsync"
+    }
+  }
+}
+```
+
+## Agent usage pattern
+
+1. **Start:** `get_sync_context(agent_name, refresh_remote=true)` when online.
+2. **Work:** `update_focus(agent_name, project, branch, focus, paths=[...])`.
+3. **Milestone:** `queue_durable_fact(agent_name, entity, attribute, text)`.
+4. **Reconnect:** `sync_offline_facts(agent_name)`.
+
+## Develop / test
+
+```bash
+python -m pytest -q
+```
+
+## Security notes
+
+- Treat tool arguments as untrusted: entity/attribute/agent must match a strict allowlist.
+- Fact text is base64-transported to the remote host (no raw shell interpolation).
+- This server runs with your user privileges and can SSH to the configured host — only wire it into trusted local agent clients.
+
+## License
+
+MIT

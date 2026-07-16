@@ -1,0 +1,85 @@
+"""Focus overlap detection between local agents."""
+
+from __future__ import annotations
+
+import re
+from datetime import datetime, timezone
+from typing import Any
+
+_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./-]{1,}")
+
+
+def _parse_ts(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def tokenize_focus(focus: str) -> set[str]:
+    """Extract meaningful tokens from a free-text focus string."""
+    tokens: set[str] = set()
+    for raw in _TOKEN_RE.findall(focus.lower()):
+        if raw in {"with", "from", "this", "that", "into", "about", "using", "focus"}:
+            continue
+        if len(raw) >= 3:
+            tokens.add(raw)
+    return tokens
+
+
+def detect_focus_conflicts(
+    agent_name: str,
+    project: str,
+    branch: str,
+    focus: str,
+    agents_focus: dict[str, Any],
+    *,
+    stale_seconds: int = 7200,
+    now: datetime | None = None,
+) -> list[str]:
+    """Return warnings only when non-stale agents share project + focus tokens.
+
+    Same project alone is NOT a conflict (avoids the original always-true bug).
+    """
+    del branch  # reserved for future branch-aware heuristics / API stability
+    now = now or datetime.now(timezone.utc)
+    my_tokens = tokenize_focus(focus)
+    warnings: list[str] = []
+
+    for other_agent, other in agents_focus.items():
+        if other_agent == agent_name:
+            continue
+        if not isinstance(other, dict):
+            continue
+
+        other_ts = _parse_ts(other.get("timestamp"))
+        if other_ts is None:
+            continue
+        if other_ts.tzinfo is None:
+            other_ts = other_ts.replace(tzinfo=timezone.utc)
+        age = (now - other_ts).total_seconds()
+        if age < 0 or age > stale_seconds:
+            continue
+
+        other_project = other.get("project") or other.get("active_project")
+        # If the other agent recorded a project and it differs, skip.
+        if other_project is not None and other_project != project:
+            continue
+
+        other_focus = str(other.get("focus") or "")
+        other_tokens = tokenize_focus(other_focus)
+        overlap = sorted(my_tokens & other_tokens)
+        if not overlap:
+            continue
+
+        other_branch = other.get("branch") or "?"
+        warnings.append(
+            "CONFLICT WARNING: "
+            f"Agent '{other_agent}' is active in project '{other_project or project}' "
+            f"(branch '{other_branch}') focusing on '{other_focus}'. "
+            f"Your focus '{focus}' may overlap on: {', '.join(overlap)}."
+        )
+
+    return warnings

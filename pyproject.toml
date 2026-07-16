@@ -1,12 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "mindsync-mcp"
-version = "0.1.0"
-description = "MindSync MCP server for cross-environment memory sync and conflict detection"
+version = "0.2.0"
+description = "MindSync MCP server — local-first multi-agent memory sync and focus conflict detection"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Aditya" }]
 dependencies = [
     "mcp>=1.27.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
-mindsync = "mindsync_server:mcp.run"
+mindsync = "mindsync.server:main"
+
+[tool.setuptools.packages.find]
+include = ["mindsync*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
