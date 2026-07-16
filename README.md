@@ -1,5 +1,7 @@
 # MindSync MCP
 
+[![CI](https://github.com/adityarya24/mindsync-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/adityarya24/mindsync-mcp/actions/workflows/ci.yml)
+
 Local-first **Model Context Protocol** server for multi-agent memory sync and focus conflict detection.
 
 Use it when several coding agents (Claude Code, Codex, Cursor, Gemini CLI, Grok, custom agents, …) share one developer machine and need:
@@ -135,7 +137,11 @@ mindsync-mcp/
 ```bash
 python -m pip install -e ".[dev]"
 python -m pytest -q
+python scripts/smoke_test.py
 ```
+
+GitHub Actions runs the same suite on every push/PR to `master`
+(Python 3.10 + 3.12, Ubuntu + Windows).
 
 ## Security notes
 
