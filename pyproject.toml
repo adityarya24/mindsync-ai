@@ -1,0 +1,12 @@
+[project]
+name = "mindsync-mcp"
+version = "0.1.0"
+description = "MindSync MCP server for cross-environment memory sync and conflict detection"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.27.0",
+]
+
+[project.scripts]
+mindsync = "mindsync_server:mcp.run"
