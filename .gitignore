@@ -14,3 +14,6 @@ build/
 *.log
 .env
 .env.*
+!.env.example
+!examples/**/*.example
+!examples/**/mindsync.env.example

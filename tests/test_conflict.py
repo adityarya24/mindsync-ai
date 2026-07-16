@@ -13,7 +13,7 @@ def test_tokenize_focus_tokens():
 def test_no_false_positive_same_project_different_focus():
     now = datetime.now(timezone.utc)
     agents = {
-        "Rudra": {
+        "agent-a": {
             "project": "mindsync-mcp",
             "branch": "main",
             "focus": "rewrite README docs",
@@ -21,7 +21,7 @@ def test_no_false_positive_same_project_different_focus():
         }
     }
     warnings = detect_focus_conflicts(
-        "Ashwatthama",
+        "agent-b",
         "mindsync-mcp",
         "feature/locks",
         "add file locking to storage",
@@ -34,7 +34,7 @@ def test_no_false_positive_same_project_different_focus():
 def test_token_overlap_same_project_warns():
     now = datetime.now(timezone.utc)
     agents = {
-        "Rudra": {
+        "agent-a": {
             "project": "mindsync-mcp",
             "branch": "main",
             "focus": "fix mindsync/storage.py locking",
@@ -42,7 +42,7 @@ def test_token_overlap_same_project_warns():
         }
     }
     warnings = detect_focus_conflicts(
-        "Ashwatthama",
+        "agent-b",
         "mindsync-mcp",
         "feature/locks",
         "rewrite mindsync/storage.py queue flush",
@@ -57,7 +57,7 @@ def test_stale_agent_ignored():
     now = datetime.now(timezone.utc)
     stale = (now - timedelta(hours=5)).isoformat()
     agents = {
-        "Rudra": {
+        "agent-a": {
             "project": "mindsync-mcp",
             "branch": "main",
             "focus": "fix mindsync/storage.py",
@@ -65,7 +65,7 @@ def test_stale_agent_ignored():
         }
     }
     warnings = detect_focus_conflicts(
-        "Ashwatthama",
+        "agent-b",
         "mindsync-mcp",
         "main",
         "edit mindsync/storage.py",
@@ -79,7 +79,7 @@ def test_stale_agent_ignored():
 def test_different_project_no_warning_even_with_token_overlap():
     now = datetime.now(timezone.utc)
     agents = {
-        "Rudra": {
+        "agent-a": {
             "project": "other-app",
             "branch": "main",
             "focus": "fix storage.py",
@@ -87,7 +87,7 @@ def test_different_project_no_warning_even_with_token_overlap():
         }
     }
     warnings = detect_focus_conflicts(
-        "Ashwatthama",
+        "agent-b",
         "mindsync-mcp",
         "main",
         "fix storage.py",

@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mindsync-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "MindSync MCP server — local-first multi-agent memory sync and focus conflict detection"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Aditya" }]
+authors = [{ name = "MindSync contributors" }]
 dependencies = [
     "mcp>=1.27.0",
 ]

@@ -1,4 +1,8 @@
-"""SSH/SCP bridge to the remote gbrain durable store."""
+"""SSH/SCP bridge to an optional remote durable store.
+
+Remote layout is configurable. Defaults match the sample scripts under
+``examples/remote/``. No host, username, or server path is hard-coded.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +19,7 @@ from mindsync.config import settings
 # Safe identifiers for remote CLI args (no shell metacharacters).
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,127}$")
 
-_vps_cache: dict[str, Any] = {"online": None, "checked_at": 0.0}
+_remote_cache: dict[str, Any] = {"online": None, "checked_at": 0.0}
 
 
 class BridgeError(Exception):
@@ -46,16 +50,26 @@ def _run(
     )
 
 
-def check_vps_online(*, force: bool = False) -> bool:
-    """Cached SSH reachability probe."""
+def remote_not_configured_error() -> str:
+    return (
+        "Remote sync is not configured. Set MINDSYNC_SSH_HOST and "
+        "MINDSYNC_REMOTE_ROOT (see .env.example)."
+    )
+
+
+def check_remote_online(*, force: bool = False) -> bool:
+    """Cached SSH reachability probe. False when remote is disabled or unreachable."""
+    if not settings.remote_enabled:
+        return False
+
     now = time.time()
-    ttl = settings.vps_cache_ttl_seconds
+    ttl = settings.remote_cache_ttl_seconds
     if (
         not force
-        and _vps_cache["online"] is not None
-        and (now - float(_vps_cache["checked_at"])) < ttl
+        and _remote_cache["online"] is not None
+        and (now - float(_remote_cache["checked_at"])) < ttl
     ):
-        return bool(_vps_cache["online"])
+        return bool(_remote_cache["online"])
 
     online = False
     try:
@@ -77,9 +91,13 @@ def check_vps_online(*, force: bool = False) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         online = False
 
-    _vps_cache["online"] = online
-    _vps_cache["checked_at"] = now
+    _remote_cache["online"] = online
+    _remote_cache["checked_at"] = now
     return online
+
+
+# Backward-compatible alias used during the rename.
+check_vps_online = check_remote_online
 
 
 def _ssh_script(script: str, *, timeout: float = 60) -> subprocess.CompletedProcess[str]:
@@ -103,6 +121,21 @@ def _ssh_script(script: str, *, timeout: float = 60) -> subprocess.CompletedProc
     )
 
 
+def _maybe_source_env() -> str:
+    """Optional remote env file source lines."""
+    env_file = settings.remote_env_file
+    if not env_file:
+        return ""
+    return f"""
+if [ -f {shlex.quote(env_file)} ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source {shlex.quote(env_file)}
+  set +a
+fi
+"""
+
+
 @dataclass
 class WriteResult:
     ok: bool
@@ -120,7 +153,10 @@ def write_fact_remote(
     source: str,
     confidence: float,
 ) -> WriteResult:
-    """Write one durable fact on the VPS using base64 transport for free text."""
+    """Write one durable fact on the remote host using base64 transport for free text."""
+    if not settings.remote_enabled:
+        return WriteResult(ok=False, error=remote_not_configured_error())
+
     try:
         agent = validate_id("agent", agent)
         entity = validate_id("entity", entity)
@@ -134,15 +170,12 @@ def write_fact_remote(
 
     b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
     remote_root = settings.remote_root
-    # Remote script: decode text safely, then call gbrain_fact.py with quoted args.
+    write_script = settings.remote_write_script
     script = f"""set -euo pipefail
 cd {shlex.quote(remote_root)}
-set -a
-# shellcheck disable=SC1091
-source config/gbrain.env
-set +a
+{_maybe_source_env()}
 TEXT=$(printf '%s' {shlex.quote(b64)} | base64 -d)
-python3 tools/gbrain_fact.py write \\
+python3 {shlex.quote(write_script)} write \\
   --agent {shlex.quote(agent)} \\
   --entity {shlex.quote(entity)} \\
   --attribute {shlex.quote(attribute)} \\
@@ -164,13 +197,13 @@ python3 tools/gbrain_fact.py write \\
 
 
 def consolidate_remote() -> WriteResult:
+    if not settings.remote_enabled:
+        return WriteResult(ok=False, error=remote_not_configured_error())
+
     script = f"""set -euo pipefail
 cd {shlex.quote(settings.remote_root)}
-set -a
-# shellcheck disable=SC1091
-source config/gbrain.env
-set +a
-python3 tools/gbrain_consolidate.py
+{_maybe_source_env()}
+python3 {shlex.quote(settings.remote_consolidate_script)}
 """
     try:
         res = _ssh_script(script, timeout=120)
@@ -187,8 +220,12 @@ python3 tools/gbrain_consolidate.py
 
 def pull_compiled_truth() -> WriteResult:
     """Pull remote compiled-truth directory without shell globs (Windows-safe)."""
+    if not settings.remote_enabled:
+        return WriteResult(ok=False, error=remote_not_configured_error())
+
     settings.ensure_dirs()
-    remote = f"{settings.ssh_host}:{settings.remote_root}/compiled-truth/."
+    truth = settings.remote_truth_subdir.strip("/")
+    remote = f"{settings.ssh_host}:{settings.remote_root}/{truth}/."
     dest = str(settings.compiled_truth_dir)
     try:
         res = _run(

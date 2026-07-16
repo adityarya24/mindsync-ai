@@ -8,9 +8,10 @@ from typing import Any, Optional
 from mcp.server.fastmcp import FastMCP
 
 from mindsync.bridge import (
-    check_vps_online,
+    check_remote_online,
     consolidate_remote,
     pull_compiled_truth,
+    remote_not_configured_error,
     validate_id,
     write_fact_remote,
 )
@@ -40,32 +41,38 @@ def get_sync_context(
 ) -> dict[str, Any]:
     """Load local session state + compiled truth. Optionally pull remote truth first.
 
-    Offline-first: always returns local data even if VPS is unreachable.
+    Offline-first: always returns local data even if remote is unreachable or disabled.
     """
     settings.ensure_dirs()
     pull_info: dict[str, Any] | None = None
     if refresh_remote:
-        if check_vps_online():
+        if check_remote_online():
             result = pull_compiled_truth()
             pull_info = {"ok": result.ok, "error": result.error}
         else:
-            pull_info = {"ok": False, "error": "VPS offline; skipped pull"}
+            reason = (
+                remote_not_configured_error()
+                if not settings.remote_enabled
+                else "Remote offline; skipped pull"
+            )
+            pull_info = {"ok": False, "error": reason}
 
     with locked_state() as state:
         snapshot = dict(state)
 
     truth = read_compiled_truth()
-    online = check_vps_online()
+    online = check_remote_online()
     log_audit(
         agent_name,
         "get_sync_context",
-        f"project={project_name or 'any'} refresh={refresh_remote} vps_online={online}",
+        f"project={project_name or 'any'} refresh={refresh_remote} remote_online={online}",
     )
     out: dict[str, Any] = {
         "local_state": snapshot,
         "compiled_truth": truth,
         "compiled_truth_keys": list(truth.keys()),
-        "vps_online": online,
+        "remote_online": online,
+        "remote_configured": settings.remote_enabled,
         "home": str(settings.home),
     }
     if pull_info is not None:
@@ -97,7 +104,6 @@ def update_focus(
             stale_seconds=settings.focus_stale_seconds,
             now=now,
         )
-        # Path-level overlaps
         my_paths = {p.replace("\\", "/").lower() for p in paths if p}
         if my_paths:
             for other_agent, other in list(agents_focus.items()):
@@ -122,7 +128,6 @@ def update_focus(
             "paths": list(paths),
             "timestamp": now.isoformat(),
         }
-        # Global "last writer" snapshot for humans; per-agent data is source of truth.
         state["active_project"] = project
         state["active_branch"] = branch
         state["current_focus"] = focus
@@ -150,7 +155,7 @@ def queue_durable_fact(
     text: str,
     confidence: float = 1.0,
 ) -> dict[str, Any]:
-    """Write a durable fact to VPS if online; otherwise queue locally for later flush."""
+    """Write a durable fact remotely if online; otherwise queue locally for later flush."""
     settings.ensure_dirs()
     try:
         validate_id("agent", agent_name)
@@ -172,7 +177,7 @@ def queue_durable_fact(
         "confidence": conf,
     }
 
-    if check_vps_online():
+    if check_remote_online():
         result = write_fact_remote(
             agent=agent_name,
             entity=entity,
@@ -182,18 +187,13 @@ def queue_durable_fact(
             confidence=conf,
         )
         if result.ok:
-            log_audit(
-                agent_name,
-                "write_fact_vps",
-                f"{entity}.{attribute}",
-            )
+            log_audit(agent_name, "write_fact_remote", f"{entity}.{attribute}")
             return {
                 "ok": True,
-                "synced_to_vps": True,
+                "synced_to_remote": True,
                 "queued_locally": False,
                 "details": result.stdout,
             }
-        # Fall through to local queue; surface why.
         fallback_reason = result.error or "remote write failed"
         enqueue_fact(fact)
         log_audit(
@@ -203,32 +203,48 @@ def queue_durable_fact(
         )
         return {
             "ok": True,
-            "synced_to_vps": False,
+            "synced_to_remote": False,
             "queued_locally": True,
             "fallback_reason": fallback_reason,
             "message": "Remote write failed; fact queued locally.",
         }
 
     enqueue_fact(fact)
-    log_audit(agent_name, "queue_fact_local", f"{entity}.{attribute} reason=vps_offline")
+    reason = "remote_not_configured" if not settings.remote_enabled else "remote_offline"
+    log_audit(agent_name, "queue_fact_local", f"{entity}.{attribute} reason={reason}")
     return {
         "ok": True,
-        "synced_to_vps": False,
+        "synced_to_remote": False,
         "queued_locally": True,
-        "message": "VPS offline. Fact queued locally.",
+        "message": (
+            "Remote not configured. Fact queued locally."
+            if reason == "remote_not_configured"
+            else "Remote offline. Fact queued locally."
+        ),
     }
 
 
 @mcp.tool()
 def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, Any]:
-    """Flush the offline queue to VPS, optionally consolidate + pull compiled truth."""
+    """Flush the offline queue to remote, optionally consolidate + pull compiled truth."""
     settings.ensure_dirs()
     facts = read_queue()
     if not facts:
         return {"ok": True, "message": "No offline facts in the queue.", "synced_count": 0}
 
-    if not check_vps_online(force=True):
-        return {"ok": False, "message": "Cannot sync: VPS is still offline.", "synced_count": 0}
+    if not settings.remote_enabled:
+        return {
+            "ok": False,
+            "message": remote_not_configured_error(),
+            "synced_count": 0,
+        }
+
+    if not check_remote_online(force=True):
+        return {
+            "ok": False,
+            "message": "Cannot sync: remote is still offline.",
+            "synced_count": 0,
+        }
 
     success_count = 0
     failed: list[dict[str, Any]] = []
@@ -270,7 +286,8 @@ def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, A
         f"synced={success_count} remaining={len(failed)} pull={pull_success}",
     )
     return {
-        "ok": len(failed) == 0 and (pull_error is None if consolidate and success_count else True),
+        "ok": len(failed) == 0
+        and (pull_error is None if consolidate and success_count else True),
         "synced_count": success_count,
         "remaining_queue": len(failed),
         "pull_success": pull_success,
@@ -283,24 +300,30 @@ def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, A
 
 @mcp.tool()
 def pull_truth(agent_name: str) -> dict[str, Any]:
-    """Pull compiled-truth markdown from the VPS into the local cache."""
+    """Pull compiled-truth markdown from the remote host into the local cache."""
     settings.ensure_dirs()
-    if not check_vps_online(force=True):
-        return {"ok": False, "message": "VPS offline; cannot pull."}
+    if not settings.remote_enabled:
+        return {"ok": False, "message": remote_not_configured_error()}
+    if not check_remote_online(force=True):
+        return {"ok": False, "message": "Remote offline; cannot pull."}
     result = pull_compiled_truth()
     log_audit(agent_name, "pull_truth", f"ok={result.ok} error={result.error}")
     if not result.ok:
         return {"ok": False, "error": result.error}
     keys = list(read_compiled_truth().keys())
-    return {"ok": True, "compiled_truth_keys": keys, "message": f"Pulled {len(keys)} truth file(s)."}
+    return {
+        "ok": True,
+        "compiled_truth_keys": keys,
+        "message": f"Pulled {len(keys)} truth file(s).",
+    }
 
 
 @mcp.tool()
 def health(agent_name: str = "system") -> dict[str, Any]:
-    """Report local paths, queue depth, and VPS reachability."""
+    """Report local paths, queue depth, and remote reachability."""
     settings.ensure_dirs()
     queue_len = len(read_queue())
-    online = check_vps_online(force=True)
+    online = check_remote_online(force=True) if settings.remote_enabled else False
     with locked_state() as state:
         agents = list((state.get("agents_focus") or {}).keys())
     return {
@@ -308,9 +331,10 @@ def health(agent_name: str = "system") -> dict[str, Any]:
         "home": str(settings.home),
         "state_file": str(settings.state_file),
         "queue_depth": queue_len,
-        "vps_online": online,
-        "ssh_host": settings.ssh_host,
-        "remote_root": settings.remote_root,
+        "remote_configured": settings.remote_enabled,
+        "remote_online": online,
+        "ssh_host": settings.ssh_host or None,
+        "remote_root": settings.remote_root or None,
         "active_agents": agents,
         "truth_files": list(read_compiled_truth().keys()),
     }

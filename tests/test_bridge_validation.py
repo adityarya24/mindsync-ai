@@ -1,11 +1,12 @@
 import pytest
 
 from mindsync.bridge import validate_id, write_fact_remote
+from mindsync.config import Settings
 
 
 def test_validate_id_accepts_safe():
-    assert validate_id("entity", "system-openclaw") == "system-openclaw"
-    assert validate_id("source", "agent:Ashwatthama") == "agent:Ashwatthama"
+    assert validate_id("entity", "system-core") == "system-core"
+    assert validate_id("source", "agent:coder") == "agent:coder"
 
 
 def test_validate_id_rejects_shell_meta():
@@ -19,12 +20,21 @@ def test_validate_id_rejects_shell_meta():
 
 def test_write_fact_remote_rejects_bad_id_without_ssh():
     result = write_fact_remote(
-        agent="Ashwatthama",
+        agent="agent-b",
         entity="bad;id",
         attribute="ok",
         text="hello",
-        source="agent:Ashwatthama",
+        source="agent:agent-b",
         confidence=1.0,
     )
     assert result.ok is False
-    assert "Invalid entity" in (result.error or "")
+    assert result.error
+    assert "Invalid entity" in result.error or "not configured" in result.error
+
+
+def test_remote_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("MINDSYNC_SSH_HOST", raising=False)
+    monkeypatch.delenv("MINDSYNC_REMOTE_ROOT", raising=False)
+    s = Settings()
+    assert s.remote_enabled is False
+    assert s.home.name == ".mindsync" or "mindsync" in str(s.home)
