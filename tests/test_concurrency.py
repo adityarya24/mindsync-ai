@@ -1,7 +1,6 @@
 import threading
+import time
 from pathlib import Path
-
-import pytest
 
 import mindsync.config as config_mod
 import mindsync.storage as storage
@@ -46,7 +45,7 @@ def test_concurrent_claim(tmp_path, monkeypatch):
 
     claimed_spools = []
     def worker():
-        spool_id, claimed = storage.claim_offline_queue()
+        spool_id, claimed, _malformed_count = storage.claim_offline_queue()
         if claimed:
             claimed_spools.append((spool_id, claimed))
 
@@ -105,6 +104,63 @@ def test_two_simultaneous_sync_calls(tmp_path, monkeypatch):
     
     success = [r for r in results if isinstance(r, dict) and r.get("synced_count") == 1]
     locked_out = [r for r in results if isinstance(r, dict) and "Another sync is currently in progress" in r.get("message", "")]
-    
+
     assert len(success) == 1
     assert len(locked_out) == 1
+
+
+def test_lock_beyond_stale_timeout_is_not_stolen(tmp_path, monkeypatch):
+    """A holder that outlives the stale window (but keeps heartbeating) must
+    never lose its lock, and the spool it owns must never be recovered/
+    deleted out from under it by a would-be thief."""
+    settings = _isolate(tmp_path, monkeypatch)
+    # Tiny windows so the test runs fast, but with the same ratios as prod
+    # (thief's own acquire timeout << stale_after << holder's hold time).
+    settings.lock_stale_seconds = 0.3
+    settings.lock_timeout_seconds = 0.1
+
+    storage.enqueue_fact({"entity": "a", "attribute": "b", "text": "fact-1"})
+    spool_id, claimed, _malformed_count = storage.claim_offline_queue()
+    assert len(claimed) == 1
+    spool_path = settings.spool_dir / f"spool-{spool_id}.jsonl"
+    assert spool_path.exists()
+
+    holder_state = {"acquired": False, "held_full_duration": False}
+
+    def long_holder():
+        with storage.file_lock("sync"):
+            holder_state["acquired"] = True
+            # Hold well beyond the stale timeout -- a real slow remote write
+            # (e.g. 90s x retries) that a naive mtime-only scheme would
+            # mistake for a dead holder and steal from.
+            time.sleep(settings.lock_stale_seconds * 4)
+            holder_state["held_full_duration"] = True
+            # Only the still-legitimate holder may recover/requeue its spool.
+            storage.requeue_failed_facts(spool_id, [], [])
+
+    holder = threading.Thread(target=long_holder)
+    holder.start()
+
+    # Give the holder time to acquire, then wait well past the naive stale
+    # window while it's still alive and heartbeating.
+    time.sleep(settings.lock_stale_seconds * 1.5)
+    assert holder_state["acquired"] is True
+
+    thief_stole_lock = False
+    try:
+        with storage.file_lock("sync"):
+            thief_stole_lock = True
+            # If we got here, the lock was wrongly stolen; a real thief
+            # would now wrongly believe it's safe to recover orphan spools.
+            storage.recover_orphan_spools()
+    except TimeoutError:
+        pass
+
+    holder.join(timeout=10)
+
+    assert thief_stole_lock is False, "lock was stolen from a live, heartbeating holder"
+    assert holder_state["held_full_duration"] is True
+    # The spool must still exist right up until the legitimate holder
+    # finishes and requeues it -- never deleted/recovered by a thief.
+    assert not spool_path.exists()
+    assert len(storage.read_queue()) == 0

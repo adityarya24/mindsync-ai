@@ -10,6 +10,7 @@ import re
 import sqlite3
 import sys
 import hashlib
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,63 +38,132 @@ def _init_db(store_path: Path) -> sqlite3.Connection:
     conn.commit()
     return conn
 
-def _migrate_jsonl(conn: sqlite3.Connection, jsonl_path: Path) -> None:
-    if not jsonl_path.exists() or jsonl_path.stat().st_size == 0:
-        return
+_INSERT_FACTS_SQL = '''INSERT INTO facts (fact_id, timestamp, agent, entity, attribute, text, source, confidence)
+   VALUES (:fact_id, :timestamp, :agent, :entity, :attribute, :text, :source, :confidence)
+   ON CONFLICT(fact_id) DO UPDATE SET
+   timestamp=excluded.timestamp,
+   agent=excluded.agent,
+   entity=excluded.entity,
+   attribute=excluded.attribute,
+   text=excluded.text,
+   source=excluded.source,
+   confidence=excluded.confidence
+'''
 
-    facts = []
-    with open(jsonl_path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
+
+def _quarantine_raw_line(jsonl_path: Path, raw_line: str, reason: str) -> None:
+    """Malformed raw lines are quarantined, never silently dropped."""
+    dead_letter_path = jsonl_path.parent / "dead_letter.jsonl"
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "error": reason,
+        "raw_record": raw_line,
+    }
+    try:
+        with open(dead_letter_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _parse_claimed_facts(claimed_path: Path) -> list[dict]:
+    facts: list[dict] = []
+    with open(claimed_path, "r", encoding="utf-8") as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
             if not line:
                 continue
             try:
                 fact = json.loads(line)
-                if isinstance(fact, dict):
-                    # Ensure it has a fact_id
-                    if not fact.get("fact_id"):
-                        content = f"{fact.get('agent')}:{fact.get('entity')}:{fact.get('attribute')}:{fact.get('timestamp')}:{fact.get('text')}"
-                        fact["fact_id"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                    facts.append(fact)
-            except Exception:
+            except json.JSONDecodeError:
+                _quarantine_raw_line(claimed_path, line, "malformed_json")
+                continue
+            if not isinstance(fact, dict):
+                _quarantine_raw_line(claimed_path, line, "not_an_object")
                 continue
 
+            if not fact.get("fact_id"):
+                content = f"{fact.get('agent')}:{fact.get('entity')}:{fact.get('attribute')}:{fact.get('timestamp')}:{fact.get('text')}"
+                fact["fact_id"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+            # Fill in any missing columns so one under-populated (but
+            # otherwise valid JSON) record can't blow up the whole
+            # transaction -- normalize instead of aborting.
+            facts.append(
+                {
+                    "fact_id": fact["fact_id"],
+                    "timestamp": fact.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                    "agent": fact.get("agent") or "",
+                    "entity": fact.get("entity") or "",
+                    "attribute": fact.get("attribute") or "",
+                    "text": fact.get("text") or "",
+                    "source": fact.get("source") or "",
+                    "confidence": float(fact.get("confidence", 1.0) or 1.0),
+                }
+            )
+    return facts
+
+
+def _migrate_claimed_file(conn: sqlite3.Connection, claimed_path: Path) -> None:
+    """Migrate one already-claimed (renamed-aside) JSONL file into SQLite.
+
+    The claimed file is only deleted AFTER the DB transaction commits. On
+    any failure it is left in place under its `.migrating-*` name for a
+    later call to retry via `_recover_orphan_migrations` -- it is never
+    renamed back onto the live path, which could by then have fresh
+    concurrent appends that a blind overwrite would destroy.
+    """
+    facts = _parse_claimed_facts(claimed_path)
+
     if not facts:
-        try:
-            jsonl_path.unlink()
-        except OSError:
-            pass
+        # Nothing usable (empty, or everything was quarantined) -- safe to
+        # remove now, the malformed content already lives in dead_letter.jsonl.
+        claimed_path.unlink(missing_ok=True)
         return
 
-    temp_jsonl = jsonl_path.with_suffix(".jsonl.migrating")
-    try:
-        os.rename(jsonl_path, temp_jsonl)
-    except OSError:
-        return  # Already migrating or locked
+    with conn:
+        conn.executemany(_INSERT_FACTS_SQL, facts)
+    claimed_path.unlink(missing_ok=True)
 
-    try:
-        with conn:
-            conn.executemany(
-                '''INSERT INTO facts (fact_id, timestamp, agent, entity, attribute, text, source, confidence)
-                   VALUES (:fact_id, :timestamp, :agent, :entity, :attribute, :text, :source, :confidence)
-                   ON CONFLICT(fact_id) DO UPDATE SET
-                   timestamp=excluded.timestamp,
-                   agent=excluded.agent,
-                   entity=excluded.entity,
-                   attribute=excluded.attribute,
-                   text=excluded.text,
-                   source=excluded.source,
-                   confidence=excluded.confidence
-                ''',
-                facts
-            )
-        temp_jsonl.unlink()
-    except Exception:
+
+def _recover_orphan_migrations(conn: sqlite3.Connection, jsonl_path: Path) -> None:
+    """Retry any `.migrating-*` files left behind by a prior run that
+    claimed a file but crashed/failed before completing the migration."""
+    for claimed_path in sorted(jsonl_path.parent.glob(f"{jsonl_path.name}.migrating-*")):
         try:
-            os.rename(temp_jsonl, jsonl_path)
-        except OSError:
-            pass
-        raise
+            _migrate_claimed_file(conn, claimed_path)
+        except Exception:
+            # Leave it for the next run; don't let one bad orphan block others.
+            continue
+
+
+def _migrate_jsonl(conn: sqlite3.Connection, jsonl_path: Path) -> None:
+    """Migrate a legacy JSONL fact file into the SQLite store.
+
+    Safety properties:
+    (a) the source is claimed via an atomic rename BEFORE it is read, so we
+        never read a file a concurrent writer might still be appending to;
+    (b) because the claim is a rename (not a copy/truncate), anything that
+        appends to the original path afterwards starts a fresh file that a
+        LATER call picks up -- concurrent appends are never lost;
+    (c) malformed raw lines are quarantined to dead_letter.jsonl instead of
+        aborting the whole migration or being silently dropped;
+    (d) the claimed file is deleted only after the DB transaction commits;
+        on failure it is left in place for a later retry rather than being
+        renamed back onto (and clobbering) the live path.
+    """
+    _recover_orphan_migrations(conn, jsonl_path)
+
+    if not jsonl_path.exists() or jsonl_path.stat().st_size == 0:
+        return
+
+    claimed_path = jsonl_path.with_name(f"{jsonl_path.name}.migrating-{uuid.uuid4().hex}")
+    try:
+        os.rename(jsonl_path, claimed_path)
+    except OSError:
+        return  # Nothing to claim (already claimed/rotated by a concurrent run).
+
+    _migrate_claimed_file(conn, claimed_path)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="MindSync remote fact writer (sample)")

@@ -4,21 +4,61 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Generator, Iterable
+from typing import Any, Generator
 
 from mindsync.config import settings
 
 
+def _touch_lock(lock_path: Path, token: str) -> bool:
+    """Renew a lock's mtime iff we still own it.
+
+    Returns False (and does nothing) if the lock file is gone or now owned
+    by someone else, so a stray heartbeat thread never resurrects/corrupts a
+    lock it no longer holds.
+    """
+    try:
+        content = lock_path.read_text(encoding="ascii").strip()
+    except OSError:
+        return False
+    if content != token:
+        return False
+    try:
+        os.utime(lock_path, None)
+    except OSError:
+        return False
+    return True
+
+
+def _heartbeat_interval(stale_after: float) -> float:
+    # Renew comfortably inside the stale window (several renewals per
+    # window) so a paused GC/scheduler tick doesn't cause a false steal.
+    return max(0.02, min(stale_after / 4.0, 15.0))
+
+
 @contextmanager
-def file_lock(name: str, timeout: float | None = None) -> Generator[None, None, None]:
-    """Cross-platform exclusive lock via O_EXCL lockfiles."""
+def file_lock(
+    name: str, timeout: float | None = None, stale_after: float | None = None
+) -> Generator[None, None, None]:
+    """Cross-platform exclusive lock via O_EXCL lockfiles.
+
+    A lock is only ever stolen from a holder that has gone silent for
+    ``stale_after`` seconds (default: settings.lock_stale_seconds). While a
+    lock is held, a background heartbeat thread renews its mtime well inside
+    that window, so a genuinely slow-but-alive operation (e.g. a remote
+    write that legitimately takes longer than the stale window) is never
+    mistaken for a crashed holder and stolen out from under it. A lock whose
+    holder really did die (process crash, no heartbeat) still becomes
+    stealable once ``stale_after`` seconds pass with no renewal.
+    """
     settings.ensure_dirs()
     timeout = settings.lock_timeout_seconds if timeout is None else timeout
+    stale_after = settings.lock_stale_seconds if stale_after is None else stale_after
     lock_path = settings.lock_dir / f"{name}.lock"
     # Unique token so release (and steal) only ever removes a lock we own;
     # a bare unlink could delete a lock another process just acquired.
@@ -35,15 +75,16 @@ def file_lock(name: str, timeout: float | None = None) -> Generator[None, None, 
             break
         except FileExistsError:
             if time.time() >= deadline:
-                # Stale lock recovery: if lock is older than 60s, steal it.
-                # os.replace is atomic, so concurrent stealers race for the
-                # rename and only the winner removes the stale file; losers
-                # just retry the acquire.
+                # Stale lock recovery: only steal a lock whose holder has
+                # stopped renewing it for stale_after seconds. os.replace is
+                # atomic, so concurrent stealers race for the rename and
+                # only the winner removes the stale file; losers just retry
+                # the acquire (or give up below).
                 try:
                     age = time.time() - lock_path.stat().st_mtime
                 except OSError:
                     continue  # lock vanished; retry acquire
-                if age <= 60:
+                if age <= stale_after:
                     raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
                 stale = lock_path.with_name(f"{lock_path.name}.stale-{token}")
                 try:
@@ -54,9 +95,25 @@ def file_lock(name: str, timeout: float | None = None) -> Generator[None, None, 
                 continue
             time.sleep(0.05)
 
+    stop_heartbeat = threading.Event()
+
+    def _heartbeat() -> None:
+        interval = _heartbeat_interval(stale_after)
+        while not stop_heartbeat.wait(interval):
+            if not _touch_lock(lock_path, token):
+                return
+
+    heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+    heartbeat_thread.start()
+
     try:
         yield
     finally:
+        # Stop renewing before we consider releasing, so the heartbeat
+        # thread can never touch/resurrect the file after (or while) we
+        # unlink it.
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=_heartbeat_interval(stale_after) * 2)
         try:
             if lock_path.read_text(encoding="ascii").strip() == token:
                 lock_path.unlink(missing_ok=True)
@@ -158,12 +215,19 @@ def read_queue() -> list[dict[str, Any]]:
     return facts
 
 
-def claim_offline_queue() -> tuple[str, list[dict[str, Any]]]:
+def claim_offline_queue() -> tuple[str, list[dict[str, Any]], int]:
+    """Claim the offline queue file for processing.
+
+    Returns (spool_id, facts, malformed_count). Lines that fail to parse as
+    JSON are quarantined straight to the dead-letter file and excluded from
+    ``facts`` -- ``malformed_count`` lets the caller tell "queue was empty"
+    apart from "queue was entirely malformed" (both leave ``facts`` empty).
+    """
     settings.ensure_dirs()
     path = settings.offline_queue_file
     with file_lock("queue"):
         if not path.exists() or path.stat().st_size == 0:
-            return "", []
+            return "", [], 0
         spool_id = uuid.uuid4().hex
         spool_path = settings.spool_dir / f"spool-{spool_id}.jsonl"
         try:
@@ -171,9 +235,10 @@ def claim_offline_queue() -> tuple[str, list[dict[str, Any]]]:
             # Create a fresh empty queue file so readers don't error
             open(path, "a", encoding="utf-8").close()
         except OSError:
-            return "", []
+            return "", [], 0
 
     facts: list[dict[str, Any]] = []
+    malformed_count = 0
     with open(spool_path, "r", encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -189,8 +254,9 @@ def claim_offline_queue() -> tuple[str, list[dict[str, Any]]]:
                 }
                 with file_lock("queue"):
                     append_jsonl(settings.dead_letter_file, record)
+                malformed_count += 1
                 continue
-    return spool_id, facts
+    return spool_id, facts, malformed_count
 
 
 def requeue_failed_facts(

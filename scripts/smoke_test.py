@@ -106,7 +106,7 @@ def main() -> int:
         failures.append("expected path conflict warning for agent-b")
 
     _banner("update_focus (token overlap)")
-    r3 = srv.update_focus(
+    srv.update_focus(
         "agent-c",
         "mindsync-mcp",
         "feature/y",

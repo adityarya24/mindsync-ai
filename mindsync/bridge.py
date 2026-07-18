@@ -182,8 +182,116 @@ class WriteResult:
     results: dict[str, Any] | None = None
 
 
+def _looks_like_unsupported_batch_subcommand(result: "WriteResult") -> bool:
+    """Detect an old, write-only remote writer that predates the `batch`
+    subcommand (argparse rejects it with "invalid choice: 'batch'", exit 2).
+
+    This doubles as the capability probe: rather than spend an extra SSH
+    round trip proactively asking the remote what it supports, the first
+    real batch attempt IS the probe -- if it fails with this specific
+    signature we know the remote is old and fall back, otherwise the normal
+    (and far more common) path costs nothing extra.
+    """
+    text = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+    return "invalid choice" in text and "batch" in text
+
+
+def _write_batch_native(valid_facts: list[dict[str, Any]]) -> WriteResult:
+    """Send the whole batch in one call via the `batch` subcommand (new remote)."""
+    payload = json.dumps(valid_facts)
+    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
+    remote_root = settings.remote_root
+    write_script = settings.remote_write_script
+    script = f"""set -euo pipefail
+cd {shlex.quote(remote_root)}
+{_maybe_source_env()}
+PAYLOAD=$(printf '%s' {shlex.quote(b64)} | base64 -d)
+python3 {shlex.quote(write_script)} batch --payload "$PAYLOAD"
+"""
+    try:
+        res = _ssh_script(script, timeout=90)
+    except subprocess.TimeoutExpired:
+        return WriteResult(ok=False, error="SSH write timed out")
+    except OSError as exc:
+        return WriteResult(ok=False, error=f"SSH write failed: {exc}")
+
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout or "unknown remote error").strip()
+        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
+
+    parsed_results = None
+    try:
+        parsed_results = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        pass
+
+    return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr, results=parsed_results)
+
+
+def _write_single_via_legacy_protocol(fact: dict[str, Any]) -> WriteResult:
+    """Write one fact using the older single-write-only remote protocol."""
+    write_script = settings.remote_write_script
+    args = " ".join(
+        [
+            f"--fact_id {shlex.quote(fact['fact_id'])}",
+            f"--agent {shlex.quote(fact['agent'])}",
+            f"--entity {shlex.quote(fact['entity'])}",
+            f"--attribute {shlex.quote(fact['attribute'])}",
+            f"--text {shlex.quote(fact['text'])}",
+            f"--source {shlex.quote(fact['source'])}",
+            f"--confidence {shlex.quote(str(fact['confidence']))}",
+        ]
+    )
+    script = f"""set -euo pipefail
+cd {shlex.quote(settings.remote_root)}
+{_maybe_source_env()}
+python3 {shlex.quote(write_script)} write {args}
+"""
+    try:
+        res = _ssh_script(script, timeout=30)
+    except subprocess.TimeoutExpired:
+        return WriteResult(ok=False, error="SSH write timed out")
+    except OSError as exc:
+        return WriteResult(ok=False, error=f"SSH write failed: {exc}")
+
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout or "unknown remote error").strip()
+        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
+    return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr)
+
+
+def _write_batch_via_legacy_single_writes(valid_facts: list[dict[str, Any]]) -> WriteResult:
+    """Fallback for an already-deployed write-only remote: send facts one at
+    a time via the legacy `write` subcommand (one SSH round trip per fact).
+
+    Normalizes the result into the same {success_ids, failed} shape the
+    native `batch` path returns, so callers (sync_offline_facts) don't need
+    to know or care which protocol was actually used.
+    """
+    success_ids: list[str] = []
+    failed: list[dict[str, Any]] = []
+    for fact in valid_facts:
+        single = _write_single_via_legacy_protocol(fact)
+        if single.ok:
+            success_ids.append(fact["fact_id"])
+        else:
+            failed.append({"fact_id": fact["fact_id"], "error": single.error or "legacy write failed"})
+    return WriteResult(
+        ok=True,
+        stdout=f"Legacy single-write fallback: {len(success_ids)} ok, {len(failed)} failed.",
+        results={"success_ids": success_ids, "failed": failed},
+    )
+
+
 def write_batch_remote(facts: list[dict[str, Any]]) -> WriteResult:
-    """Write a batch of durable facts on the remote host using base64 transport."""
+    """Write a batch of durable facts on the remote host using base64 transport.
+
+    Backward compatible with an already-deployed remote writer that only
+    understands single writes (pre-`batch` protocol): if the native batch
+    call fails because the remote doesn't recognize the `batch` subcommand,
+    transparently falls back to one legacy `write` call per fact so a new
+    client keeps working against an old, un-upgraded remote.
+    """
     if not settings.remote_enabled:
         return WriteResult(ok=False, error=remote_not_configured_error())
 
@@ -218,34 +326,10 @@ def write_batch_remote(facts: list[dict[str, Any]]) -> WriteResult:
     if not valid_facts:
         return WriteResult(ok=False, error="No valid facts to write in batch.")
 
-    payload = json.dumps(valid_facts)
-    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
-    remote_root = settings.remote_root
-    write_script = settings.remote_write_script
-    script = f"""set -euo pipefail
-cd {shlex.quote(remote_root)}
-{_maybe_source_env()}
-PAYLOAD=$(printf '%s' {shlex.quote(b64)} | base64 -d)
-python3 {shlex.quote(write_script)} batch --payload "$PAYLOAD"
-"""
-    try:
-        res = _ssh_script(script, timeout=90)
-    except subprocess.TimeoutExpired:
-        return WriteResult(ok=False, error="SSH write timed out")
-    except OSError as exc:
-        return WriteResult(ok=False, error=f"SSH write failed: {exc}")
-
-    if res.returncode != 0:
-        err = (res.stderr or res.stdout or "unknown remote error").strip()
-        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
-    
-    parsed_results = None
-    try:
-        parsed_results = json.loads(res.stdout)
-    except json.JSONDecodeError:
-        pass
-
-    return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr, results=parsed_results)
+    result = _write_batch_native(valid_facts)
+    if not result.ok and _looks_like_unsupported_batch_subcommand(result):
+        return _write_batch_via_legacy_single_writes(valid_facts)
+    return result
 
 
 def write_fact_remote(

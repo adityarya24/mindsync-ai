@@ -41,21 +41,45 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _make_bounded_batches(facts: list[dict[str, Any]], max_count: int = 50, max_bytes: int = 20 * 1024) -> list[list[dict[str, Any]]]:
-    batches = []
-    current_batch = []
-    current_bytes = 0
+def _batch_payload_bytes(batch: list[dict[str, Any]]) -> int:
+    """Size of the COMPLETE serialized JSON array bridge.write_batch_remote
+    will actually send -- brackets, commas, and all -- not just the sum of
+    the individual items' lengths (which undercounts by the array overhead
+    and can let a "bounded" batch exceed max_bytes once serialized)."""
+    return len(json.dumps(batch).encode("utf-8"))
+
+
+def _make_bounded_batches(
+    facts: list[dict[str, Any]], max_count: int = 50, max_bytes: int = 20 * 1024
+) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]]]:
+    """Split facts into batches bounded by count and complete serialized size.
+
+    Returns (batches, oversized). A fact that can't fit within max_bytes
+    even by itself can never fit in any batch; it's returned separately so
+    the caller can explicitly reject/dead-letter it instead of it being
+    silently dropped or wedging the queue forever.
+    """
+    batches: list[list[dict[str, Any]]] = []
+    oversized: list[dict[str, Any]] = []
+    current_batch: list[dict[str, Any]] = []
+
     for fact in facts:
-        fact_bytes = len(json.dumps(fact, ensure_ascii=False).encode("utf-8"))
-        if current_batch and (len(current_batch) >= max_count or current_bytes + fact_bytes > max_bytes):
+        if _batch_payload_bytes([fact]) > max_bytes:
+            oversized.append(fact)
+            continue
+
+        candidate = current_batch + [fact]
+        if current_batch and (
+            len(candidate) > max_count or _batch_payload_bytes(candidate) > max_bytes
+        ):
             batches.append(current_batch)
-            current_batch = []
-            current_bytes = 0
-        current_batch.append(fact)
-        current_bytes += fact_bytes
+            current_batch = [fact]
+        else:
+            current_batch = candidate
+
     if current_batch:
         batches.append(current_batch)
-    return batches
+    return batches, oversized
 
 
 @mcp.tool()
@@ -262,16 +286,36 @@ def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, A
         with file_lock("sync", timeout=settings.lock_timeout_seconds):
             recover_orphan_spools()
             
-            spool_id, facts = claim_offline_queue()
+            spool_id, facts, malformed_count = claim_offline_queue()
             if not facts:
                 if spool_id:
                     requeue_failed_facts(spool_id, [], [])
-                return {"ok": True, "message": "No offline facts in the queue.", "synced_count": 0}
+                if malformed_count:
+                    # The queue wasn't empty -- every record in it was
+                    # unparseable and got quarantined. That's not "nothing to
+                    # sync"; report it so it doesn't look like a silent no-op.
+                    return {
+                        "ok": False,
+                        "status": "error",
+                        "message": (
+                            f"No valid offline facts; {malformed_count} malformed "
+                            "record(s) quarantined to dead letter."
+                        ),
+                        "synced_count": 0,
+                        "dead_letter_count": malformed_count,
+                    }
+                return {
+                    "ok": True,
+                    "status": "ok",
+                    "message": "No offline facts in the queue.",
+                    "synced_count": 0,
+                }
 
             if not settings.remote_enabled:
                 requeue_failed_facts(spool_id, facts, [])
                 return {
                     "ok": False,
+                    "status": "error",
                     "message": remote_not_configured_error(),
                     "synced_count": 0,
                 }
@@ -293,7 +337,10 @@ def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, A
                     dead_letter.append(fact)
                     errors.append("Malformed queued fact (bad confidence); moved to dead letter.")
                     continue
-                    
+                # Normalize confidence to a real float on the fact (it may have
+                # been loaded from JSONL as a string-ish value).
+                fact["confidence"] = conf
+
                 if "fact_id" not in fact:
                     content = f"{fact.get('agent')}:{fact.get('entity')}:{fact.get('attribute')}:{fact.get('timestamp')}:{fact.get('text')}"
                     fact["fact_id"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -303,8 +350,18 @@ def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, A
             success_count = 0
             failed = []
 
-            # Partition into bounded batches
-            batches = _make_bounded_batches(valid_facts)
+            # Partition into bounded batches. Facts too large to ever fit in
+            # a single payload (even alone) are explicitly rejected/
+            # dead-lettered here rather than silently dropped or wedging the
+            # queue on every future sync attempt.
+            batches, oversized = _make_bounded_batches(valid_facts)
+            for fact in oversized:
+                dead_letter.append(fact)
+                errors.append(
+                    f"Fact {fact.get('fact_id')} exceeds max payload size; "
+                    "quarantined to dead letter."
+                )
+
             for batch in batches:
                 # Retry with backoff
                 retries = 3
@@ -369,13 +426,24 @@ def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, A
                 f"synced={success_count} remaining={len(failed)} dead_letter={len(dead_letter)} pull={pull_success}",
             )
             
-            overall_ok = len(failed) == 0
+            # Dead-lettered/failed records must never be reported as a clean
+            # ok=True sync: "ok" (fully clean), "partial" (some synced, some
+            # failed/dead-lettered), or "error" (nothing synced).
+            overall_ok = len(failed) == 0 and len(dead_letter) == 0
             if consolidate and success_count > 0:
                 if consolidate_error or pull_error:
                     overall_ok = False
 
+            if overall_ok:
+                status = "ok"
+            elif success_count > 0:
+                status = "partial"
+            else:
+                status = "error"
+
             return {
                 "ok": overall_ok,
+                "status": status,
                 "synced_count": success_count,
                 "remaining_queue": len(failed),
                 "dead_letter_count": len(dead_letter),
@@ -388,6 +456,7 @@ def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, A
     except TimeoutError:
         return {
             "ok": False,
+            "status": "error",
             "message": "Another sync is currently in progress.",
             "synced_count": 0,
         }

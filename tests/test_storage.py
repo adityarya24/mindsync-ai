@@ -35,8 +35,9 @@ def test_queue_enqueue_and_claim(tmp_path, monkeypatch):
     storage.enqueue_fact({"entity": "c", "attribute": "d", "text": "two"})
     facts = storage.read_queue()
     assert len(facts) == 2
-    spool_id, claimed = storage.claim_offline_queue()
+    spool_id, claimed, malformed_count = storage.claim_offline_queue()
     assert len(claimed) == 2
+    assert malformed_count == 0
     assert len(storage.read_queue()) == 0
     storage.requeue_failed_facts(spool_id, [claimed[1]], [])
     left = storage.read_queue()
