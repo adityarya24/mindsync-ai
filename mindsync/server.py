@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -9,11 +11,13 @@ from mcp.server.fastmcp import FastMCP
 
 from mindsync.bridge import (
     check_remote_online,
+    get_remote_status,
     consolidate_remote,
     pull_compiled_truth,
     remote_not_configured_error,
     validate_id,
     write_fact_remote,
+    write_batch_remote,
 )
 from mindsync.config import settings
 from mindsync.conflict import detect_focus_conflicts
@@ -23,7 +27,9 @@ from mindsync.storage import (
     log_audit,
     read_compiled_truth,
     read_queue,
-    rewrite_queue,
+    claim_offline_queue,
+    requeue_failed_facts,
+    recover_orphan_spools,
 )
 
 mcp = FastMCP("MindSync")
@@ -61,17 +67,17 @@ def get_sync_context(
         snapshot = dict(state)
 
     truth = read_compiled_truth()
-    online = check_remote_online()
+    remote_status = get_remote_status()
     log_audit(
         agent_name,
         "get_sync_context",
-        f"project={project_name or 'any'} refresh={refresh_remote} remote_online={online}",
+        f"project={project_name or 'any'} refresh={refresh_remote} remote_status={remote_status['status']}",
     )
     out: dict[str, Any] = {
         "local_state": snapshot,
         "compiled_truth": truth,
         "compiled_truth_keys": list(truth.keys()),
-        "remote_online": online,
+        "remote_status": remote_status,
         "remote_configured": settings.remote_enabled,
         "home": str(settings.home),
     }
@@ -168,6 +174,7 @@ def queue_durable_fact(
         return {"ok": False, "error": str(exc)}
 
     fact = {
+        "fact_id": uuid.uuid4().hex,
         "timestamp": _utc_now(),
         "agent": agent_name,
         "entity": entity,
@@ -177,8 +184,9 @@ def queue_durable_fact(
         "confidence": conf,
     }
 
-    if check_remote_online():
+    if settings.remote_enabled:
         result = write_fact_remote(
+            fact_id=fact["fact_id"],
             agent=agent_name,
             entity=entity,
             attribute=attribute,
@@ -228,57 +236,62 @@ def queue_durable_fact(
 def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, Any]:
     """Flush the offline queue to remote, optionally consolidate + pull compiled truth."""
     settings.ensure_dirs()
-    facts = read_queue()
+    recover_orphan_spools()
+    
+    spool_id, facts = claim_offline_queue()
     if not facts:
+        if spool_id:
+            requeue_failed_facts(spool_id, [], [])
         return {"ok": True, "message": "No offline facts in the queue.", "synced_count": 0}
 
     if not settings.remote_enabled:
+        requeue_failed_facts(spool_id, facts, [])
         return {
             "ok": False,
             "message": remote_not_configured_error(),
             "synced_count": 0,
         }
 
-    if not check_remote_online(force=True):
-        return {
-            "ok": False,
-            "message": "Cannot sync: remote is still offline.",
-            "synced_count": 0,
-        }
-
-    success_count = 0
-    failed: list[dict[str, Any]] = []
-    errors: list[str] = []
+    valid_facts = []
+    dead_letter = []
+    errors = []
 
     for fact in facts:
         if not isinstance(fact, dict) or not all(
             fact.get(key) for key in ("entity", "attribute", "text")
         ):
-            failed.append(fact)
-            errors.append("Malformed queued fact (missing entity/attribute/text); kept in queue.")
+            dead_letter.append(fact)
+            errors.append("Malformed queued fact (missing entity/attribute/text); moved to dead letter.")
             continue
         try:
             conf = float(fact.get("confidence", 1.0))
         except (TypeError, ValueError):
-            failed.append(fact)
-            errors.append("Malformed queued fact (bad confidence); kept in queue.")
+            dead_letter.append(fact)
+            errors.append("Malformed queued fact (bad confidence); moved to dead letter.")
             continue
-        result = write_fact_remote(
-            agent=str(fact.get("agent", agent_name)),
-            entity=str(fact["entity"]),
-            attribute=str(fact["attribute"]),
-            text=str(fact["text"]),
-            source=str(fact.get("source", f"agent:{agent_name}")),
-            confidence=conf,
-        )
+            
+        if "fact_id" not in fact:
+            content = f"{fact.get('agent')}:{fact.get('entity')}:{fact.get('attribute')}:{fact.get('timestamp')}:{fact.get('text')}"
+            fact["fact_id"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            
+        valid_facts.append(fact)
+
+    success_count = 0
+    failed = []
+
+    # Process in batches of 50
+    batch_size = 50
+    for i in range(0, len(valid_facts), batch_size):
+        batch = valid_facts[i:i + batch_size]
+        result = write_batch_remote(batch)
         if result.ok:
-            success_count += 1
+            success_count += len(batch)
         else:
-            failed.append(fact)
+            failed.extend(batch)
             if result.error:
                 errors.append(result.error)
 
-    rewrite_queue(failed)
+    requeue_failed_facts(spool_id, failed, dead_letter)
 
     pull_success = False
     consolidate_error = None
@@ -287,26 +300,33 @@ def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, A
         c_res = consolidate_remote()
         if not c_res.ok:
             consolidate_error = c_res.error
-        p_res = pull_compiled_truth()
-        pull_success = p_res.ok
-        if not p_res.ok:
-            pull_error = p_res.error
+        else:
+            p_res = pull_compiled_truth()
+            pull_success = p_res.ok
+            if not p_res.ok:
+                pull_error = p_res.error
 
     log_audit(
         agent_name,
         "sync_offline_facts",
-        f"synced={success_count} remaining={len(failed)} pull={pull_success}",
+        f"synced={success_count} remaining={len(failed)} dead_letter={len(dead_letter)} pull={pull_success}",
     )
+    
+    overall_ok = len(failed) == 0
+    if consolidate and success_count > 0:
+        if consolidate_error or pull_error:
+            overall_ok = False
+
     return {
-        "ok": len(failed) == 0
-        and (pull_error is None if consolidate and success_count else True),
+        "ok": overall_ok,
         "synced_count": success_count,
         "remaining_queue": len(failed),
+        "dead_letter_count": len(dead_letter),
         "pull_success": pull_success,
         "errors": errors[:5],
         "consolidate_error": consolidate_error,
         "pull_error": pull_error,
-        "message": f"Synced {success_count} fact(s); {len(failed)} remaining in queue.",
+        "message": f"Synced {success_count} fact(s); {len(failed)} remaining in queue, {len(dead_letter)} dead.",
     }
 
 
@@ -334,8 +354,16 @@ def pull_truth(agent_name: str) -> dict[str, Any]:
 def health(agent_name: str = "system") -> dict[str, Any]:
     """Report local paths, queue depth, and remote reachability."""
     settings.ensure_dirs()
+    # include spool facts count in queue depth
     queue_len = len(read_queue())
-    online = check_remote_online(force=True) if settings.remote_enabled else False
+    for spool_path in settings.spool_dir.glob("spool-*.jsonl"):
+        try:
+            with open(spool_path, "r", encoding="utf-8") as fh:
+                queue_len += sum(1 for _ in fh)
+        except OSError:
+            pass
+            
+    remote_status = get_remote_status(force=True) if settings.remote_enabled else {"status": "unknown"}
     with locked_state() as state:
         agents = list((state.get("agents_focus") or {}).keys())
     return {
@@ -344,7 +372,7 @@ def health(agent_name: str = "system") -> dict[str, Any]:
         "state_file": str(settings.state_file),
         "queue_depth": queue_len,
         "remote_configured": settings.remote_enabled,
-        "remote_online": online,
+        "remote_status": remote_status,
         "ssh_host": settings.ssh_host or None,
         "remote_root": settings.remote_root or None,
         "active_agents": agents,

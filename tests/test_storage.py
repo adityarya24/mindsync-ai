@@ -29,13 +29,16 @@ def test_state_roundtrip(tmp_path, monkeypatch):
     assert settings.state_file.exists()
 
 
-def test_queue_enqueue_and_rewrite(tmp_path, monkeypatch):
+def test_queue_enqueue_and_claim(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     storage.enqueue_fact({"entity": "a", "attribute": "b", "text": "one"})
     storage.enqueue_fact({"entity": "c", "attribute": "d", "text": "two"})
     facts = storage.read_queue()
     assert len(facts) == 2
-    storage.rewrite_queue([facts[1]])
+    spool_id, claimed = storage.claim_offline_queue()
+    assert len(claimed) == 2
+    assert len(storage.read_queue()) == 0
+    storage.requeue_failed_facts(spool_id, [claimed[1]], [])
     left = storage.read_queue()
     assert len(left) == 1
     assert left[0]["entity"] == "c"

@@ -31,8 +31,8 @@ def test_sync_skips_malformed_facts_without_crashing(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "check_remote_online", lambda force=False: True)
     monkeypatch.setattr(
         server,
-        "write_fact_remote",
-        lambda **kw: (written.append(kw), WriteResult(ok=True, stdout="ok"))[1],
+        "write_batch_remote",
+        lambda batch: (written.extend(batch), WriteResult(ok=True, stdout="ok"))[1],
     )
     monkeypatch.setattr(server, "consolidate_remote", lambda: WriteResult(ok=True))
     monkeypatch.setattr(server, "pull_compiled_truth", lambda: WriteResult(ok=True))
@@ -40,10 +40,11 @@ def test_sync_skips_malformed_facts_without_crashing(tmp_path, monkeypatch):
     result = server.sync_offline_facts("agent-t")
 
     assert result["synced_count"] == 1
-    assert result["remaining_queue"] == 2
+    assert result["remaining_queue"] == 0
+    assert result["dead_letter_count"] == 2
     assert len(written) == 1
     assert any("Malformed" in e for e in result["errors"])
-    assert len(storage.read_queue()) == 2
+    assert len(storage.read_queue()) == 0
 
 
 def test_release_does_not_delete_foreign_lock(tmp_path, monkeypatch):

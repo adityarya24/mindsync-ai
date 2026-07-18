@@ -30,6 +30,8 @@ class Settings:
         self.state_file: Path = self.home / "local-state.json"
         self.audit_file: Path = self.home / "local-audit.jsonl"
         self.offline_queue_file: Path = self.home / "offline_queue.jsonl"
+        self.spool_dir: Path = self.home / "spools"
+        self.dead_letter_file: Path = self.home / "dead_letter.jsonl"
         self.compiled_truth_dir: Path = self.home / "compiled-truth"
         self.lock_dir: Path = self.home / ".locks"
 
@@ -52,7 +54,7 @@ class Settings:
             "compiled-truth",
         )
 
-        self.ssh_connect_timeout: int = int(_env("MINDSYNC_SSH_TIMEOUT", "3") or "3")
+        self.ssh_connect_timeout: int = int(_env("MINDSYNC_SSH_TIMEOUT", "10") or "10")
         self.focus_stale_seconds: int = int(_env("MINDSYNC_FOCUS_STALE_SECS", "7200") or "7200")
         self.remote_cache_ttl_seconds: float = float(
             _env("MINDSYNC_REMOTE_CACHE_TTL", "30") or "30"
@@ -67,6 +69,6 @@ class Settings:
         self.home.mkdir(parents=True, exist_ok=True)
         self.compiled_truth_dir.mkdir(parents=True, exist_ok=True)
         self.lock_dir.mkdir(parents=True, exist_ok=True)
-
+        self.spool_dir.mkdir(parents=True, exist_ok=True)
 
 settings = Settings()

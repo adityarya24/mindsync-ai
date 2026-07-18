@@ -11,6 +11,7 @@ import re
 import shlex
 import subprocess
 import time
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,8 +20,8 @@ from mindsync.config import settings
 # Safe identifiers for remote CLI args (no shell metacharacters).
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,127}$")
 
-_remote_cache: dict[str, Any] = {"online": None, "checked_at": 0.0}
-
+_remote_cache: dict[str, Any] = {"status": "unknown", "reason": None, "checked_at": 0.0, "duration": 0.0}
+_probe_lock = threading.Lock()
 
 class BridgeError(Exception):
     """Remote bridge failure."""
@@ -56,44 +57,69 @@ def remote_not_configured_error() -> str:
         "MINDSYNC_REMOTE_ROOT (see .env.example)."
     )
 
-
-def check_remote_online(*, force: bool = False) -> bool:
-    """Cached SSH reachability probe. False when remote is disabled or unreachable."""
+def get_remote_status(*, force: bool = False) -> dict[str, Any]:
     if not settings.remote_enabled:
-        return False
+        return {"status": "unknown", "reason": "remote_not_configured", "checked_at": 0.0, "duration": 0.0, "cache_age": 0.0}
 
     now = time.time()
     ttl = settings.remote_cache_ttl_seconds
-    if (
-        not force
-        and _remote_cache["online"] is not None
-        and (now - float(_remote_cache["checked_at"])) < ttl
-    ):
-        return bool(_remote_cache["online"])
+    
+    with _probe_lock:
+        cache_age = now - float(_remote_cache["checked_at"])
+        if not force and _remote_cache["checked_at"] > 0 and cache_age < ttl:
+            res = dict(_remote_cache)
+            res["cache_age"] = cache_age
+            return res
+            
+        start = time.time()
+        status = "offline"
+        reason = "unknown"
+        try:
+            res = _run(
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    f"ConnectTimeout={settings.ssh_connect_timeout}",
+                    settings.ssh_host,
+                    "echo",
+                    "1",
+                ],
+                timeout=settings.ssh_connect_timeout + 2,
+                check=False,
+            )
+            if res.returncode == 0:
+                status = "online"
+                reason = "ok"
+            elif res.returncode == 255:
+                status = "offline"
+                reason = "ssh_auth_or_timeout"
+            else:
+                status = "offline"
+                reason = f"exit_code_{res.returncode}"
+        except subprocess.TimeoutExpired:
+            status = "offline"
+            reason = "timeout"
+        except OSError:
+            status = "offline"
+            reason = "os_error"
+            
+        duration = time.time() - start
+        _remote_cache.update({
+            "status": status,
+            "reason": reason,
+            "checked_at": time.time(),
+            "duration": round(duration, 3)
+        })
+        
+        res = dict(_remote_cache)
+        res["cache_age"] = 0.0
+        return res
 
-    online = False
-    try:
-        res = _run(
-            [
-                "ssh",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                f"ConnectTimeout={settings.ssh_connect_timeout}",
-                settings.ssh_host,
-                "echo",
-                "1",
-            ],
-            timeout=settings.ssh_connect_timeout + 2,
-            check=False,
-        )
-        online = res.returncode == 0 and res.stdout.strip() == "1"
-    except (OSError, subprocess.TimeoutExpired):
-        online = False
-
-    _remote_cache["online"] = online
-    _remote_cache["checked_at"] = now
-    return online
+def check_remote_online(*, force: bool = False) -> bool:
+    """Cached SSH reachability probe. False when remote is disabled or unreachable."""
+    return get_remote_status(force=force)["status"] == "online"
 
 
 # Backward-compatible alias used during the rename.
@@ -154,44 +180,51 @@ class WriteResult:
     error: str | None = None
 
 
-def write_fact_remote(
-    *,
-    agent: str,
-    entity: str,
-    attribute: str,
-    text: str,
-    source: str,
-    confidence: float,
-) -> WriteResult:
-    """Write one durable fact on the remote host using base64 transport for free text."""
+def write_batch_remote(facts: list[dict[str, Any]]) -> WriteResult:
+    """Write a batch of durable facts on the remote host using base64 transport."""
     if not settings.remote_enabled:
         return WriteResult(ok=False, error=remote_not_configured_error())
 
-    try:
-        agent = validate_id("agent", agent)
-        entity = validate_id("entity", entity)
-        attribute = validate_id("attribute", attribute)
-        source = validate_id("source", source)
-        conf = float(confidence)
-        if not 0.0 <= conf <= 1.0:
-            raise ValueError("confidence must be between 0 and 1")
-    except ValueError as exc:
-        return WriteResult(ok=False, error=str(exc))
+    if not facts:
+        return WriteResult(ok=True, stdout="No facts to write.")
 
-    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    # Validate all facts before sending
+    valid_facts = []
+    for fact in facts:
+        try:
+            agent = validate_id("agent", fact.get("agent", ""))
+            entity = validate_id("entity", fact.get("entity", ""))
+            attribute = validate_id("attribute", fact.get("attribute", ""))
+            source = validate_id("source", fact.get("source", ""))
+            conf = float(fact.get("confidence", 1.0))
+            if not 0.0 <= conf <= 1.0:
+                continue # Skip invalid
+            fact_id = validate_id("fact_id", fact.get("fact_id", ""))
+            valid_facts.append({
+                "fact_id": fact_id,
+                "timestamp": fact.get("timestamp", ""),
+                "agent": agent,
+                "entity": entity,
+                "attribute": attribute,
+                "text": fact.get("text", ""),
+                "source": source,
+                "confidence": conf
+            })
+        except ValueError:
+            continue
+
+    if not valid_facts:
+        return WriteResult(ok=False, error="No valid facts to write in batch.")
+
+    payload = json.dumps(valid_facts)
+    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     remote_root = settings.remote_root
     write_script = settings.remote_write_script
     script = f"""set -euo pipefail
 cd {shlex.quote(remote_root)}
 {_maybe_source_env()}
-TEXT=$(printf '%s' {shlex.quote(b64)} | base64 -d)
-python3 {shlex.quote(write_script)} write \\
-  --agent {shlex.quote(agent)} \\
-  --entity {shlex.quote(entity)} \\
-  --attribute {shlex.quote(attribute)} \\
-  --text "$TEXT" \\
-  --source {shlex.quote(source)} \\
-  --confidence {conf}
+PAYLOAD=$(printf '%s' {shlex.quote(b64)} | base64 -d)
+python3 {shlex.quote(write_script)} batch --payload "$PAYLOAD"
 """
     try:
         res = _ssh_script(script, timeout=90)
@@ -204,6 +237,29 @@ python3 {shlex.quote(write_script)} write \\
         err = (res.stderr or res.stdout or "unknown remote error").strip()
         return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
     return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr)
+
+
+def write_fact_remote(
+    *,
+    fact_id: str,
+    agent: str,
+    entity: str,
+    attribute: str,
+    text: str,
+    source: str,
+    confidence: float,
+) -> WriteResult:
+    """Write one durable fact on the remote host."""
+    fact = {
+        "fact_id": fact_id,
+        "agent": agent,
+        "entity": entity,
+        "attribute": attribute,
+        "text": text,
+        "source": source,
+        "confidence": confidence
+    }
+    return write_batch_remote([fact])
 
 
 def consolidate_remote() -> WriteResult:

@@ -158,17 +158,75 @@ def read_queue() -> list[dict[str, Any]]:
     return facts
 
 
-def rewrite_queue(facts: Iterable[dict[str, Any]]) -> None:
+def claim_offline_queue() -> tuple[str, list[dict[str, Any]]]:
     settings.ensure_dirs()
     path = settings.offline_queue_file
-    tmp = path.with_suffix(".jsonl.tmp")
     with file_lock("queue"):
-        with open(tmp, "w", encoding="utf-8") as fh:
-            for fact in facts:
-                fh.write(json.dumps(fact, ensure_ascii=False) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        if not path.exists() or path.stat().st_size == 0:
+            return "", []
+        spool_id = uuid.uuid4().hex
+        spool_path = settings.spool_dir / f"spool-{spool_id}.jsonl"
+        try:
+            os.replace(path, spool_path)
+            # Create a fresh empty queue file so readers don't error
+            open(path, "a", encoding="utf-8").close()
+        except OSError:
+            return "", []
+
+    facts: list[dict[str, Any]] = []
+    with open(spool_path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                facts.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return spool_id, facts
+
+
+def requeue_failed_facts(
+    spool_id: str, failed: list[dict[str, Any]], dead_letter: list[dict[str, Any]]
+) -> None:
+    settings.ensure_dirs()
+    if dead_letter:
+        # We don't have a specific file_lock for dead_letter, but we can use queue lock or just append
+        with file_lock("queue"):
+            for fact in dead_letter:
+                append_jsonl(settings.dead_letter_file, fact)
+
+    if failed:
+        with file_lock("queue"):
+            for fact in failed:
+                append_jsonl(settings.offline_queue_file, fact)
+
+    if spool_id:
+        spool_path = settings.spool_dir / f"spool-{spool_id}.jsonl"
+        spool_path.unlink(missing_ok=True)
+
+
+def recover_orphan_spools() -> None:
+    settings.ensure_dirs()
+    for spool_path in settings.spool_dir.glob("spool-*.jsonl"):
+        try:
+            facts: list[dict[str, Any]] = []
+            with open(spool_path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        facts.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+            if facts:
+                with file_lock("queue"):
+                    for fact in facts:
+                        append_jsonl(settings.offline_queue_file, fact)
+            spool_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def read_compiled_truth() -> dict[str, str]:

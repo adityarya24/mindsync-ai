@@ -20,6 +20,7 @@ def test_validate_id_rejects_shell_meta():
 
 def test_write_fact_remote_rejects_bad_id_without_ssh():
     result = write_fact_remote(
+        fact_id="test-123",
         agent="agent-b",
         entity="bad;id",
         attribute="ok",
