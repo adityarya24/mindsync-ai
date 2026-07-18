@@ -33,6 +33,16 @@ Design principles:
 
 ## Install
 
+From PyPI (recommended):
+
+```bash
+pip install mindsync-mcp
+```
+
+This installs the `mindsync` console command used in the MCP client config below.
+
+From source (for development):
+
 ```bash
 git clone https://github.com/adityarya24/mindsync-mcp.git
 cd mindsync-mcp
@@ -45,7 +55,7 @@ No env vars required. State lives under `~/.mindsync`.
 
 ### MCP client config
 
-After `pip install -e .`:
+After installing (the `mindsync` command is on your PATH):
 
 ```json
 {
@@ -96,8 +106,35 @@ See [`.env.example`](.env.example) for the full list and [`examples/remote/`](ex
 | `MINDSYNC_FOCUS_STALE_SECS` | `7200` | Ignore older focus entries |
 | `MINDSYNC_REMOTE_CACHE_TTL` | `30` | Cache TTL for online probe |
 | `MINDSYNC_LOCK_TIMEOUT` | `5` | Local lock wait (seconds) |
+| `MINDSYNC_LOCK_STALE_SECS` | `60` | Steal a lock only after the holder stops renewing it this long |
 
 SSH must be key-based / `BatchMode`-friendly (no interactive password prompts).
+
+### Two machines (e.g. VPS + laptop)
+
+MindSync is local-first: run the server on **each** machine so the agents on
+that machine share focus/state locally. To also share **durable facts** across
+machines, pick one always-on host (usually the VPS) as the shared store and
+point the other machine's remote sync at it:
+
+1. **On the shared host (VPS):** deploy the sample server-side scripts from
+   [`examples/remote/`](examples/remote/) under a directory (e.g.
+   `/opt/mindsync`) — `tools/mindsync_fact.py` and `tools/mindsync_consolidate.py`.
+   Make sure the machine you'll sync from can reach it over key-based SSH.
+2. **On the laptop:** install MindSync and set the remote to the VPS:
+   ```bash
+   export MINDSYNC_SSH_HOST=my-vps          # SSH config Host or user@host
+   export MINDSYNC_REMOTE_ROOT=/opt/mindsync
+   ```
+   Now `queue_durable_fact` writes to the VPS (or queues offline if it's
+   unreachable, flushing later via `sync_offline_facts`), and
+   `get_sync_context(refresh_remote=true)` / `pull_truth` pull the compiled
+   truth back down.
+3. **On the VPS itself**, leave the remote vars empty — it *is* the store, so it
+   reads/writes its durable facts locally.
+
+Both machines keep working offline; the shared host is just where durable facts
+converge.
 
 ## Local data layout
 
