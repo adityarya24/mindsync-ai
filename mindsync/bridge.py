@@ -7,6 +7,7 @@ Remote layout is configurable. Defaults match the sample scripts under
 from __future__ import annotations
 
 import base64
+import json
 import re
 import shlex
 import subprocess
@@ -178,6 +179,7 @@ class WriteResult:
     stdout: str = ""
     stderr: str = ""
     error: str | None = None
+    results: dict[str, Any] | None = None
 
 
 def write_batch_remote(facts: list[dict[str, Any]]) -> WriteResult:
@@ -236,7 +238,14 @@ python3 {shlex.quote(write_script)} batch --payload "$PAYLOAD"
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "unknown remote error").strip()
         return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
-    return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr)
+    
+    parsed_results = None
+    try:
+        parsed_results = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        pass
+
+    return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr, results=parsed_results)
 
 
 def write_fact_remote(

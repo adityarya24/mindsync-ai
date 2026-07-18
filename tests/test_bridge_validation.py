@@ -44,3 +44,45 @@ def test_remote_disabled_by_default(monkeypatch):
     s = Settings()
     assert s.remote_enabled is False
     assert s.home.name == ".mindsync"
+
+
+def test_write_batch_remote_mocked(monkeypatch):
+    s = Settings()
+    s.ssh_host = "test-host"
+    s.remote_root = "/test/root"
+    s.remote_write_script = "tools/mindsync_fact.py"
+    
+    import mindsync.bridge as bridge
+    monkeypatch.setattr(bridge, "settings", s)
+    
+    called_args = []
+    def mock_run(args, input=None, capture_output=True, timeout=None, check=False):
+        called_args.append((args, input))
+        from unittest.mock import Mock
+        res_mock = Mock()
+        res_mock.args = args
+        res_mock.returncode = 0
+        res_mock.stdout = b'{"ok": true, "success_ids": ["f1"]}'
+        res_mock.stderr = b''
+        return res_mock
+        
+    monkeypatch.setattr(bridge.subprocess, "run", mock_run)
+    
+    facts = [{
+        "fact_id": "f1",
+        "agent": "agent-a",
+        "entity": "ent-1",
+        "attribute": "attr-1",
+        "text": "hello",
+        "source": "src-1",
+        "confidence": 1.0
+    }]
+    
+    res = bridge.write_batch_remote(facts)
+    assert res.ok
+    assert len(called_args) == 1
+    cmd_args, stdin_data = called_args[0]
+    assert "ssh" in cmd_args
+    assert "test-host" in cmd_args
+    assert b"mindsync_fact.py" in stdin_data
+    assert b"base64 -d" in stdin_data

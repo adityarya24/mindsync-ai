@@ -182,6 +182,13 @@ def claim_offline_queue() -> tuple[str, list[dict[str, Any]]]:
             try:
                 facts.append(json.loads(line))
             except json.JSONDecodeError:
+                record = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": "malformed_json",
+                    "raw_record": line,
+                }
+                with file_lock("queue"):
+                    append_jsonl(settings.dead_letter_file, record)
                 continue
     return spool_id, facts
 
@@ -219,6 +226,13 @@ def recover_orphan_spools() -> None:
                     try:
                         facts.append(json.loads(line))
                     except json.JSONDecodeError:
+                        record = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "error": "malformed_json",
+                            "raw_record": line,
+                        }
+                        with file_lock("queue"):
+                            append_jsonl(settings.dead_letter_file, record)
                         continue
             if facts:
                 with file_lock("queue"):

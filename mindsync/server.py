@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -37,6 +39,23 @@ mcp = FastMCP("MindSync")
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _make_bounded_batches(facts: list[dict[str, Any]], max_count: int = 50, max_bytes: int = 20 * 1024) -> list[list[dict[str, Any]]]:
+    batches = []
+    current_batch = []
+    current_bytes = 0
+    for fact in facts:
+        fact_bytes = len(json.dumps(fact, ensure_ascii=False).encode("utf-8"))
+        if current_batch and (len(current_batch) >= max_count or current_bytes + fact_bytes > max_bytes):
+            batches.append(current_batch)
+            current_batch = []
+            current_bytes = 0
+        current_batch.append(fact)
+        current_bytes += fact_bytes
+    if current_batch:
+        batches.append(current_batch)
+    return batches
 
 
 @mcp.tool()
@@ -78,6 +97,7 @@ def get_sync_context(
         "compiled_truth": truth,
         "compiled_truth_keys": list(truth.keys()),
         "remote_status": remote_status,
+        "remote_online": (remote_status.get("status") == "online") if settings.remote_enabled else False,
         "remote_configured": settings.remote_enabled,
         "home": str(settings.home),
     }
@@ -236,98 +256,141 @@ def queue_durable_fact(
 def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, Any]:
     """Flush the offline queue to remote, optionally consolidate + pull compiled truth."""
     settings.ensure_dirs()
-    recover_orphan_spools()
-    
-    spool_id, facts = claim_offline_queue()
-    if not facts:
-        if spool_id:
-            requeue_failed_facts(spool_id, [], [])
-        return {"ok": True, "message": "No offline facts in the queue.", "synced_count": 0}
+    from mindsync.storage import file_lock
 
-    if not settings.remote_enabled:
-        requeue_failed_facts(spool_id, facts, [])
+    try:
+        with file_lock("sync", timeout=settings.lock_timeout_seconds):
+            recover_orphan_spools()
+            
+            spool_id, facts = claim_offline_queue()
+            if not facts:
+                if spool_id:
+                    requeue_failed_facts(spool_id, [], [])
+                return {"ok": True, "message": "No offline facts in the queue.", "synced_count": 0}
+
+            if not settings.remote_enabled:
+                requeue_failed_facts(spool_id, facts, [])
+                return {
+                    "ok": False,
+                    "message": remote_not_configured_error(),
+                    "synced_count": 0,
+                }
+
+            valid_facts = []
+            dead_letter = []
+            errors = []
+
+            for fact in facts:
+                if not isinstance(fact, dict) or not all(
+                    fact.get(key) for key in ("entity", "attribute", "text")
+                ):
+                    dead_letter.append(fact)
+                    errors.append("Malformed queued fact (missing entity/attribute/text); moved to dead letter.")
+                    continue
+                try:
+                    conf = float(fact.get("confidence", 1.0))
+                except (TypeError, ValueError):
+                    dead_letter.append(fact)
+                    errors.append("Malformed queued fact (bad confidence); moved to dead letter.")
+                    continue
+                    
+                if "fact_id" not in fact:
+                    content = f"{fact.get('agent')}:{fact.get('entity')}:{fact.get('attribute')}:{fact.get('timestamp')}:{fact.get('text')}"
+                    fact["fact_id"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                    
+                valid_facts.append(fact)
+
+            success_count = 0
+            failed = []
+
+            # Partition into bounded batches
+            batches = _make_bounded_batches(valid_facts)
+            for batch in batches:
+                # Retry with backoff
+                retries = 3
+                delay = 1.0
+                result = None
+                for attempt in range(retries):
+                    result = write_batch_remote(batch)
+                    if result.ok:
+                        break
+                    if "not configured" in (result.error or ""):
+                        break
+                    if attempt < retries - 1:
+                        time.sleep(delay)
+                        delay *= 2.0
+                
+                # Check outcome of the batch
+                if result and result.ok:
+                    res_data = getattr(result, "results", None)
+                    if res_data and isinstance(res_data, dict) and "success_ids" in res_data:
+                        success_ids = set(res_data["success_ids"])
+                        failed_info = res_data.get("failed") or []
+                        
+                        for fact in batch:
+                            fid = fact.get("fact_id")
+                            if fid in success_ids:
+                                success_count += 1
+                            else:
+                                failed.append(fact)
+                                err_msg = "Skipped or failed in batch insertion"
+                                for f_err in failed_info:
+                                    if f_err.get("fact_id") == fid:
+                                        err_msg = f_err.get("error", err_msg)
+                                        break
+                                errors.append(f"Fact {fid} failed remote write: {err_msg}")
+                    else:
+                        success_count += len(batch)
+                else:
+                    failed.extend(batch)
+                    if result and result.error:
+                        errors.append(result.error)
+                    else:
+                        errors.append("Batch write failed completely.")
+
+            requeue_failed_facts(spool_id, failed, dead_letter)
+
+            pull_success = False
+            consolidate_error = None
+            pull_error = None
+            if consolidate and success_count > 0:
+                c_res = consolidate_remote()
+                if not c_res.ok:
+                    consolidate_error = c_res.error
+                else:
+                    p_res = pull_compiled_truth()
+                    pull_success = p_res.ok
+                    if not p_res.ok:
+                        pull_error = p_res.error
+
+            log_audit(
+                agent_name,
+                "sync_offline_facts",
+                f"synced={success_count} remaining={len(failed)} dead_letter={len(dead_letter)} pull={pull_success}",
+            )
+            
+            overall_ok = len(failed) == 0
+            if consolidate and success_count > 0:
+                if consolidate_error or pull_error:
+                    overall_ok = False
+
+            return {
+                "ok": overall_ok,
+                "synced_count": success_count,
+                "remaining_queue": len(failed),
+                "dead_letter_count": len(dead_letter),
+                "pull_success": pull_success,
+                "errors": errors[:5],
+                "consolidate_error": consolidate_error,
+                "pull_error": pull_error,
+                "message": f"Synced {success_count} fact(s); {len(failed)} remaining in queue, {len(dead_letter)} dead.",
+            }
+    except TimeoutError:
         return {
             "ok": False,
-            "message": remote_not_configured_error(),
+            "message": "Another sync is currently in progress.",
             "synced_count": 0,
         }
-
-    valid_facts = []
-    dead_letter = []
-    errors = []
-
-    for fact in facts:
-        if not isinstance(fact, dict) or not all(
-            fact.get(key) for key in ("entity", "attribute", "text")
-        ):
-            dead_letter.append(fact)
-            errors.append("Malformed queued fact (missing entity/attribute/text); moved to dead letter.")
-            continue
-        try:
-            conf = float(fact.get("confidence", 1.0))
-        except (TypeError, ValueError):
-            dead_letter.append(fact)
-            errors.append("Malformed queued fact (bad confidence); moved to dead letter.")
-            continue
-            
-        if "fact_id" not in fact:
-            content = f"{fact.get('agent')}:{fact.get('entity')}:{fact.get('attribute')}:{fact.get('timestamp')}:{fact.get('text')}"
-            fact["fact_id"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            
-        valid_facts.append(fact)
-
-    success_count = 0
-    failed = []
-
-    # Process in batches of 50
-    batch_size = 50
-    for i in range(0, len(valid_facts), batch_size):
-        batch = valid_facts[i:i + batch_size]
-        result = write_batch_remote(batch)
-        if result.ok:
-            success_count += len(batch)
-        else:
-            failed.extend(batch)
-            if result.error:
-                errors.append(result.error)
-
-    requeue_failed_facts(spool_id, failed, dead_letter)
-
-    pull_success = False
-    consolidate_error = None
-    pull_error = None
-    if consolidate and success_count > 0:
-        c_res = consolidate_remote()
-        if not c_res.ok:
-            consolidate_error = c_res.error
-        else:
-            p_res = pull_compiled_truth()
-            pull_success = p_res.ok
-            if not p_res.ok:
-                pull_error = p_res.error
-
-    log_audit(
-        agent_name,
-        "sync_offline_facts",
-        f"synced={success_count} remaining={len(failed)} dead_letter={len(dead_letter)} pull={pull_success}",
-    )
-    
-    overall_ok = len(failed) == 0
-    if consolidate and success_count > 0:
-        if consolidate_error or pull_error:
-            overall_ok = False
-
-    return {
-        "ok": overall_ok,
-        "synced_count": success_count,
-        "remaining_queue": len(failed),
-        "dead_letter_count": len(dead_letter),
-        "pull_success": pull_success,
-        "errors": errors[:5],
-        "consolidate_error": consolidate_error,
-        "pull_error": pull_error,
-        "message": f"Synced {success_count} fact(s); {len(failed)} remaining in queue, {len(dead_letter)} dead.",
-    }
 
 
 @mcp.tool()
@@ -364,6 +427,7 @@ def health(agent_name: str = "system") -> dict[str, Any]:
             pass
             
     remote_status = get_remote_status(force=True) if settings.remote_enabled else {"status": "unknown"}
+    remote_online = (remote_status.get("status") == "online") if settings.remote_enabled else False
     with locked_state() as state:
         agents = list((state.get("agents_focus") or {}).keys())
     return {
@@ -373,6 +437,7 @@ def health(agent_name: str = "system") -> dict[str, Any]:
         "queue_depth": queue_len,
         "remote_configured": settings.remote_enabled,
         "remote_status": remote_status,
+        "remote_online": remote_online,
         "ssh_host": settings.ssh_host or None,
         "remote_root": settings.remote_root or None,
         "active_agents": agents,
