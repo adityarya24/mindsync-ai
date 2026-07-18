@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator
 
-from mindsync.config import settings
+from mindsync.config import chmod_tree_0600, settings
 
 
 def _touch_lock(lock_path: Path, token: str) -> bool:
@@ -160,6 +160,10 @@ def save_state(state: dict[str, Any]) -> None:
     tmp = path.with_suffix(".json.tmp")
     payload = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
     tmp.write_text(payload, encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
     os.replace(tmp, path)
 
 
@@ -175,10 +179,16 @@ def locked_state() -> Generator[dict[str, Any], None, None]:
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
     settings.ensure_dirs()
     line = json.dumps(record, ensure_ascii=False) + "\n"
+    existed = path.exists()
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(line)
         fh.flush()
         os.fsync(fh.fileno())
+    if not existed:
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
 
 
 def log_audit(agent_name: str, action: str, details: str) -> None:
@@ -309,12 +319,110 @@ def recover_orphan_spools() -> None:
             pass
 
 
+@contextmanager
+def locked_truth() -> Generator[None, None, None]:
+    """Lock the compiled truth directory for atomic reads/updates."""
+    with file_lock("truth"):
+        yield
+
+
+def _validate_staging_manifest(staging_dir: Path) -> None:
+    files = list(staging_dir.glob("*.md"))
+    import re
+    for f in files:
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", f.stem):
+            raise ValueError(f"Staged file has invalid entity name: {f.name}")
+        try:
+            f.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"Staged file {f.name} is not valid UTF-8: {exc}")
+
+
+def publish_compiled_truth(staging_dir: Path) -> None:
+    settings.ensure_dirs()
+    dest_dir = settings.compiled_truth_dir
+
+    _validate_staging_manifest(staging_dir)
+
+    staged_files = list(staging_dir.glob("*.md"))
+    if not staged_files:
+        # A successful-but-empty pull (remote returned nothing, or the
+        # staging dir came back empty) must never be allowed to wipe out
+        # the existing truth. Abort before touching dest_dir.
+        raise ValueError(
+            "Refusing to publish: staging directory has no compiled-truth "
+            "files (an empty pull would erase the existing truth)"
+        )
+
+    with locked_truth():
+        import tempfile
+        import shutil
+
+        temp_dest = Path(tempfile.mkdtemp(dir=str(settings.home), prefix="truth-new-"))
+        # Set when a double failure (swap + rollback) leaves temp_dest as the
+        # only surviving copy of the new truth — must not be deleted then.
+        preserve_temp_dest = False
+        try:
+            for staged in staged_files:
+                dest_file = temp_dest / staged.name
+                shutil.copy2(staged, dest_file)
+                try:
+                    dest_file.chmod(0o600)
+                except OSError:
+                    pass
+            chmod_tree_0600(temp_dest)
+
+            backup_dest: Path | None = Path(
+                tempfile.mkdtemp(dir=str(settings.home), prefix="truth-old-")
+            )
+            backup_dest.rmdir()
+            backup_created = False
+            try:
+                os.rename(str(dest_dir), str(backup_dest))
+                backup_created = True
+            except OSError:
+                backup_dest = None
+
+            try:
+                os.rename(str(temp_dest), str(dest_dir))
+            except Exception as exc:
+                if backup_created and backup_dest is not None and backup_dest.exists():
+                    try:
+                        os.rename(str(backup_dest), str(dest_dir))
+                    except OSError as rollback_exc:
+                        # Catastrophic: the swap failed AND restoring the
+                        # backup failed. compiled-truth may now be missing.
+                        # Do not silently swallow this — and do not delete
+                        # temp_dest/backup_dest, they hold the only
+                        # surviving copies of the new/old truth for manual
+                        # recovery.
+                        preserve_temp_dest = True
+                        raise OSError(
+                            "compiled-truth publish failed AND rollback failed; "
+                            "compiled-truth directory may be missing. New data "
+                            f"preserved at {temp_dest}, old data preserved at "
+                            f"{backup_dest}. swap error: {exc}; "
+                            f"rollback error: {rollback_exc}"
+                        ) from rollback_exc
+                raise OSError(f"Failed to swap compiled-truth directory: {exc}") from exc
+
+            chmod_tree_0600(dest_dir)
+
+            if backup_created and backup_dest is not None and backup_dest.exists():
+                shutil.rmtree(backup_dest, ignore_errors=True)
+
+        finally:
+            if not preserve_temp_dest and temp_dest.exists():
+                shutil.rmtree(temp_dest, ignore_errors=True)
+
+
 def read_compiled_truth() -> dict[str, str]:
     settings.ensure_dirs()
     out: dict[str, str] = {}
-    for path in sorted(settings.compiled_truth_dir.glob("*.md")):
-        try:
-            out[path.stem] = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
+    with locked_truth():
+        for path in sorted(settings.compiled_truth_dir.glob("*.md")):
+            try:
+                out[path.stem] = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
     return out

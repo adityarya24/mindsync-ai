@@ -116,3 +116,33 @@ def test_different_project_no_warning_even_with_token_overlap():
         now=now,
     )
     assert warnings == []
+
+
+def test_path_overlap_warns():
+    agents_focus = {
+        "agent-a": {
+            "project": "mindsync",
+            "focus": "doing nothing",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "paths": ["src/core", "README.md"]
+        }
+    }
+    # Direct overlap
+    warnings = detect_focus_conflicts(
+        "agent-b", "mindsync", "master", "other task", agents_focus, paths=["src/core/utils.py"]
+    )
+    assert len(warnings) == 1
+    assert "Agent 'agent-a' claims paths: src/core" in warnings[0]
+
+    # Ancestor overlap
+    warnings2 = detect_focus_conflicts(
+        "agent-b", "mindsync", "master", "other task", agents_focus, paths=["src"]
+    )
+    assert len(warnings2) == 1
+    assert "Agent 'agent-a' claims paths: src/core" in warnings2[0]
+
+    # No overlap
+    warnings3 = detect_focus_conflicts(
+        "agent-b", "mindsync", "master", "other task", agents_focus, paths=["src/api/utils.py"]
+    )
+    assert len(warnings3) == 0

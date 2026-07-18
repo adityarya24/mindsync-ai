@@ -57,7 +57,7 @@ def main() -> int:
     bridge_mod.settings = config_mod.settings
     srv.settings = config_mod.settings
     # Reset remote cache
-    bridge_mod._remote_cache["online"] = None
+    bridge_mod._remote_cache["status"] = "unknown"
     bridge_mod._remote_cache["checked_at"] = 0.0
 
     settings = config_mod.settings

@@ -49,16 +49,18 @@ def detect_focus_conflicts(
     focus: str,
     agents_focus: dict[str, Any],
     *,
+    paths: list[str] | None = None,
     stale_seconds: int = 7200,
     now: datetime | None = None,
 ) -> list[str]:
-    """Return warnings only when non-stale agents share project + focus tokens.
+    """Return warnings only when non-stale agents share project + focus tokens or path overlap.
 
     Same project alone is NOT a conflict (avoids the original always-true bug).
     """
     del branch  # reserved for future branch-aware heuristics / API stability
     now = now or datetime.now(timezone.utc)
     my_tokens = tokenize_focus(focus)
+    my_paths = paths or []
     warnings: list[str] = []
 
     for other_agent, other in agents_focus.items():
@@ -79,6 +81,23 @@ def detect_focus_conflicts(
         other_project = other.get("project") or other.get("active_project")
         # If the other agent recorded a project and it differs, skip.
         if other_project is not None and other_project != project:
+            continue
+
+        # Check path overlaps
+        other_paths = other.get("paths") or []
+        overlap_paths = []
+        for p1 in my_paths:
+            for p2 in other_paths:
+                np1 = p1.replace("\\", "/").strip("/").lower()
+                np2 = p2.replace("\\", "/").strip("/").lower()
+                if np1 == np2 or np1.startswith(np2 + "/") or np2.startswith(np1 + "/"):
+                    overlap_paths.append(p2)
+
+        if overlap_paths:
+            overlap_paths = sorted(list(set(overlap_paths)))
+            warnings.append(
+                f"CONFLICT WARNING: Agent '{other_agent}' claims paths: {', '.join(overlap_paths)}"
+            )
             continue
 
         other_focus = str(other.get("focus") or "")
