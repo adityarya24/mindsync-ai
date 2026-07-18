@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator
 
-from mindsync.config import settings
+from mindsync.config import chmod_tree_0600, settings
 
 
 @contextmanager
@@ -275,45 +275,78 @@ def _validate_staging_manifest(staging_dir: Path) -> None:
 def publish_compiled_truth(staging_dir: Path) -> None:
     settings.ensure_dirs()
     dest_dir = settings.compiled_truth_dir
-    
+
     _validate_staging_manifest(staging_dir)
-    
+
+    staged_files = list(staging_dir.glob("*.md"))
+    if not staged_files:
+        # A successful-but-empty pull (remote returned nothing, or the
+        # staging dir came back empty) must never be allowed to wipe out
+        # the existing truth. Abort before touching dest_dir.
+        raise ValueError(
+            "Refusing to publish: staging directory has no compiled-truth "
+            "files (an empty pull would erase the existing truth)"
+        )
+
     with locked_truth():
         import tempfile
         import shutil
-        
+
         temp_dest = Path(tempfile.mkdtemp(dir=str(settings.home), prefix="truth-new-"))
+        # Set when a double failure (swap + rollback) leaves temp_dest as the
+        # only surviving copy of the new truth — must not be deleted then.
+        preserve_temp_dest = False
         try:
-            for staged in staging_dir.glob("*.md"):
+            for staged in staged_files:
                 dest_file = temp_dest / staged.name
                 shutil.copy2(staged, dest_file)
                 try:
                     dest_file.chmod(0o600)
                 except OSError:
                     pass
-            
-            backup_dest = Path(tempfile.mkdtemp(dir=str(settings.home), prefix="truth-old-"))
+            chmod_tree_0600(temp_dest)
+
+            backup_dest: Path | None = Path(
+                tempfile.mkdtemp(dir=str(settings.home), prefix="truth-old-")
+            )
+            backup_dest.rmdir()
+            backup_created = False
             try:
-                backup_dest.rmdir()
                 os.rename(str(dest_dir), str(backup_dest))
+                backup_created = True
             except OSError:
                 backup_dest = None
-            
+
             try:
                 os.rename(str(temp_dest), str(dest_dir))
             except Exception as exc:
-                if backup_dest and backup_dest.exists():
+                if backup_created and backup_dest is not None and backup_dest.exists():
                     try:
                         os.rename(str(backup_dest), str(dest_dir))
-                    except OSError:
-                        pass
+                    except OSError as rollback_exc:
+                        # Catastrophic: the swap failed AND restoring the
+                        # backup failed. compiled-truth may now be missing.
+                        # Do not silently swallow this — and do not delete
+                        # temp_dest/backup_dest, they hold the only
+                        # surviving copies of the new/old truth for manual
+                        # recovery.
+                        preserve_temp_dest = True
+                        raise OSError(
+                            "compiled-truth publish failed AND rollback failed; "
+                            "compiled-truth directory may be missing. New data "
+                            f"preserved at {temp_dest}, old data preserved at "
+                            f"{backup_dest}. swap error: {exc}; "
+                            f"rollback error: {rollback_exc}"
+                        ) from rollback_exc
                 raise OSError(f"Failed to swap compiled-truth directory: {exc}") from exc
-            
-            if backup_dest and backup_dest.exists():
+
+            chmod_tree_0600(dest_dir)
+
+            if backup_created and backup_dest is not None and backup_dest.exists():
                 shutil.rmtree(backup_dest, ignore_errors=True)
-                
+
         finally:
-            if temp_dest.exists():
+            if not preserve_temp_dest and temp_dest.exists():
                 shutil.rmtree(temp_dest, ignore_errors=True)
 
 

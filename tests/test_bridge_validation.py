@@ -168,3 +168,67 @@ def test_pull_compiled_truth_mocked(monkeypatch, tmp_path):
     truth_file = s.compiled_truth_dir / "valid-entity.md"
     assert truth_file.exists()
     assert truth_file.read_text(encoding="utf-8") == "hello truth"
+
+
+def test_sanitize_error_redacts_ssh_key_and_paths(monkeypatch):
+    """Blocker #3: OSError/SCP/publish messages must have absolute paths,
+    home dirs, and key-file references redacted -- not just the first two
+    path segments (the old regex left `.ssh\\id_ed25519`-style suffixes)."""
+    import mindsync.bridge as bridge
+
+    s = Settings()
+    s.ssh_host = "prod-host"
+    s.remote_root = "/srv/mindsync"
+    monkeypatch.setattr(bridge, "settings", s)
+
+    msg = (
+        "Permission denied (publickey) for prod-host, "
+        "identity file /home/aditya/.ssh/id_ed25519 rejected; "
+        "also tried C:\\Users\\aditya\\.ssh\\id_rsa "
+        "and ~/.ssh/id_ecdsa, "
+        "remote root /srv/mindsync/compiled-truth unreachable"
+    )
+    sanitized = bridge._sanitize_error(msg)
+
+    for leaked in ("id_ed25519", "id_rsa", "id_ecdsa", ".ssh", "aditya", "prod-host", "/srv/mindsync"):
+        assert leaked not in sanitized, f"{leaked!r} leaked in: {sanitized!r}"
+
+    assert "[SSH_HOST]" in sanitized
+    assert "[REMOTE_ROOT]" in sanitized
+    assert "[PATH]" in sanitized or "[KEY_FILE]" in sanitized
+
+
+def test_sanitize_error_empty_and_none_like():
+    import mindsync.bridge as bridge
+
+    assert bridge._sanitize_error("") == "unknown error"
+
+
+def test_pull_compiled_truth_sanitizes_scp_oserror(monkeypatch, tmp_path):
+    """End-to-end proof that the SCP OSError path (previously unsanitized)
+    now redacts sensitive fragments before they reach the caller."""
+    home = tmp_path / "mindsync-home"
+    monkeypatch.setenv("MINDSYNC_HOME", str(home))
+    s = Settings()
+    s.ssh_host = "test-host"
+    s.remote_root = "/test/root"
+    s.ensure_dirs()
+
+    import mindsync.config as config_mod
+    import mindsync.storage as storage_mod
+    import mindsync.bridge as bridge
+    monkeypatch.setattr(config_mod, "settings", s)
+    monkeypatch.setattr(storage_mod, "settings", s)
+    monkeypatch.setattr(bridge, "settings", s)
+
+    def raise_oserror(args, timeout=None, check=False):
+        raise OSError("[Errno 2] No such file or directory: '/home/aditya/.ssh/id_ed25519'")
+
+    monkeypatch.setattr(bridge, "_run", raise_oserror)
+
+    res = bridge.pull_compiled_truth()
+    assert res.ok is False
+    assert res.error is not None
+    assert "id_ed25519" not in res.error
+    assert ".ssh" not in res.error
+    assert "aditya" not in res.error

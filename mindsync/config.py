@@ -24,6 +24,34 @@ def _default_home() -> Path:
     return Path.home() / ".mindsync"
 
 
+def chmod_tree_0600(path: Path) -> None:
+    """Recursively enforce 0600 on files and 0700 on dirs under `path`.
+
+    Best-effort: permission errors on individual entries are swallowed so one
+    unreachable file doesn't abort the whole migration. Used to bring
+    existing (pre-hardening) files under ``compiled-truth`` into line, not
+    just newly written ones.
+    """
+    if not path.exists():
+        return
+    for root, dirs, files in os.walk(path):
+        root_path = Path(root)
+        for d in dirs:
+            try:
+                (root_path / d).chmod(0o700)
+            except OSError:
+                pass
+        for f in files:
+            try:
+                (root_path / f).chmod(0o600)
+            except OSError:
+                pass
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+
+
 class Settings:
     def __init__(self) -> None:
         self.home: Path = _default_home()
@@ -85,5 +113,10 @@ class Settings:
                     item.chmod(0o600)
                 except OSError:
                     pass
+
+        # compiled-truth holds nested files that the top-level scan above
+        # skips (it's a directory, not a file). Walk it recursively so
+        # files copied in before this hardening was added get migrated too.
+        chmod_tree_0600(self.compiled_truth_dir)
 
 settings = Settings()

@@ -77,6 +77,19 @@ def validate_fact_text(val: str) -> str:
     return val
 
 
+# SSH key filenames and the .ssh dir are redacted explicitly (not just as
+# part of a full-path match) because they can show up as bare fragments in
+# OSError/subprocess messages without a recognizable leading path prefix,
+# e.g. "Permission denied (publickey) ... .ssh\id_ed25519".
+_KEY_FILE_RE = re.compile(r"id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?", re.IGNORECASE)
+_SSH_DIR_RE = re.compile(r"\.ssh\b")
+# Full absolute path matches (greedy to end-of-token, not just the first two
+# segments) so nothing after e.g. "/home/user" survives, on POSIX or Windows.
+_HOME_TILDE_RE = re.compile(r"~[/\\][^\s'\"]*")
+_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s'\"]+")
+_POSIX_PATH_RE = re.compile(r"/[^\s'\"]+")
+
+
 def _sanitize_error(err: str) -> str:
     if not err:
         return "unknown error"
@@ -84,9 +97,14 @@ def _sanitize_error(err: str) -> str:
         err = err.replace(settings.ssh_host, "[SSH_HOST]")
     if settings.remote_root:
         err = err.replace(settings.remote_root, "[REMOTE_ROOT]")
-    # Scrub paths
-    err = re.sub(r"/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+", "[PATH]", err)
-    err = re.sub(r"[A-Za-z]:\\[a-zA-Z0-9_.-]+\\[a-zA-Z0-9_.-]+", "[PATH]", err)
+    # Scrub SSH key/identity references first, since they can appear as
+    # bare fragments that a path-shaped regex wouldn't otherwise catch.
+    err = _KEY_FILE_RE.sub("[KEY_FILE]", err)
+    err = _SSH_DIR_RE.sub("[SSH_DIR]", err)
+    # Scrub full absolute paths and home-relative (~) paths.
+    err = _HOME_TILDE_RE.sub("[PATH]", err)
+    err = _WINDOWS_PATH_RE.sub("[PATH]", err)
+    err = _POSIX_PATH_RE.sub("[PATH]", err)
     return err
 
 
@@ -294,7 +312,7 @@ python3 {shlex.quote(write_script)} batch --payload "$PAYLOAD"
     except subprocess.TimeoutExpired:
         return WriteResult(ok=False, error="SSH write timed out")
     except OSError as exc:
-        return WriteResult(ok=False, error=f"SSH write failed: {exc}")
+        return WriteResult(ok=False, error=_sanitize_error(f"SSH write failed: {exc}"))
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "unknown remote error").strip()
@@ -356,7 +374,7 @@ python3 {shlex.quote(settings.remote_consolidate_script)}
     except subprocess.TimeoutExpired:
         return WriteResult(ok=False, error="SSH consolidate timed out")
     except OSError as exc:
-        return WriteResult(ok=False, error=f"SSH consolidate failed: {exc}")
+        return WriteResult(ok=False, error=_sanitize_error(f"SSH consolidate failed: {exc}"))
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "unknown remote error").strip()
@@ -397,7 +415,7 @@ def pull_compiled_truth() -> WriteResult:
     except subprocess.TimeoutExpired:
         return WriteResult(ok=False, error="SCP pull timed out")
     except OSError as exc:
-        return WriteResult(ok=False, error=f"SCP pull failed: {exc}")
+        return WriteResult(ok=False, error=_sanitize_error(f"SCP pull failed: {exc}"))
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "scp failed").strip()
@@ -407,7 +425,7 @@ def pull_compiled_truth() -> WriteResult:
     try:
         publish_compiled_truth(staging_dir)
     except Exception as exc:
-        return WriteResult(ok=False, error=f"Failed to publish truth: {exc}")
+        return WriteResult(ok=False, error=_sanitize_error(f"Failed to publish truth: {exc}"))
         
     import shutil
     shutil.rmtree(staging_dir, ignore_errors=True)
