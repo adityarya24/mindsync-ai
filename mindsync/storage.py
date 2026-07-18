@@ -9,7 +9,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Generator, Iterable
+from typing import Any, Generator
 
 from mindsync.config import settings
 
@@ -103,6 +103,10 @@ def save_state(state: dict[str, Any]) -> None:
     tmp = path.with_suffix(".json.tmp")
     payload = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
     tmp.write_text(payload, encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
     os.replace(tmp, path)
 
 
@@ -118,10 +122,16 @@ def locked_state() -> Generator[dict[str, Any], None, None]:
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
     settings.ensure_dirs()
     line = json.dumps(record, ensure_ascii=False) + "\n"
+    existed = path.exists()
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(line)
         fh.flush()
         os.fsync(fh.fileno())
+    if not existed:
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
 
 
 def log_audit(agent_name: str, action: str, details: str) -> None:
@@ -243,12 +253,77 @@ def recover_orphan_spools() -> None:
             pass
 
 
+@contextmanager
+def locked_truth() -> Generator[None, None, None]:
+    """Lock the compiled truth directory for atomic reads/updates."""
+    with file_lock("truth"):
+        yield
+
+
+def _validate_staging_manifest(staging_dir: Path) -> None:
+    files = list(staging_dir.glob("*.md"))
+    import re
+    for f in files:
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", f.stem):
+            raise ValueError(f"Staged file has invalid entity name: {f.name}")
+        try:
+            f.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"Staged file {f.name} is not valid UTF-8: {exc}")
+
+
+def publish_compiled_truth(staging_dir: Path) -> None:
+    settings.ensure_dirs()
+    dest_dir = settings.compiled_truth_dir
+    
+    _validate_staging_manifest(staging_dir)
+    
+    with locked_truth():
+        import tempfile
+        import shutil
+        
+        temp_dest = Path(tempfile.mkdtemp(dir=str(settings.home), prefix="truth-new-"))
+        try:
+            for staged in staging_dir.glob("*.md"):
+                dest_file = temp_dest / staged.name
+                shutil.copy2(staged, dest_file)
+                try:
+                    dest_file.chmod(0o600)
+                except OSError:
+                    pass
+            
+            backup_dest = Path(tempfile.mkdtemp(dir=str(settings.home), prefix="truth-old-"))
+            try:
+                backup_dest.rmdir()
+                os.rename(str(dest_dir), str(backup_dest))
+            except OSError:
+                backup_dest = None
+            
+            try:
+                os.rename(str(temp_dest), str(dest_dir))
+            except Exception as exc:
+                if backup_dest and backup_dest.exists():
+                    try:
+                        os.rename(str(backup_dest), str(dest_dir))
+                    except OSError:
+                        pass
+                raise OSError(f"Failed to swap compiled-truth directory: {exc}") from exc
+            
+            if backup_dest and backup_dest.exists():
+                shutil.rmtree(backup_dest, ignore_errors=True)
+                
+        finally:
+            if temp_dest.exists():
+                shutil.rmtree(temp_dest, ignore_errors=True)
+
+
 def read_compiled_truth() -> dict[str, str]:
     settings.ensure_dirs()
     out: dict[str, str] = {}
-    for path in sorted(settings.compiled_truth_dir.glob("*.md")):
-        try:
-            out[path.stem] = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
+    with locked_truth():
+        for path in sorted(settings.compiled_truth_dir.glob("*.md")):
+            try:
+                out[path.stem] = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
     return out

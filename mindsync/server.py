@@ -17,7 +17,11 @@ from mindsync.bridge import (
     consolidate_remote,
     pull_compiled_truth,
     remote_not_configured_error,
-    validate_id,
+    validate_agent,
+    validate_entity,
+    validate_attribute,
+    validate_source,
+    validate_fact_text,
     write_fact_remote,
     write_batch_remote,
 )
@@ -127,26 +131,10 @@ def update_focus(
             branch,
             focus,
             agents_focus,
+            paths=paths,
             stale_seconds=settings.focus_stale_seconds,
             now=now,
         )
-        my_paths = {p.replace("\\", "/").lower() for p in paths if p}
-        if my_paths:
-            for other_agent, other in list(agents_focus.items()):
-                if other_agent == agent_name or not isinstance(other, dict):
-                    continue
-                other_paths = {
-                    str(p).replace("\\", "/").lower()
-                    for p in (other.get("paths") or [])
-                    if p
-                }
-                overlap_paths = sorted(my_paths & other_paths)
-                if overlap_paths and other.get("project") in (None, project):
-                    warnings.append(
-                        "CONFLICT WARNING: "
-                        f"Agent '{other_agent}' claims paths: {', '.join(overlap_paths)}"
-                    )
-
         agents_focus[agent_name] = {
             "project": project,
             "branch": branch,
@@ -184,9 +172,10 @@ def queue_durable_fact(
     """Write a durable fact remotely if online; otherwise queue locally for later flush."""
     settings.ensure_dirs()
     try:
-        validate_id("agent", agent_name)
-        validate_id("entity", entity)
-        validate_id("attribute", attribute)
+        validate_agent(agent_name)
+        validate_entity(entity)
+        validate_attribute(attribute)
+        validate_fact_text(text)
         conf = float(confidence)
         if not 0.0 <= conf <= 1.0:
             raise ValueError("confidence must be between 0 and 1")
@@ -281,23 +270,30 @@ def sync_offline_facts(agent_name: str, consolidate: bool = True) -> dict[str, A
             errors = []
 
             for fact in facts:
-                if not isinstance(fact, dict) or not all(
-                    fact.get(key) for key in ("entity", "attribute", "text")
-                ):
-                    dead_letter.append(fact)
-                    errors.append("Malformed queued fact (missing entity/attribute/text); moved to dead letter.")
-                    continue
                 try:
+                    agent = validate_agent(str(fact.get("agent", agent_name)))
+                    entity = validate_entity(str(fact.get("entity", "")))
+                    attribute = validate_attribute(str(fact.get("attribute", "")))
+                    text = validate_fact_text(str(fact.get("text", "")))
+                    source = validate_source(str(fact.get("source", f"agent:{agent_name}")))
                     conf = float(fact.get("confidence", 1.0))
-                except (TypeError, ValueError):
+                    if not 0.0 <= conf <= 1.0:
+                        raise ValueError("confidence must be between 0.0 and 1.0")
+                except ValueError as exc:
                     dead_letter.append(fact)
-                    errors.append("Malformed queued fact (bad confidence); moved to dead letter.")
+                    errors.append(f"Malformed queued fact: {exc}")
                     continue
                     
                 if "fact_id" not in fact:
-                    content = f"{fact.get('agent')}:{fact.get('entity')}:{fact.get('attribute')}:{fact.get('timestamp')}:{fact.get('text')}"
+                    content = f"{agent}:{entity}:{attribute}:{fact.get('timestamp')}:{text}"
                     fact["fact_id"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
                     
+                fact["agent"] = agent
+                fact["entity"] = entity
+                fact["attribute"] = attribute
+                fact["text"] = text
+                fact["source"] = source
+                fact["confidence"] = conf
                 valid_facts.append(fact)
 
             success_count = 0

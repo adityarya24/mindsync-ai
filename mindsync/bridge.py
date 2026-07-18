@@ -18,23 +18,83 @@ from typing import Any
 
 from mindsync.config import settings
 
-# Safe identifiers for remote CLI args (no shell metacharacters).
-_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,127}$")
+# Safe identifier patterns (no shell metacharacters, path traversal, or colon)
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_SAFE_SOURCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_SAFE_HEX = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+_FORBIDDEN_WINDOWS = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+}
+
+def validate_agent(val: str) -> str:
+    if not val or not _SAFE_ID.match(val):
+        raise ValueError(f"Invalid agent name {val!r}: must be alphanumeric + _ . - (max 128)")
+    return val
+
+def _check_windows_safe(val: str) -> None:
+    upper = val.upper()
+    base = upper.split(".")[0]
+    if base in _FORBIDDEN_WINDOWS:
+        raise ValueError(f"Reserved Windows device name: {val}")
+    for char in ('<', '>', ':', '"', '/', '\\', '|', '?', '*'):
+        if char in val:
+            raise ValueError(f"Forbidden character {char!r} in {val}")
+
+def validate_entity(val: str) -> str:
+    if not val or not _SAFE_ID.match(val):
+        raise ValueError(f"Invalid entity name {val!r}: must be alphanumeric + _ . - (max 128)")
+    _check_windows_safe(val)
+    return val
+
+def validate_attribute(val: str) -> str:
+    if not val or not _SAFE_ID.match(val):
+        raise ValueError(f"Invalid attribute name {val!r}: must be alphanumeric + _ . - (max 128)")
+    _check_windows_safe(val)
+    return val
+
+def validate_source(val: str) -> str:
+    if not val or not _SAFE_SOURCE.match(val):
+        raise ValueError(f"Invalid source {val!r}: must be alphanumeric + _ . : - (max 128)")
+    for char in ('<', '>', '"', '/', '\\', '|', '?', '*'):
+        if char in val:
+            raise ValueError(f"Forbidden character {char!r} in source {val}")
+    return val
+
+def validate_fact_id(val: str) -> str:
+    if not val or not _SAFE_HEX.match(val):
+        raise ValueError(f"Invalid fact_id {val!r}")
+    return val
+
+def validate_fact_text(val: str) -> str:
+    if not val:
+        raise ValueError("Fact text cannot be empty")
+    # Enforce limit on UTF-8 byte size
+    if len(val.encode("utf-8")) > 50 * 1024:
+        raise ValueError("Fact text exceeds 50KB limit")
+    return val
+
+
+def _sanitize_error(err: str) -> str:
+    if not err:
+        return "unknown error"
+    if settings.ssh_host:
+        err = err.replace(settings.ssh_host, "[SSH_HOST]")
+    if settings.remote_root:
+        err = err.replace(settings.remote_root, "[REMOTE_ROOT]")
+    # Scrub paths
+    err = re.sub(r"/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+", "[PATH]", err)
+    err = re.sub(r"[A-Za-z]:\\[a-zA-Z0-9_.-]+\\[a-zA-Z0-9_.-]+", "[PATH]", err)
+    return err
+
 
 _remote_cache: dict[str, Any] = {"status": "unknown", "reason": None, "checked_at": 0.0, "duration": 0.0}
 _probe_lock = threading.Lock()
 
 class BridgeError(Exception):
     """Remote bridge failure."""
-
-
-def validate_id(label: str, value: str) -> str:
-    if not value or not _SAFE_ID.match(value):
-        raise ValueError(
-            f"Invalid {label} {value!r}: use letters, digits, and _ . / : - only "
-            f"(max 128 chars)."
-        )
-    return value
 
 
 def _run(
@@ -131,7 +191,7 @@ def _ssh_script(script: str, *, timeout: float = 60) -> subprocess.CompletedProc
     """Run a bash script on the remote host via stdin (avoids local shell quoting).
 
     Always normalizes to LF bytes: Windows text mode would otherwise send CRLF
-    and break remote bash (`set -o pipefail\\r`).
+    and break remote bash (`set -o pipefail\r`).
     """
     normalized = script.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
     res = subprocess.run(
@@ -194,21 +254,22 @@ def write_batch_remote(facts: list[dict[str, Any]]) -> WriteResult:
     valid_facts = []
     for fact in facts:
         try:
-            agent = validate_id("agent", fact.get("agent", ""))
-            entity = validate_id("entity", fact.get("entity", ""))
-            attribute = validate_id("attribute", fact.get("attribute", ""))
-            source = validate_id("source", fact.get("source", ""))
+            agent = validate_agent(fact.get("agent", ""))
+            entity = validate_entity(fact.get("entity", ""))
+            attribute = validate_attribute(fact.get("attribute", ""))
+            source = validate_source(fact.get("source", ""))
+            fid = validate_fact_id(fact.get("fact_id", ""))
+            text = validate_fact_text(fact.get("text", ""))
             conf = float(fact.get("confidence", 1.0))
             if not 0.0 <= conf <= 1.0:
                 continue # Skip invalid
-            fact_id = validate_id("fact_id", fact.get("fact_id", ""))
             valid_facts.append({
-                "fact_id": fact_id,
+                "fact_id": fid,
                 "timestamp": fact.get("timestamp", ""),
                 "agent": agent,
                 "entity": entity,
                 "attribute": attribute,
-                "text": fact.get("text", ""),
+                "text": text,
                 "source": source,
                 "confidence": conf
             })
@@ -237,7 +298,7 @@ python3 {shlex.quote(write_script)} batch --payload "$PAYLOAD"
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "unknown remote error").strip()
-        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
+        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=_sanitize_error(err))
     
     parsed_results = None
     try:
@@ -259,6 +320,16 @@ def write_fact_remote(
     confidence: float,
 ) -> WriteResult:
     """Write one durable fact on the remote host."""
+    validate_agent(agent)
+    validate_entity(entity)
+    validate_attribute(attribute)
+    validate_source(source)
+    validate_fact_id(fact_id)
+    validate_fact_text(text)
+    conf = float(confidence)
+    if not 0.0 <= conf <= 1.0:
+        raise ValueError("confidence must be between 0.0 and 1.0")
+
     fact = {
         "fact_id": fact_id,
         "agent": agent,
@@ -266,7 +337,7 @@ def write_fact_remote(
         "attribute": attribute,
         "text": text,
         "source": source,
-        "confidence": confidence
+        "confidence": conf
     }
     return write_batch_remote([fact])
 
@@ -289,7 +360,7 @@ python3 {shlex.quote(settings.remote_consolidate_script)}
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "unknown remote error").strip()
-        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
+        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=_sanitize_error(err))
     return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr)
 
 
@@ -299,9 +370,15 @@ def pull_compiled_truth() -> WriteResult:
         return WriteResult(ok=False, error=remote_not_configured_error())
 
     settings.ensure_dirs()
+    staging_dir = settings.home / "staging-truth"
+    if staging_dir.exists():
+        import shutil
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
     truth = settings.remote_truth_subdir.strip("/")
     remote = f"{settings.ssh_host}:{settings.remote_root}/{truth}/."
-    dest = str(settings.compiled_truth_dir)
+    dest = str(staging_dir)
     try:
         res = _run(
             [
@@ -324,5 +401,14 @@ def pull_compiled_truth() -> WriteResult:
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "scp failed").strip()
-        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
-    return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr)
+        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=_sanitize_error(err))
+    
+    from mindsync.storage import publish_compiled_truth
+    try:
+        publish_compiled_truth(staging_dir)
+    except Exception as exc:
+        return WriteResult(ok=False, error=f"Failed to publish truth: {exc}")
+        
+    import shutil
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    return WriteResult(ok=True)

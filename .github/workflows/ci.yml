@@ -36,5 +36,8 @@ jobs:
       - name: Unit tests
         run: python -m pytest -q
 
+      - name: Ruff check
+        run: ruff check .
+
       - name: Local smoke test
         run: python scripts/smoke_test.py

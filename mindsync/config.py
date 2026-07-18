@@ -66,9 +66,24 @@ class Settings:
         return bool(self.ssh_host and self.remote_root)
 
     def ensure_dirs(self) -> None:
-        self.home.mkdir(parents=True, exist_ok=True)
-        self.compiled_truth_dir.mkdir(parents=True, exist_ok=True)
-        self.lock_dir.mkdir(parents=True, exist_ok=True)
-        self.spool_dir.mkdir(parents=True, exist_ok=True)
+        def _make(p: Path) -> None:
+            p.mkdir(parents=True, exist_ok=True)
+            try:
+                p.chmod(0o700)
+            except OSError:
+                pass
+        
+        _make(self.home)
+        _make(self.compiled_truth_dir)
+        _make(self.lock_dir)
+        _make(self.spool_dir)
+
+        # Enforce 0o600 permissions on existing files in home directory (migration)
+        for item in self.home.glob("*"):
+            if item.is_file() and not item.name.startswith("."):
+                try:
+                    item.chmod(0o600)
+                except OSError:
+                    pass
 
 settings = Settings()

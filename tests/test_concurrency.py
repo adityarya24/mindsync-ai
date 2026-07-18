@@ -1,7 +1,6 @@
 import threading
 from pathlib import Path
 
-import pytest
 
 import mindsync.config as config_mod
 import mindsync.storage as storage
