@@ -18,14 +18,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.10", "3.12"]
+        python-version: ["3.10", "3.12", "3.13"]
 
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
       - name: Set up Python
-        uses: actions/setup-python@f67e240f2d772f215d42a7fc29658d5a3e1c5c8e # v5.1.0
+        uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d # v5.6.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip

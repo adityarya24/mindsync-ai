@@ -6,15 +6,37 @@ on:
       - 'v*.*.*'
 
 jobs:
+  gate:
+    name: Verify CI succeeded for tagged commit
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Check CI workflow conclusion for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha="${{ github.sha }}"
+          repo="${{ github.repository }}"
+          echo "Checking CI (ci.yml) status for tagged commit $sha"
+          conclusion=$(gh api "repos/${repo}/actions/workflows/ci.yml/runs?head_sha=${sha}&status=completed&per_page=1" \
+            --jq '.workflow_runs[0].conclusion // "missing"')
+          echo "CI conclusion: $conclusion"
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::CI has not succeeded for commit $sha (conclusion: $conclusion). Refusing to release."
+            exit 1
+          fi
+
   build:
     name: Build Distribution
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d # v5.6.0
         with:
           python-version: "3.12"
 
@@ -27,17 +49,33 @@ jobs:
       - name: Check artifacts
         run: twine check dist/*
 
-      - name: Generate Checksums
+      - name: Verify only wheel + sdist would be published
         run: |
           cd dist
-          sha256sum * > checksums.txt
-          cat checksums.txt
+          extras=$(ls -1 | grep -vE '\.(whl|tar\.gz)$' || true)
+          if [ -n "$extras" ]; then
+            echo "::error::Unexpected files in dist/ that would be published to PyPI: $extras"
+            exit 1
+          fi
+          ls -la
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Generate checksums (kept out of the PyPI-bound dist/ artifact)
+        run: |
+          mkdir -p checksums
+          sha256sum dist/* > checksums/checksums.txt
+          cat checksums/checksums.txt
+
+      - name: Upload distributions artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: dist/
+
+      - name: Upload checksums artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: checksums
+          path: checksums/
 
   release:
     name: Create GitHub Release
@@ -46,17 +84,24 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - name: Download distributions artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist
 
+      - name: Download checksums artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: checksums
+          path: checksums
+
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: |
             dist/*
+            checksums/checksums.txt
           generate_release_notes: true
 
   publish-pypi:
@@ -69,13 +114,23 @@ jobs:
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - name: Download distributions artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist
 
+      - name: Verify only wheel + sdist will be published
+        run: |
+          cd dist
+          extras=$(ls -1 | grep -vE '\.(whl|tar\.gz)$' || true)
+          if [ -n "$extras" ]; then
+            echo "::error::Refusing to publish: non-distribution files present in dist/: $extras"
+            exit 1
+          fi
+          ls -la
+
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           packages-dir: dist
