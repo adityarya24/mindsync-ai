@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
+from mindsync import __version__
 from mindsync.bridge import (
     check_remote_online,
     get_remote_status,
@@ -39,6 +40,9 @@ from mindsync.storage import (
 )
 
 mcp = FastMCP("MindSync")
+# FastMCP falls back to the `mcp` SDK's package version for serverInfo.version
+# unless we override it explicitly; report MindSync's own version instead.
+mcp._mcp_server.version = __version__
 
 
 def _utc_now() -> str:

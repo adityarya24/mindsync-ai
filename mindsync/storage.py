@@ -94,6 +94,18 @@ def file_lock(
                     pass
                 continue
             time.sleep(0.05)
+        except PermissionError:
+            # Windows raises PermissionError (sharing violation) instead of
+            # FileExistsError when the lockfile is momentarily contended by
+            # another thread creating/unlinking it. That is transient
+            # contention, not a real permission problem, so retry until the
+            # deadline. On POSIX a PermissionError is a genuine fault — let
+            # it propagate.
+            if os.name != "nt":
+                raise
+            if time.time() >= deadline:
+                raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
+            time.sleep(0.05)
 
     stop_heartbeat = threading.Event()
 
