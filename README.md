@@ -143,12 +143,25 @@ python scripts/smoke_test.py
 GitHub Actions runs the same suite on every push/PR to `master`
 (Python 3.10 + 3.12, Ubuntu + Windows).
 
-## Security notes
+## Security & Trust Boundaries
 
-- Treat tool arguments as untrusted: entity/attribute/agent must match a strict allowlist.
-- Fact text is base64-transported to the remote host (no raw shell interpolation of free text).
-- This server runs with your user privileges and can SSH only when you configure a host — wire it into trusted local agent clients only.
-- Do not commit real `.env` files or server secrets.
+### Local Privileges & Trust Boundary
+- **User Permissions**: MindSync runs with the privileges of the executing user. It interacts with the local filesystem and performs SSH/SCP operations under this user context.
+- **Client Isolation**: The MCP interface is a trust boundary. MindSync is designed to be wired into trusted local agent clients only.
+
+### Untrusted Truth & Manifest Validation
+- **Remote Data Injection Protection**: Since the compiled truth is pulled from a remote server via SCP, MindSync treats all incoming files as untrusted:
+  - **Filename / Entity Validation**: All pulled filenames must strictly match the regex pattern `^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$` and cannot contain path traversal characters (`..`, `/`, `\`), Alternate Data Streams (colon `:`), or reserved Windows device names (e.g. `CON`, `PRN`, `AUX`, `NUL`, `COM1..9`, `LPT1..9`).
+  - **UTF-8 Validation**: Staged truth files are parsed as UTF-8; non-UTF-8 files fail manifest validation and are rejected.
+  - **Atomic Swapping**: Truth updates are staged in a temp directory, validated, and swapped directory-wide under an exclusive lock (`truth.lock`). Partial/mixed staging states are impossible, and any filesystem errors immediately abort and roll back the swap.
+
+### Local Storage Isolation & Permissions Migration
+- **Secure File/Directory Defaults**: MindSync enforces Unix directory permission `0700` and file permission `0600` for all queue, spool, state, and audit logs.
+- **Auto-Migration**: Upon starting, MindSync scans the configured `MINDSYNC_HOME` directory and dynamically migrates permissions of all existing user files to `0600`.
+
+### Shell Injection & Error Sanitation
+- **Base64 Transport**: Fact payloads are base64-encoded prior to transport and decoded on the remote side, avoiding raw shell interpolation of free text.
+- **Secret Scrubbing**: Raw SSH/SCP stdout/stderr errors are sanitized before being returned to clients to prevent leaking server paths, usernames, key files, or host metadata.
 
 ## License
 

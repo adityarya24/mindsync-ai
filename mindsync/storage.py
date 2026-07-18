@@ -4,21 +4,61 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Generator, Iterable
+from typing import Any, Generator
 
-from mindsync.config import settings
+from mindsync.config import chmod_tree_0600, settings
+
+
+def _touch_lock(lock_path: Path, token: str) -> bool:
+    """Renew a lock's mtime iff we still own it.
+
+    Returns False (and does nothing) if the lock file is gone or now owned
+    by someone else, so a stray heartbeat thread never resurrects/corrupts a
+    lock it no longer holds.
+    """
+    try:
+        content = lock_path.read_text(encoding="ascii").strip()
+    except OSError:
+        return False
+    if content != token:
+        return False
+    try:
+        os.utime(lock_path, None)
+    except OSError:
+        return False
+    return True
+
+
+def _heartbeat_interval(stale_after: float) -> float:
+    # Renew comfortably inside the stale window (several renewals per
+    # window) so a paused GC/scheduler tick doesn't cause a false steal.
+    return max(0.02, min(stale_after / 4.0, 15.0))
 
 
 @contextmanager
-def file_lock(name: str, timeout: float | None = None) -> Generator[None, None, None]:
-    """Cross-platform exclusive lock via O_EXCL lockfiles."""
+def file_lock(
+    name: str, timeout: float | None = None, stale_after: float | None = None
+) -> Generator[None, None, None]:
+    """Cross-platform exclusive lock via O_EXCL lockfiles.
+
+    A lock is only ever stolen from a holder that has gone silent for
+    ``stale_after`` seconds (default: settings.lock_stale_seconds). While a
+    lock is held, a background heartbeat thread renews its mtime well inside
+    that window, so a genuinely slow-but-alive operation (e.g. a remote
+    write that legitimately takes longer than the stale window) is never
+    mistaken for a crashed holder and stolen out from under it. A lock whose
+    holder really did die (process crash, no heartbeat) still becomes
+    stealable once ``stale_after`` seconds pass with no renewal.
+    """
     settings.ensure_dirs()
     timeout = settings.lock_timeout_seconds if timeout is None else timeout
+    stale_after = settings.lock_stale_seconds if stale_after is None else stale_after
     lock_path = settings.lock_dir / f"{name}.lock"
     # Unique token so release (and steal) only ever removes a lock we own;
     # a bare unlink could delete a lock another process just acquired.
@@ -35,15 +75,16 @@ def file_lock(name: str, timeout: float | None = None) -> Generator[None, None, 
             break
         except FileExistsError:
             if time.time() >= deadline:
-                # Stale lock recovery: if lock is older than 60s, steal it.
-                # os.replace is atomic, so concurrent stealers race for the
-                # rename and only the winner removes the stale file; losers
-                # just retry the acquire.
+                # Stale lock recovery: only steal a lock whose holder has
+                # stopped renewing it for stale_after seconds. os.replace is
+                # atomic, so concurrent stealers race for the rename and
+                # only the winner removes the stale file; losers just retry
+                # the acquire (or give up below).
                 try:
                     age = time.time() - lock_path.stat().st_mtime
                 except OSError:
                     continue  # lock vanished; retry acquire
-                if age <= 60:
+                if age <= stale_after:
                     raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
                 stale = lock_path.with_name(f"{lock_path.name}.stale-{token}")
                 try:
@@ -53,10 +94,38 @@ def file_lock(name: str, timeout: float | None = None) -> Generator[None, None, 
                     pass
                 continue
             time.sleep(0.05)
+        except PermissionError:
+            # Windows raises PermissionError (sharing violation) instead of
+            # FileExistsError when the lockfile is momentarily contended by
+            # another thread creating/unlinking it. That is transient
+            # contention, not a real permission problem, so retry until the
+            # deadline. On POSIX a PermissionError is a genuine fault — let
+            # it propagate.
+            if os.name != "nt":
+                raise
+            if time.time() >= deadline:
+                raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
+            time.sleep(0.05)
+
+    stop_heartbeat = threading.Event()
+
+    def _heartbeat() -> None:
+        interval = _heartbeat_interval(stale_after)
+        while not stop_heartbeat.wait(interval):
+            if not _touch_lock(lock_path, token):
+                return
+
+    heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
+    heartbeat_thread.start()
 
     try:
         yield
     finally:
+        # Stop renewing before we consider releasing, so the heartbeat
+        # thread can never touch/resurrect the file after (or while) we
+        # unlink it.
+        stop_heartbeat.set()
+        heartbeat_thread.join(timeout=_heartbeat_interval(stale_after) * 2)
         try:
             if lock_path.read_text(encoding="ascii").strip() == token:
                 lock_path.unlink(missing_ok=True)
@@ -103,6 +172,10 @@ def save_state(state: dict[str, Any]) -> None:
     tmp = path.with_suffix(".json.tmp")
     payload = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
     tmp.write_text(payload, encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
     os.replace(tmp, path)
 
 
@@ -118,10 +191,16 @@ def locked_state() -> Generator[dict[str, Any], None, None]:
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
     settings.ensure_dirs()
     line = json.dumps(record, ensure_ascii=False) + "\n"
+    existed = path.exists()
     with open(path, "a", encoding="utf-8") as fh:
         fh.write(line)
         fh.flush()
         os.fsync(fh.fileno())
+    if not existed:
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
 
 
 def log_audit(agent_name: str, action: str, details: str) -> None:
@@ -158,25 +237,204 @@ def read_queue() -> list[dict[str, Any]]:
     return facts
 
 
-def rewrite_queue(facts: Iterable[dict[str, Any]]) -> None:
+def claim_offline_queue() -> tuple[str, list[dict[str, Any]], int]:
+    """Claim the offline queue file for processing.
+
+    Returns (spool_id, facts, malformed_count). Lines that fail to parse as
+    JSON are quarantined straight to the dead-letter file and excluded from
+    ``facts`` -- ``malformed_count`` lets the caller tell "queue was empty"
+    apart from "queue was entirely malformed" (both leave ``facts`` empty).
+    """
     settings.ensure_dirs()
     path = settings.offline_queue_file
-    tmp = path.with_suffix(".jsonl.tmp")
     with file_lock("queue"):
-        with open(tmp, "w", encoding="utf-8") as fh:
-            for fact in facts:
-                fh.write(json.dumps(fact, ensure_ascii=False) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        if not path.exists() or path.stat().st_size == 0:
+            return "", [], 0
+        spool_id = uuid.uuid4().hex
+        spool_path = settings.spool_dir / f"spool-{spool_id}.jsonl"
+        try:
+            os.replace(path, spool_path)
+            # Create a fresh empty queue file so readers don't error
+            open(path, "a", encoding="utf-8").close()
+        except OSError:
+            return "", [], 0
+
+    facts: list[dict[str, Any]] = []
+    malformed_count = 0
+    with open(spool_path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                facts.append(json.loads(line))
+            except json.JSONDecodeError:
+                record = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "error": "malformed_json",
+                    "raw_record": line,
+                }
+                with file_lock("queue"):
+                    append_jsonl(settings.dead_letter_file, record)
+                malformed_count += 1
+                continue
+    return spool_id, facts, malformed_count
+
+
+def requeue_failed_facts(
+    spool_id: str, failed: list[dict[str, Any]], dead_letter: list[dict[str, Any]]
+) -> None:
+    settings.ensure_dirs()
+    if dead_letter:
+        # We don't have a specific file_lock for dead_letter, but we can use queue lock or just append
+        with file_lock("queue"):
+            for fact in dead_letter:
+                append_jsonl(settings.dead_letter_file, fact)
+
+    if failed:
+        with file_lock("queue"):
+            for fact in failed:
+                append_jsonl(settings.offline_queue_file, fact)
+
+    if spool_id:
+        spool_path = settings.spool_dir / f"spool-{spool_id}.jsonl"
+        spool_path.unlink(missing_ok=True)
+
+
+def recover_orphan_spools() -> None:
+    settings.ensure_dirs()
+    for spool_path in settings.spool_dir.glob("spool-*.jsonl"):
+        try:
+            facts: list[dict[str, Any]] = []
+            with open(spool_path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        facts.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        record = {
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "error": "malformed_json",
+                            "raw_record": line,
+                        }
+                        with file_lock("queue"):
+                            append_jsonl(settings.dead_letter_file, record)
+                        continue
+            if facts:
+                with file_lock("queue"):
+                    for fact in facts:
+                        append_jsonl(settings.offline_queue_file, fact)
+            spool_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+@contextmanager
+def locked_truth() -> Generator[None, None, None]:
+    """Lock the compiled truth directory for atomic reads/updates."""
+    with file_lock("truth"):
+        yield
+
+
+def _validate_staging_manifest(staging_dir: Path) -> None:
+    files = list(staging_dir.glob("*.md"))
+    import re
+    for f in files:
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$", f.stem):
+            raise ValueError(f"Staged file has invalid entity name: {f.name}")
+        try:
+            f.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"Staged file {f.name} is not valid UTF-8: {exc}")
+
+
+def publish_compiled_truth(staging_dir: Path) -> None:
+    settings.ensure_dirs()
+    dest_dir = settings.compiled_truth_dir
+
+    _validate_staging_manifest(staging_dir)
+
+    staged_files = list(staging_dir.glob("*.md"))
+    if not staged_files:
+        # A successful-but-empty pull (remote returned nothing, or the
+        # staging dir came back empty) must never be allowed to wipe out
+        # the existing truth. Abort before touching dest_dir.
+        raise ValueError(
+            "Refusing to publish: staging directory has no compiled-truth "
+            "files (an empty pull would erase the existing truth)"
+        )
+
+    with locked_truth():
+        import tempfile
+        import shutil
+
+        temp_dest = Path(tempfile.mkdtemp(dir=str(settings.home), prefix="truth-new-"))
+        # Set when a double failure (swap + rollback) leaves temp_dest as the
+        # only surviving copy of the new truth — must not be deleted then.
+        preserve_temp_dest = False
+        try:
+            for staged in staged_files:
+                dest_file = temp_dest / staged.name
+                shutil.copy2(staged, dest_file)
+                try:
+                    dest_file.chmod(0o600)
+                except OSError:
+                    pass
+            chmod_tree_0600(temp_dest)
+
+            backup_dest: Path | None = Path(
+                tempfile.mkdtemp(dir=str(settings.home), prefix="truth-old-")
+            )
+            backup_dest.rmdir()
+            backup_created = False
+            try:
+                os.rename(str(dest_dir), str(backup_dest))
+                backup_created = True
+            except OSError:
+                backup_dest = None
+
+            try:
+                os.rename(str(temp_dest), str(dest_dir))
+            except Exception as exc:
+                if backup_created and backup_dest is not None and backup_dest.exists():
+                    try:
+                        os.rename(str(backup_dest), str(dest_dir))
+                    except OSError as rollback_exc:
+                        # Catastrophic: the swap failed AND restoring the
+                        # backup failed. compiled-truth may now be missing.
+                        # Do not silently swallow this — and do not delete
+                        # temp_dest/backup_dest, they hold the only
+                        # surviving copies of the new/old truth for manual
+                        # recovery.
+                        preserve_temp_dest = True
+                        raise OSError(
+                            "compiled-truth publish failed AND rollback failed; "
+                            "compiled-truth directory may be missing. New data "
+                            f"preserved at {temp_dest}, old data preserved at "
+                            f"{backup_dest}. swap error: {exc}; "
+                            f"rollback error: {rollback_exc}"
+                        ) from rollback_exc
+                raise OSError(f"Failed to swap compiled-truth directory: {exc}") from exc
+
+            chmod_tree_0600(dest_dir)
+
+            if backup_created and backup_dest is not None and backup_dest.exists():
+                shutil.rmtree(backup_dest, ignore_errors=True)
+
+        finally:
+            if not preserve_temp_dest and temp_dest.exists():
+                shutil.rmtree(temp_dest, ignore_errors=True)
 
 
 def read_compiled_truth() -> dict[str, str]:
     settings.ensure_dirs()
     out: dict[str, str] = {}
-    for path in sorted(settings.compiled_truth_dir.glob("*.md")):
-        try:
-            out[path.stem] = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
+    with locked_truth():
+        for path in sorted(settings.compiled_truth_dir.glob("*.md")):
+            try:
+                out[path.stem] = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
     return out

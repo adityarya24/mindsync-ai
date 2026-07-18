@@ -4,24 +4,45 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mindsync-mcp"
-version = "0.3.0"
+dynamic = ["version"]
 description = "MindSync MCP server — local-first multi-agent memory sync and focus conflict detection"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "MindSync contributors" }]
+license = "MIT"
+authors = [{ name = "Aditya Arya" }, { name = "MindSync Contributors" }]
+keywords = ["mcp", "memory", "sync", "multi-agent", "agents", "llm"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
-    "mcp>=1.27.0",
+    "mcp>=1.27.0,<2",
 ]
 
+[project.urls]
+Homepage = "https://github.com/adityarya24/mindsync-mcp"
+Documentation = "https://github.com/adityarya24/mindsync-mcp#readme"
+Issues = "https://github.com/adityarya24/mindsync-mcp/issues"
+Changelog = "https://github.com/adityarya24/mindsync-mcp/blob/master/CHANGELOG.md"
+
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "build", "twine", "ruff>=0.4"]
 
 [project.scripts]
 mindsync = "mindsync.server:main"
 
 [tool.setuptools.packages.find]
 include = ["mindsync*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "mindsync.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

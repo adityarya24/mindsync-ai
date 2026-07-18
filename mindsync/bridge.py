@@ -7,32 +7,112 @@ Remote layout is configurable. Defaults match the sample scripts under
 from __future__ import annotations
 
 import base64
+import json
 import re
 import shlex
 import subprocess
 import time
+import threading
 from dataclasses import dataclass
 from typing import Any
 
 from mindsync.config import settings
 
-# Safe identifiers for remote CLI args (no shell metacharacters).
-_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_./:-]{0,127}$")
+# Safe identifier patterns (no shell metacharacters, path traversal, or colon)
+_SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_SAFE_SOURCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_SAFE_HEX = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
-_remote_cache: dict[str, Any] = {"online": None, "checked_at": 0.0}
+_FORBIDDEN_WINDOWS = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+}
 
+def validate_agent(val: str) -> str:
+    if not val or not _SAFE_ID.match(val):
+        raise ValueError(f"Invalid agent name {val!r}: must be alphanumeric + _ . - (max 128)")
+    return val
+
+def _check_windows_safe(val: str) -> None:
+    upper = val.upper()
+    base = upper.split(".")[0]
+    if base in _FORBIDDEN_WINDOWS:
+        raise ValueError(f"Reserved Windows device name: {val}")
+    for char in ('<', '>', ':', '"', '/', '\\', '|', '?', '*'):
+        if char in val:
+            raise ValueError(f"Forbidden character {char!r} in {val}")
+
+def validate_entity(val: str) -> str:
+    if not val or not _SAFE_ID.match(val):
+        raise ValueError(f"Invalid entity name {val!r}: must be alphanumeric + _ . - (max 128)")
+    _check_windows_safe(val)
+    return val
+
+def validate_attribute(val: str) -> str:
+    if not val or not _SAFE_ID.match(val):
+        raise ValueError(f"Invalid attribute name {val!r}: must be alphanumeric + _ . - (max 128)")
+    _check_windows_safe(val)
+    return val
+
+def validate_source(val: str) -> str:
+    if not val or not _SAFE_SOURCE.match(val):
+        raise ValueError(f"Invalid source {val!r}: must be alphanumeric + _ . : - (max 128)")
+    for char in ('<', '>', '"', '/', '\\', '|', '?', '*'):
+        if char in val:
+            raise ValueError(f"Forbidden character {char!r} in source {val}")
+    return val
+
+def validate_fact_id(val: str) -> str:
+    if not val or not _SAFE_HEX.match(val):
+        raise ValueError(f"Invalid fact_id {val!r}")
+    return val
+
+def validate_fact_text(val: str) -> str:
+    if not val:
+        raise ValueError("Fact text cannot be empty")
+    # Enforce limit on UTF-8 byte size
+    if len(val.encode("utf-8")) > 50 * 1024:
+        raise ValueError("Fact text exceeds 50KB limit")
+    return val
+
+
+# SSH key filenames and the .ssh dir are redacted explicitly (not just as
+# part of a full-path match) because they can show up as bare fragments in
+# OSError/subprocess messages without a recognizable leading path prefix,
+# e.g. "Permission denied (publickey) ... .ssh\id_ed25519".
+_KEY_FILE_RE = re.compile(r"id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?", re.IGNORECASE)
+_SSH_DIR_RE = re.compile(r"\.ssh\b")
+# Full absolute path matches (greedy to end-of-token, not just the first two
+# segments) so nothing after e.g. "/home/user" survives, on POSIX or Windows.
+_HOME_TILDE_RE = re.compile(r"~[/\\][^\s'\"]*")
+_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\[^\s'\"]+")
+_POSIX_PATH_RE = re.compile(r"/[^\s'\"]+")
+
+
+def _sanitize_error(err: str) -> str:
+    if not err:
+        return "unknown error"
+    if settings.ssh_host:
+        err = err.replace(settings.ssh_host, "[SSH_HOST]")
+    if settings.remote_root:
+        err = err.replace(settings.remote_root, "[REMOTE_ROOT]")
+    # Scrub SSH key/identity references first, since they can appear as
+    # bare fragments that a path-shaped regex wouldn't otherwise catch.
+    err = _KEY_FILE_RE.sub("[KEY_FILE]", err)
+    err = _SSH_DIR_RE.sub("[SSH_DIR]", err)
+    # Scrub full absolute paths and home-relative (~) paths.
+    err = _HOME_TILDE_RE.sub("[PATH]", err)
+    err = _WINDOWS_PATH_RE.sub("[PATH]", err)
+    err = _POSIX_PATH_RE.sub("[PATH]", err)
+    return err
+
+
+_remote_cache: dict[str, Any] = {"status": "unknown", "reason": None, "checked_at": 0.0, "duration": 0.0}
+_probe_lock = threading.Lock()
 
 class BridgeError(Exception):
     """Remote bridge failure."""
-
-
-def validate_id(label: str, value: str) -> str:
-    if not value or not _SAFE_ID.match(value):
-        raise ValueError(
-            f"Invalid {label} {value!r}: use letters, digits, and _ . / : - only "
-            f"(max 128 chars)."
-        )
-    return value
 
 
 def _run(
@@ -56,44 +136,69 @@ def remote_not_configured_error() -> str:
         "MINDSYNC_REMOTE_ROOT (see .env.example)."
     )
 
-
-def check_remote_online(*, force: bool = False) -> bool:
-    """Cached SSH reachability probe. False when remote is disabled or unreachable."""
+def get_remote_status(*, force: bool = False) -> dict[str, Any]:
     if not settings.remote_enabled:
-        return False
+        return {"status": "unknown", "reason": "remote_not_configured", "checked_at": 0.0, "duration": 0.0, "cache_age": 0.0}
 
     now = time.time()
     ttl = settings.remote_cache_ttl_seconds
-    if (
-        not force
-        and _remote_cache["online"] is not None
-        and (now - float(_remote_cache["checked_at"])) < ttl
-    ):
-        return bool(_remote_cache["online"])
+    
+    with _probe_lock:
+        cache_age = now - float(_remote_cache["checked_at"])
+        if not force and _remote_cache["checked_at"] > 0 and cache_age < ttl:
+            res = dict(_remote_cache)
+            res["cache_age"] = cache_age
+            return res
+            
+        start = time.time()
+        status = "offline"
+        reason = "unknown"
+        try:
+            res = _run(
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    f"ConnectTimeout={settings.ssh_connect_timeout}",
+                    settings.ssh_host,
+                    "echo",
+                    "1",
+                ],
+                timeout=settings.ssh_connect_timeout + 2,
+                check=False,
+            )
+            if res.returncode == 0:
+                status = "online"
+                reason = "ok"
+            elif res.returncode == 255:
+                status = "offline"
+                reason = "ssh_auth_or_timeout"
+            else:
+                status = "offline"
+                reason = f"exit_code_{res.returncode}"
+        except subprocess.TimeoutExpired:
+            status = "offline"
+            reason = "timeout"
+        except OSError:
+            status = "offline"
+            reason = "os_error"
+            
+        duration = time.time() - start
+        _remote_cache.update({
+            "status": status,
+            "reason": reason,
+            "checked_at": time.time(),
+            "duration": round(duration, 3)
+        })
+        
+        res = dict(_remote_cache)
+        res["cache_age"] = 0.0
+        return res
 
-    online = False
-    try:
-        res = _run(
-            [
-                "ssh",
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                f"ConnectTimeout={settings.ssh_connect_timeout}",
-                settings.ssh_host,
-                "echo",
-                "1",
-            ],
-            timeout=settings.ssh_connect_timeout + 2,
-            check=False,
-        )
-        online = res.returncode == 0 and res.stdout.strip() == "1"
-    except (OSError, subprocess.TimeoutExpired):
-        online = False
-
-    _remote_cache["online"] = online
-    _remote_cache["checked_at"] = now
-    return online
+def check_remote_online(*, force: bool = False) -> bool:
+    """Cached SSH reachability probe. False when remote is disabled or unreachable."""
+    return get_remote_status(force=force)["status"] == "online"
 
 
 # Backward-compatible alias used during the rename.
@@ -104,7 +209,7 @@ def _ssh_script(script: str, *, timeout: float = 60) -> subprocess.CompletedProc
     """Run a bash script on the remote host via stdin (avoids local shell quoting).
 
     Always normalizes to LF bytes: Windows text mode would otherwise send CRLF
-    and break remote bash (`set -o pipefail\\r`).
+    and break remote bash (`set -o pipefail\r`).
     """
     normalized = script.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
     res = subprocess.run(
@@ -152,49 +257,76 @@ class WriteResult:
     stdout: str = ""
     stderr: str = ""
     error: str | None = None
+    results: dict[str, Any] | None = None
 
 
-def write_fact_remote(
-    *,
-    agent: str,
-    entity: str,
-    attribute: str,
-    text: str,
-    source: str,
-    confidence: float,
-) -> WriteResult:
-    """Write one durable fact on the remote host using base64 transport for free text."""
-    if not settings.remote_enabled:
-        return WriteResult(ok=False, error=remote_not_configured_error())
+def _looks_like_unsupported_batch_subcommand(result: "WriteResult") -> bool:
+    """Detect an old, write-only remote writer that predates the `batch`
+    subcommand (argparse rejects it with "invalid choice: 'batch'", exit 2).
 
-    try:
-        agent = validate_id("agent", agent)
-        entity = validate_id("entity", entity)
-        attribute = validate_id("attribute", attribute)
-        source = validate_id("source", source)
-        conf = float(confidence)
-        if not 0.0 <= conf <= 1.0:
-            raise ValueError("confidence must be between 0 and 1")
-    except ValueError as exc:
-        return WriteResult(ok=False, error=str(exc))
+    This doubles as the capability probe: rather than spend an extra SSH
+    round trip proactively asking the remote what it supports, the first
+    real batch attempt IS the probe -- if it fails with this specific
+    signature we know the remote is old and fall back, otherwise the normal
+    (and far more common) path costs nothing extra.
+    """
+    text = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+    return "invalid choice" in text and "batch" in text
 
-    b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+
+def _write_batch_native(valid_facts: list[dict[str, Any]]) -> WriteResult:
+    """Send the whole batch in one call via the `batch` subcommand (new remote)."""
+    payload = json.dumps(valid_facts)
+    b64 = base64.b64encode(payload.encode("utf-8")).decode("ascii")
     remote_root = settings.remote_root
     write_script = settings.remote_write_script
     script = f"""set -euo pipefail
 cd {shlex.quote(remote_root)}
 {_maybe_source_env()}
-TEXT=$(printf '%s' {shlex.quote(b64)} | base64 -d)
-python3 {shlex.quote(write_script)} write \\
-  --agent {shlex.quote(agent)} \\
-  --entity {shlex.quote(entity)} \\
-  --attribute {shlex.quote(attribute)} \\
-  --text "$TEXT" \\
-  --source {shlex.quote(source)} \\
-  --confidence {conf}
+PAYLOAD=$(printf '%s' {shlex.quote(b64)} | base64 -d)
+python3 {shlex.quote(write_script)} batch --payload "$PAYLOAD"
 """
     try:
         res = _ssh_script(script, timeout=90)
+    except subprocess.TimeoutExpired:
+        return WriteResult(ok=False, error="SSH write timed out")
+    except OSError as exc:
+        return WriteResult(ok=False, error=_sanitize_error(f"SSH write failed: {exc}"))
+
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout or "unknown remote error").strip()
+        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=_sanitize_error(err))
+
+    parsed_results = None
+    try:
+        parsed_results = json.loads(res.stdout)
+    except json.JSONDecodeError:
+        pass
+
+    return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr, results=parsed_results)
+
+
+def _write_single_via_legacy_protocol(fact: dict[str, Any]) -> WriteResult:
+    """Write one fact using the older single-write-only remote protocol."""
+    write_script = settings.remote_write_script
+    args = " ".join(
+        [
+            f"--fact_id {shlex.quote(fact['fact_id'])}",
+            f"--agent {shlex.quote(fact['agent'])}",
+            f"--entity {shlex.quote(fact['entity'])}",
+            f"--attribute {shlex.quote(fact['attribute'])}",
+            f"--text {shlex.quote(fact['text'])}",
+            f"--source {shlex.quote(fact['source'])}",
+            f"--confidence {shlex.quote(str(fact['confidence']))}",
+        ]
+    )
+    script = f"""set -euo pipefail
+cd {shlex.quote(settings.remote_root)}
+{_maybe_source_env()}
+python3 {shlex.quote(write_script)} write {args}
+"""
+    try:
+        res = _ssh_script(script, timeout=30)
     except subprocess.TimeoutExpired:
         return WriteResult(ok=False, error="SSH write timed out")
     except OSError as exc:
@@ -204,6 +336,112 @@ python3 {shlex.quote(write_script)} write \\
         err = (res.stderr or res.stdout or "unknown remote error").strip()
         return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
     return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr)
+
+
+def _write_batch_via_legacy_single_writes(valid_facts: list[dict[str, Any]]) -> WriteResult:
+    """Fallback for an already-deployed write-only remote: send facts one at
+    a time via the legacy `write` subcommand (one SSH round trip per fact).
+
+    Normalizes the result into the same {success_ids, failed} shape the
+    native `batch` path returns, so callers (sync_offline_facts) don't need
+    to know or care which protocol was actually used.
+    """
+    success_ids: list[str] = []
+    failed: list[dict[str, Any]] = []
+    for fact in valid_facts:
+        single = _write_single_via_legacy_protocol(fact)
+        if single.ok:
+            success_ids.append(fact["fact_id"])
+        else:
+            failed.append({"fact_id": fact["fact_id"], "error": single.error or "legacy write failed"})
+    return WriteResult(
+        ok=True,
+        stdout=f"Legacy single-write fallback: {len(success_ids)} ok, {len(failed)} failed.",
+        results={"success_ids": success_ids, "failed": failed},
+    )
+
+
+def write_batch_remote(facts: list[dict[str, Any]]) -> WriteResult:
+    """Write a batch of durable facts on the remote host using base64 transport.
+
+    Backward compatible with an already-deployed remote writer that only
+    understands single writes (pre-`batch` protocol): if the native batch
+    call fails because the remote doesn't recognize the `batch` subcommand,
+    transparently falls back to one legacy `write` call per fact so a new
+    client keeps working against an old, un-upgraded remote.
+    """
+    if not settings.remote_enabled:
+        return WriteResult(ok=False, error=remote_not_configured_error())
+
+    if not facts:
+        return WriteResult(ok=True, stdout="No facts to write.")
+
+    # Validate all facts before sending
+    valid_facts = []
+    for fact in facts:
+        try:
+            agent = validate_agent(fact.get("agent", ""))
+            entity = validate_entity(fact.get("entity", ""))
+            attribute = validate_attribute(fact.get("attribute", ""))
+            source = validate_source(fact.get("source", ""))
+            fid = validate_fact_id(fact.get("fact_id", ""))
+            text = validate_fact_text(fact.get("text", ""))
+            conf = float(fact.get("confidence", 1.0))
+            if not 0.0 <= conf <= 1.0:
+                continue # Skip invalid
+            valid_facts.append({
+                "fact_id": fid,
+                "timestamp": fact.get("timestamp", ""),
+                "agent": agent,
+                "entity": entity,
+                "attribute": attribute,
+                "text": text,
+                "source": source,
+                "confidence": conf
+            })
+        except ValueError:
+            continue
+
+    if not valid_facts:
+        return WriteResult(ok=False, error="No valid facts to write in batch.")
+
+    result = _write_batch_native(valid_facts)
+    if not result.ok and _looks_like_unsupported_batch_subcommand(result):
+        return _write_batch_via_legacy_single_writes(valid_facts)
+    return result
+
+
+def write_fact_remote(
+    *,
+    fact_id: str,
+    agent: str,
+    entity: str,
+    attribute: str,
+    text: str,
+    source: str,
+    confidence: float,
+) -> WriteResult:
+    """Write one durable fact on the remote host."""
+    validate_agent(agent)
+    validate_entity(entity)
+    validate_attribute(attribute)
+    validate_source(source)
+    validate_fact_id(fact_id)
+    validate_fact_text(text)
+    conf = float(confidence)
+    if not 0.0 <= conf <= 1.0:
+        raise ValueError("confidence must be between 0.0 and 1.0")
+
+    fact = {
+        "fact_id": fact_id,
+        "agent": agent,
+        "entity": entity,
+        "attribute": attribute,
+        "text": text,
+        "source": source,
+        "confidence": conf
+    }
+    return write_batch_remote([fact])
 
 
 def consolidate_remote() -> WriteResult:
@@ -220,11 +458,11 @@ python3 {shlex.quote(settings.remote_consolidate_script)}
     except subprocess.TimeoutExpired:
         return WriteResult(ok=False, error="SSH consolidate timed out")
     except OSError as exc:
-        return WriteResult(ok=False, error=f"SSH consolidate failed: {exc}")
+        return WriteResult(ok=False, error=_sanitize_error(f"SSH consolidate failed: {exc}"))
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "unknown remote error").strip()
-        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
+        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=_sanitize_error(err))
     return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr)
 
 
@@ -234,9 +472,15 @@ def pull_compiled_truth() -> WriteResult:
         return WriteResult(ok=False, error=remote_not_configured_error())
 
     settings.ensure_dirs()
+    staging_dir = settings.home / "staging-truth"
+    if staging_dir.exists():
+        import shutil
+        shutil.rmtree(staging_dir, ignore_errors=True)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
     truth = settings.remote_truth_subdir.strip("/")
     remote = f"{settings.ssh_host}:{settings.remote_root}/{truth}/."
-    dest = str(settings.compiled_truth_dir)
+    dest = str(staging_dir)
     try:
         res = _run(
             [
@@ -255,9 +499,18 @@ def pull_compiled_truth() -> WriteResult:
     except subprocess.TimeoutExpired:
         return WriteResult(ok=False, error="SCP pull timed out")
     except OSError as exc:
-        return WriteResult(ok=False, error=f"SCP pull failed: {exc}")
+        return WriteResult(ok=False, error=_sanitize_error(f"SCP pull failed: {exc}"))
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "scp failed").strip()
-        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
-    return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr)
+        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=_sanitize_error(err))
+    
+    from mindsync.storage import publish_compiled_truth
+    try:
+        publish_compiled_truth(staging_dir)
+    except Exception as exc:
+        return WriteResult(ok=False, error=_sanitize_error(f"Failed to publish truth: {exc}"))
+        
+    import shutil
+    shutil.rmtree(staging_dir, ignore_errors=True)
+    return WriteResult(ok=True)
