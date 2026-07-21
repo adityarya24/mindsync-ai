@@ -1,0 +1,12 @@
+{
+  "name": "codex",
+  "displayName": "OpenAI Codex CLI",
+  "bin": "codex",
+  "input": "stdin",
+  "runArgs": ["exec", "--skip-git-repo-check", "-"],
+  "writeArgs": ["--sandbox", "workspace-write"],
+  "modelArgs": ["--model", "{model}"],
+  "authCheckArgs": ["login", "status"],
+  "loginHint": "codex login",
+  "installHint": "npm install -g @openai/codex"
+}

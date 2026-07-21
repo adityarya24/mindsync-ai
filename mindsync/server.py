@@ -35,6 +35,12 @@ from mindsync.bus import (
 )
 from mindsync.config import settings
 from mindsync.conflict import detect_focus_conflicts
+from mindsync.dispatch import store as dispatch_store
+from mindsync.dispatch.runner import (
+    cancel_job as dispatch_cancel_job,
+    job_result as dispatch_job_result,
+    run_task as dispatch_run_task,
+)
 from mindsync.storage import (
     enqueue_fact,
     locked_state,
@@ -581,6 +587,91 @@ def subscribe_events(
         "event_types": sub_info.get("event_types", []),
         "message": f"Agent {agent_name} subscribed to {event_types or 'all events'}.",
     }
+
+
+def _fmt_dispatch_job(m: dict[str, Any]) -> str:
+    exit_bit = ""
+    if m.get("exitCode") is not None:
+        to = ", TIMED OUT" if m.get("timedOut") else ""
+        exit_bit = f" (exit {m['exitCode']}{to})"
+    prompt = m.get("prompt") or ""
+    if len(prompt) > 100:
+        prompt = prompt[:100] + "…"
+    return f"[{m['id']}] {m['agent']} — {m['status']}{exit_bit}\n  prompt: {prompt}"
+
+
+@mcp.tool()
+async def delegate_task(
+    agent: str,
+    prompt: str,
+    write: bool = False,
+    background: bool = False,
+    model: str | None = None,
+    agent_name: str = "default_agent",
+) -> str:
+    """Delegate a task to a headless CLI agent (codex, claude, gemini, cursor, aider, grok)."""
+    settings.ensure_dirs()
+    try:
+        res = await dispatch_run_task(
+            agent=agent,
+            prompt=prompt,
+            model=model,
+            write=write,
+            background=background,
+            publisher_agent=agent_name,
+        )
+    except Exception as exc:
+        log_audit(agent_name, "delegate_task", f"error={exc}")
+        return f"Error: {exc}"
+    job = res["job"]
+    log_audit(
+        agent_name,
+        "delegate_task",
+        f"job={job.get('id')} agent={agent} bg={background} status={job.get('status')}",
+    )
+    if background:
+        return (
+            f"Started background job {job['id']} (agent: {job['agent']}). "
+            f"Check: job_status('{job['id']}')"
+        )
+    return res.get("result") or "(no output)"
+
+
+@mcp.tool()
+def job_status(job_id: str, agent_name: str = "default_agent") -> str:
+    """Check the status of a delegated job."""
+    settings.ensure_dirs()
+    job = dispatch_store.get_job(job_id)
+    if not job:
+        return f"No such job: {job_id}"
+    reconciled = dispatch_store.reconcile_job(job)
+    log_audit(agent_name, "job_status", f"job={job_id} status={reconciled.get('status')}")
+    return _fmt_dispatch_job(reconciled)
+
+
+@mcp.tool()
+def job_result(job_id: str, agent_name: str = "default_agent") -> str:
+    """Fetch the result file content for a completed job."""
+    settings.ensure_dirs()
+    try:
+        res_data = dispatch_job_result(job_id)
+    except ValueError as exc:
+        return str(exc)
+    meta = res_data["meta"]
+    log_audit(agent_name, "job_result", f"job={job_id} status={meta.get('status')}")
+    return res_data["result"] or f"(no result yet — job is {meta['status']})"
+
+
+@mcp.tool()
+def job_cancel(job_id: str, agent_name: str = "default_agent") -> str:
+    """Cancel a running job and kill its process tree."""
+    settings.ensure_dirs()
+    try:
+        meta = dispatch_cancel_job(job_id)
+    except ValueError as exc:
+        return str(exc)
+    log_audit(agent_name, "job_cancel", f"job={job_id} status={meta.get('status')}")
+    return f"Job {meta['id']}: {meta['status']}"
 
 
 @mcp.tool()

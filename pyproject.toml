@@ -24,6 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=1.27.0,<2",
+    "pydantic>=2.0",
 ]
 
 [project.urls]
@@ -37,9 +38,13 @@ dev = ["pytest>=8.0", "build", "twine", "ruff>=0.4"]
 
 [project.scripts]
 mindsync = "mindsync.server:main"
+mindsync-dispatch = "mindsync.dispatch.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["mindsync*"]
+
+[tool.setuptools.package-data]
+mindsync = ["dispatch/presets/*.json"]
 
 [tool.setuptools.dynamic]
 version = {attr = "mindsync.__version__"}

@@ -1,0 +1,11 @@
+{
+  "name": "grok",
+  "displayName": "Grok CLI",
+  "bin": "grok",
+  "input": "arg",
+  "runArgs": ["-p", "{prompt}"],
+  "writeArgs": [],
+  "modelArgs": ["-m", "{model}"],
+  "loginHint": "Set GROK_API_KEY (see grok-cli docs)",
+  "installHint": "npm install -g @vibe-kit/grok-cli"
+}

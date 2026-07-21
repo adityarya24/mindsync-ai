@@ -1,0 +1,11 @@
+{
+  "name": "claude",
+  "displayName": "Claude Code",
+  "bin": "claude",
+  "input": "stdin",
+  "runArgs": ["-p"],
+  "writeArgs": ["--permission-mode", "acceptEdits"],
+  "modelArgs": ["--model", "{model}"],
+  "loginHint": "claude login (run `claude` once interactively)",
+  "installHint": "npm install -g @anthropic-ai/claude-code"
+}
