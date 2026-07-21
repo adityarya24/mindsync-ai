@@ -18,12 +18,22 @@ from mcp.client.stdio import get_default_environment, stdio_client
 from mindsync import __version__
 
 EXPECTED_TOOLS = {
+    # Core memory / focus
     "get_sync_context",
     "update_focus",
     "queue_durable_fact",
     "sync_offline_facts",
     "pull_truth",
     "health",
+    # Event bus
+    "publish_event",
+    "poll_events",
+    "subscribe_events",
+    # Agent dispatch
+    "delegate_task",
+    "job_status",
+    "job_result",
+    "job_cancel",
 }
 
 

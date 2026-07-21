@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mindsync-mcp"
 dynamic = ["version"]
-description = "MindSync MCP server — local-first multi-agent memory sync and focus conflict detection"
+description = "MindSync MCP server — local-first multi-agent memory sync, event bus, and agent dispatch"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -34,7 +34,7 @@ Issues = "https://github.com/adityarya24/mindsync-mcp/issues"
 Changelog = "https://github.com/adityarya24/mindsync-mcp/blob/master/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "build", "twine", "ruff>=0.4"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "build", "twine", "ruff>=0.4"]
 
 [project.scripts]
 mindsync = "mindsync.server:main"
@@ -52,3 +52,5 @@ version = {attr = "mindsync.__version__"}
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
