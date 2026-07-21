@@ -1,0 +1,11 @@
+{
+  "name": "cursor",
+  "displayName": "Cursor CLI",
+  "bin": "cursor-agent",
+  "input": "stdin",
+  "runArgs": ["-p", "--output-format", "text"],
+  "writeArgs": ["--force"],
+  "modelArgs": ["--model", "{model}"],
+  "loginHint": "cursor-agent login",
+  "installHint": "See https://cursor.com/cli"
+}

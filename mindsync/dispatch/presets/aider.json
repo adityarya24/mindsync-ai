@@ -1,0 +1,11 @@
+{
+  "name": "aider",
+  "displayName": "Aider",
+  "bin": "aider",
+  "input": "arg",
+  "runArgs": ["--message", "{prompt}", "--yes-always", "--no-auto-commits"],
+  "writeArgs": [],
+  "modelArgs": ["--model", "{model}"],
+  "loginHint": "Set the API key env var for your chosen model (see aider docs)",
+  "installHint": "python -m pip install aider-install && aider-install"
+}
