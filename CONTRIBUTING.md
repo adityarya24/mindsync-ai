@@ -1,4 +1,4 @@
-# Contributing to MindSync MCP
+# Contributing to MindSync AI
 
 Thank you for your interest in contributing!
 
@@ -8,8 +8,8 @@ MindSync uses modern Python packaging via `pyproject.toml`.
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/adityarya24/mindsync-mcp.git
-   cd mindsync-mcp
+   git clone https://github.com/adityarya24/mindsync-ai.git
+   cd mindsync-ai
    ```
 
 2. Create a virtual environment and install development dependencies:

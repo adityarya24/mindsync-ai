@@ -1,6 +1,6 @@
 # MindSync AI
 
-[![CI](https://github.com/adityarya24/mindsync-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/adityarya24/mindsync-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
 [![Python versions](https://img.shields.io/pypi/pyversions/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
 
@@ -14,8 +14,9 @@
 
 No cloud account required. Remote sync is opt-in. Zero hard-coded hosts or personal paths.
 
-> **Package rename (v1.1.0):** PyPI name is now **`mindsync-ai`** (was `mindsync-mcp` through 1.0.1).  
-> Import path and CLI stay the same: `import mindsync` · `mindsync`.
+> **Rename (v1.1.0):** PyPI package and GitHub repo are now **`mindsync-ai`**  
+> (older installs used `mindsync-mcp`). Import path and CLI stay the same:  
+> `import mindsync` · `mindsync`.
 
 ## Install
 
@@ -28,8 +29,8 @@ Requires Python 3.10+.
 From source:
 
 ```bash
-git clone https://github.com/adityarya24/mindsync-mcp.git
-cd mindsync-mcp
+git clone https://github.com/adityarya24/mindsync-ai.git
+cd mindsync-ai
 python -m pip install -e ".[dev]"
 ```
 
@@ -168,7 +169,7 @@ Under `MINDSYNC_HOME` (default `~/.mindsync`):
 ## Layout
 
 ```
-mindsync-mcp/                 # GitHub repo
+mindsync-ai/                  # GitHub repo
 ├── mindsync/
 │   ├── server.py             # FastMCP tools (core + bus + dispatch)
 │   ├── storage.py            # JSON/JSONL + locks

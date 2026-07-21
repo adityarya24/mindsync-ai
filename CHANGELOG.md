@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PyPI package renamed** to **`mindsync-ai`** (was `mindsync-mcp` through 1.0.1).
   Import path (`mindsync`) and CLI entry points (`mindsync`, `mindsync-dispatch`)
   are unchanged.
+- GitHub repository renamed to **`adityarya24/mindsync-ai`** (old
+  `mindsync-mcp` URL redirects).
 - README rewritten for the unified product branding.
 
 ## [1.0.1] - 2026-07-18

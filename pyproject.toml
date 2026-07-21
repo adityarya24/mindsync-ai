@@ -38,10 +38,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/adityarya24/mindsync-mcp"
-Documentation = "https://github.com/adityarya24/mindsync-mcp#readme"
-Issues = "https://github.com/adityarya24/mindsync-mcp/issues"
-Changelog = "https://github.com/adityarya24/mindsync-mcp/blob/master/CHANGELOG.md"
+Homepage = "https://github.com/adityarya24/mindsync-ai"
+Documentation = "https://github.com/adityarya24/mindsync-ai#readme"
+Issues = "https://github.com/adityarya24/mindsync-ai/issues"
+Changelog = "https://github.com/adityarya24/mindsync-ai/blob/master/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "build", "twine", "ruff>=0.4"]
