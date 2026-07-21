@@ -1,3 +1,3 @@
-"""MindSync: local-first multi-agent memory sync over MCP."""
+"""MindSync AI: unified multi-agent memory, event bus, and agent dispatch over MCP."""
 
 __version__ = "1.1.0"

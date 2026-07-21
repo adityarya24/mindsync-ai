@@ -3,14 +3,24 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mindsync-mcp"
+name = "mindsync-ai"
 dynamic = ["version"]
-description = "MindSync MCP server — local-first multi-agent memory sync, event bus, and agent dispatch"
+description = "MindSync AI — unified MCP server for multi-agent memory, event bus, and CLI agent dispatch"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Aditya Arya" }, { name = "MindSync Contributors" }]
-keywords = ["mcp", "memory", "sync", "multi-agent", "agents", "llm"]
+keywords = [
+    "mcp",
+    "memory",
+    "sync",
+    "multi-agent",
+    "agents",
+    "llm",
+    "event-bus",
+    "dispatch",
+    "mindsync-ai",
+]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",

@@ -1,4 +1,4 @@
-"""MindSync FastMCP server — local-first multi-agent memory sync."""
+"""MindSync AI FastMCP server — memory, event bus, and agent dispatch."""
 
 from __future__ import annotations
 

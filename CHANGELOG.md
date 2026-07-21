@@ -5,6 +5,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-07-21
+
+### Added
+
+- **MindSync AI** unified package: core memory/focus + in-process **Event Bus** +
+  **Agent Dispatch** (Python port of agent-dispatch) in one MCP server.
+- `mindsync.bus` — typed events (`job.started` / `completed` / `failed`,
+  `focus.changed`, `memory.updated`, …), JSONL store, monotonic `seq`,
+  publish / poll / subscribe tools.
+- `mindsync.dispatch` — adapters, cross-platform process helpers, job store,
+  runner, CLI (`mindsync-dispatch`), presets for codex/claude/gemini/cursor/aider/grok.
+- MCP tools: `publish_event`, `poll_events`, `subscribe_events`,
+  `delegate_task`, `job_status`, `job_result`, `job_cancel` (13 tools total).
+- Auto event hooks from focus updates, durable facts, and job lifecycle.
+
+### Changed
+
+- **PyPI package renamed** to **`mindsync-ai`** (was `mindsync-mcp` through 1.0.1).
+  Import path (`mindsync`) and CLI entry points (`mindsync`, `mindsync-dispatch`)
+  are unchanged.
+- README rewritten for the unified product branding.
+
 ## [1.0.1] - 2026-07-18
 
 ### Added
