@@ -62,6 +62,8 @@ class Settings:
         self.dead_letter_file: Path = self.home / "dead_letter.jsonl"
         self.compiled_truth_dir: Path = self.home / "compiled-truth"
         self.lock_dir: Path = self.home / ".locks"
+        self.events_file: Path = self.home / "events.jsonl"
+        self.subscriptions_file: Path = self.home / "subscriptions.json"
 
         # Remote is disabled until both host and root are set.
         self.ssh_host: str = _env("MINDSYNC_SSH_HOST")

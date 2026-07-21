@@ -26,6 +26,13 @@ from mindsync.bridge import (
     write_fact_remote,
     write_batch_remote,
 )
+from mindsync.bus import (
+    Event,
+    EventType,
+    poll_events as bus_poll_events,
+    publish_event as bus_publish_event,
+    subscribe as bus_subscribe,
+)
 from mindsync.config import settings
 from mindsync.conflict import detect_focus_conflicts
 from mindsync.storage import (
@@ -182,6 +189,23 @@ def update_focus(
         "update_focus",
         f"project={project} branch={branch} focus={focus!r} warnings={len(warnings)}",
     )
+    try:
+        bus_publish_event(
+            Event(
+                agent_name=agent_name,
+                event_type=EventType.FOCUS_CHANGED,
+                payload={
+                    "project": project,
+                    "branch": branch,
+                    "focus": focus,
+                    "paths": list(paths),
+                    "warnings": warnings,
+                },
+            )
+        )
+    except Exception:
+        pass
+
     return {
         "ok": True,
         "warnings": warnings,
@@ -220,6 +244,23 @@ def queue_durable_fact(
         "source": f"agent:{agent_name}",
         "confidence": conf,
     }
+
+    try:
+        bus_publish_event(
+            Event(
+                agent_name=agent_name,
+                event_type=EventType.MEMORY_UPDATED,
+                payload={
+                    "entity": entity,
+                    "attribute": attribute,
+                    "text": text,
+                    "confidence": conf,
+                    "fact_id": fact["fact_id"],
+                },
+            )
+        )
+    except Exception:
+        pass
 
     if settings.remote_enabled:
         result = write_fact_remote(
@@ -479,6 +520,66 @@ def pull_truth(agent_name: str) -> dict[str, Any]:
         "ok": True,
         "compiled_truth_keys": keys,
         "message": f"Pulled {len(keys)} truth file(s).",
+    }
+
+
+@mcp.tool()
+def publish_event(
+    agent_name: str,
+    event_type: str,
+    payload: dict[str, Any],
+    correlation_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Publish an event to the AgentRelay Event Bus."""
+    settings.ensure_dirs()
+    event = Event(
+        agent_name=agent_name,
+        event_type=event_type,
+        payload=payload or {},
+        correlation_id=correlation_id,
+    )
+    published = bus_publish_event(event)
+    log_audit(agent_name, "publish_event", f"type={event_type} seq={published.seq}")
+    return {
+        "ok": True,
+        "event": published.to_dict(),
+        "seq": published.seq,
+        "message": f"Event '{event_type}' published with seq {published.seq}.",
+    }
+
+
+@mcp.tool()
+def poll_events(
+    agent_name: str,
+    since_seq: int = 0,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Poll events from the Event Bus since sequence number since_seq."""
+    settings.ensure_dirs()
+    events = bus_poll_events(since_seq=since_seq, limit=limit, agent_name=agent_name)
+    log_audit(agent_name, "poll_events", f"since_seq={since_seq} returned={len(events)}")
+    return {
+        "ok": True,
+        "events": [e.to_dict() for e in events],
+        "count": len(events),
+        "since_seq": since_seq,
+    }
+
+
+@mcp.tool()
+def subscribe_events(
+    agent_name: str,
+    event_types: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Subscribe an agent to specific event types on the Event Bus."""
+    settings.ensure_dirs()
+    sub_info = bus_subscribe(agent_name, event_types)
+    log_audit(agent_name, "subscribe_events", f"event_types={event_types}")
+    return {
+        "ok": True,
+        "agent_name": agent_name,
+        "event_types": sub_info.get("event_types", []),
+        "message": f"Agent {agent_name} subscribed to {event_types or 'all events'}.",
     }
 
 
