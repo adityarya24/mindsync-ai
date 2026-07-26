@@ -209,8 +209,11 @@ def update_focus(
                 },
             )
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        # The focus write already succeeded; surface the dropped event instead
+        # of reporting a clean success the caller cannot act on.
+        warnings.append(f"focus.changed event was not published: {exc}")
+        log_audit(agent_name, "update_focus", f"bus publish failed: {exc}")
 
     return {
         "ok": True,

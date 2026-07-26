@@ -44,7 +44,7 @@ Issues = "https://github.com/adityarya24/mindsync-ai/issues"
 Changelog = "https://github.com/adityarya24/mindsync-ai/blob/master/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "build", "twine", "ruff>=0.4"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "build", "twine", "ruff>=0.4,<0.16"]
 
 [project.scripts]
 mindsync = "mindsync.server:main"

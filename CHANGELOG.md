@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-07-26
+
+### Fixed
+
+- Republished so the PyPI project links point at `mindsync-ai`; the 1.1.0
+  artifacts were built before the rename landed and still linked to the old
+  `mindsync-mcp` repository.
+- `update_focus` no longer swallows a failed `focus.changed` publish. The focus
+  write still succeeds, but the dropped event is now reported in `warnings` and
+  written to the audit log instead of returning a clean success.
+- SSH sanitization tests use a neutral fixture path instead of a real home
+  directory.
+
 ## [1.1.0] - 2026-07-21
 
 ### Added
