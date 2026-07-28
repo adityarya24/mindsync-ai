@@ -352,24 +352,39 @@ python3 {shlex.quote(write_script)} batch --payload "$PAYLOAD"
     return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr, results=parsed_results)
 
 
-def _write_single_via_legacy_protocol(fact: dict[str, Any]) -> WriteResult:
-    """Write one fact using the older single-write-only remote protocol."""
+def _looks_like_unsupported_fact_id(result: "WriteResult") -> bool:
+    """Detect a remote whose `write` predates the `--fact_id` flag.
+
+    argparse reports it as "unrecognized arguments: --fact_id ..." (exit 2),
+    which is distinct from a rejected value and safe to retry without.
+    """
+    text = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+    return "unrecognized arguments" in text and "--fact_id" in text
+
+
+# None = not probed yet. Set once per process by the first legacy write, so a
+# remote that has no --fact_id costs one extra round trip in total rather than
+# one per fact. A benign race here only causes a repeat probe.
+_legacy_supports_fact_id: bool | None = None
+
+
+def _legacy_write_call(fact: dict[str, Any], *, with_fact_id: bool) -> WriteResult:
     write_script = settings.remote_write_script
-    args = " ".join(
-        [
-            f"--fact_id {shlex.quote(fact['fact_id'])}",
-            f"--agent {shlex.quote(fact['agent'])}",
-            f"--entity {shlex.quote(fact['entity'])}",
-            f"--attribute {shlex.quote(fact['attribute'])}",
-            f"--text {shlex.quote(fact['text'])}",
-            f"--source {shlex.quote(fact['source'])}",
-            f"--confidence {shlex.quote(str(fact['confidence']))}",
-        ]
-    )
+    parts = []
+    if with_fact_id:
+        parts.append(f"--fact_id {shlex.quote(fact['fact_id'])}")
+    parts += [
+        f"--agent {shlex.quote(fact['agent'])}",
+        f"--entity {shlex.quote(fact['entity'])}",
+        f"--attribute {shlex.quote(fact['attribute'])}",
+        f"--text {shlex.quote(fact['text'])}",
+        f"--source {shlex.quote(fact['source'])}",
+        f"--confidence {shlex.quote(str(fact['confidence']))}",
+    ]
     script = f"""set -euo pipefail
 cd {shlex.quote(settings.remote_root)}
 {_maybe_source_env()}
-python3 {shlex.quote(write_script)} write {args}
+python3 {shlex.quote(write_script)} write {' '.join(parts)}
 """
     try:
         res = _ssh_script(script, timeout=30)
@@ -382,6 +397,29 @@ python3 {shlex.quote(write_script)} write {args}
         err = (res.stderr or res.stdout or "unknown remote error").strip()
         return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
     return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr)
+
+
+def _write_single_via_legacy_protocol(fact: dict[str, Any]) -> WriteResult:
+    """Write one fact using the older single-write-only remote protocol.
+
+    Some deployed writers are older still and have no ``--fact_id`` at all.
+    Passing it makes argparse reject the whole call, which would strand every
+    queued fact, so the flag is dropped and the write retried once the remote
+    tells us it is unknown. The client tracks success per call either way.
+    """
+    global _legacy_supports_fact_id
+
+    if _legacy_supports_fact_id is False:
+        return _legacy_write_call(fact, with_fact_id=False)
+
+    result = _legacy_write_call(fact, with_fact_id=True)
+    if result.ok:
+        _legacy_supports_fact_id = True
+        return result
+    if _looks_like_unsupported_fact_id(result):
+        _legacy_supports_fact_id = False
+        return _legacy_write_call(fact, with_fact_id=False)
+    return result
 
 
 def _write_batch_via_legacy_single_writes(valid_facts: list[dict[str, Any]]) -> WriteResult:

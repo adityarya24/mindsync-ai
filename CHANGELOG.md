@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The remote probe's `reason` now carries ssh's own (sanitized) stderr, so an
   offline result says *why* — wrong key, unknown host alias, refused connection —
   instead of a bare `ssh_auth_or_timeout`.
+- **Legacy write fallback degrades one step further.** The fallback for a remote
+  with no `batch` subcommand still sent `--fact_id`, which older writers reject
+  outright — argparse fails the whole call, so every queued fact stayed stuck.
+  When the remote reports the flag as unrecognized, it is dropped and the write
+  retried; the result is probed once per process, not once per fact.
 - **Namespaced entity keys are valid again.** `validate_entity` rejected the
   `namespace:name` form (`person:aditya`, `project:astro-skill`), so facts queued
   under the documented convention could never sync and were quarantined to the
