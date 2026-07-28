@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   When the remote reports the flag as unrecognized, it is dropped and the write
   retried; the result is probed once per process, not once per fact.
 - **Namespaced entity keys are valid again.** `validate_entity` rejected the
-  `namespace:name` form (`person:aditya`, `project:astro-skill`), so facts queued
+  `namespace:name` form (`person:alice`, `project:web-api`), so facts queued
   under the documented convention could never sync and were quarantined to the
   dead letter on flush. A single `namespace:` prefix is now accepted; the prefix
   may not contain a dot, which keeps the Windows alternate-data-stream shape

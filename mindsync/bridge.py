@@ -49,7 +49,7 @@ def resolve_openssh_tool(tool: str = "ssh") -> str:
 # Safe identifier patterns (no shell metacharacters, path traversal, or colon)
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SAFE_SOURCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
-# Entity keys are namespaced (`person:aditya`, `project:astro-skill`), so a
+# Entity keys are namespaced (`person:alice`, `project:web-api`), so a
 # single leading `namespace:` prefix is allowed. The prefix itself may not
 # contain a dot, which keeps the Windows alternate-data-stream shape
 # (`file.txt:stream`) rejected exactly as a bare `_SAFE_ID` would.

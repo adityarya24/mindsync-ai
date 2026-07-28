@@ -359,9 +359,9 @@ def test_resolve_openssh_tool_plain_name_on_posix(monkeypatch):
 
 
 def test_validate_entity_accepts_namespaced_keys():
-    """GBrain's entity keys are namespaced with a colon (person:aditya)."""
-    assert validate_entity("person:aditya") == "person:aditya"
-    assert validate_entity("project:astro-skill") == "project:astro-skill"
+    """Entity keys are namespaced with a colon (person:alice)."""
+    assert validate_entity("person:alice") == "person:alice"
+    assert validate_entity("project:web-api") == "project:web-api"
     assert validate_entity("system:mindsync_ai") == "system:mindsync_ai"
 
 
@@ -408,15 +408,15 @@ def _old_remote_mock(calls, *, rejects_fact_id: bool):
             res.returncode = 2
             res.stdout = b""
             res.stderr = (
-                b"usage: gbrain_fact.py [-h] {write,read} ...\n"
-                b"gbrain_fact.py: error: argument cmd: invalid choice: 'batch'"
+                b"usage: mindsync_fact.py [-h] {write,read} ...\n"
+                b"mindsync_fact.py: error: argument cmd: invalid choice: 'batch'"
             )
         elif rejects_fact_id and b"--fact_id" in stdin_data:
             res.returncode = 2
             res.stdout = b""
             res.stderr = (
-                b"usage: gbrain_fact.py write [-h] --agent AGENT --entity ENTITY\n"
-                b"gbrain_fact.py: error: unrecognized arguments: --fact_id abc123"
+                b"usage: mindsync_fact.py write [-h] --agent AGENT --entity ENTITY\n"
+                b"mindsync_fact.py: error: unrecognized arguments: --fact_id abc123"
             )
         else:
             res.returncode = 0
@@ -430,7 +430,7 @@ def _configure_remote(monkeypatch):
     s = Settings()
     s.ssh_host = "test-host"
     s.remote_root = "/test/root"
-    s.remote_write_script = "tools/gbrain_fact.py"
+    s.remote_write_script = "tools/mindsync_fact.py"
     import mindsync.bridge as bridge
     monkeypatch.setattr(bridge, "settings", s)
     monkeypatch.setattr(bridge, "_legacy_supports_fact_id", None, raising=False)

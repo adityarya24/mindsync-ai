@@ -40,35 +40,35 @@ def test_event_bus_models():
     # Test Event model
     ev = Event(
         event_type=EventType.TASK_CREATED,
-        agent_name="Satyaki",
+        agent_name="planner",
         payload={"task_id": "123"},
         correlation_id="corr-1",
     )
     ev_dict = ev.to_dict()
     assert ev_dict["event_type"] == "task.created"
-    assert ev_dict["agent_name"] == "Satyaki"
+    assert ev_dict["agent_name"] == "planner"
     assert ev_dict["payload"] == {"task_id": "123"}
     assert ev_dict["correlation_id"] == "corr-1"
 
     ev_restored = Event.from_dict(ev_dict)
     assert ev_restored.event_type == "task.created"
-    assert ev_restored.agent_name == "Satyaki"
+    assert ev_restored.agent_name == "planner"
     assert ev_restored.payload == {"task_id": "123"}
 
     # Test Message model
-    msg = Message(sender="Satyaki", recipient="Abhimanyu", content="hello")
+    msg = Message(sender="planner", recipient="builder", content="hello")
     msg_dict = msg.to_dict()
-    assert msg_dict["sender"] == "Satyaki"
-    assert msg_dict["recipient"] == "Abhimanyu"
+    assert msg_dict["sender"] == "planner"
+    assert msg_dict["recipient"] == "builder"
     msg_restored = Message.from_dict(msg_dict)
-    assert msg_restored.sender == "Satyaki"
+    assert msg_restored.sender == "planner"
 
     # Test Identity model
-    ident = Identity(agent_name="Satyaki", role="warrior")
+    ident = Identity(agent_name="planner", role="reviewer")
     ident_dict = ident.to_dict()
-    assert ident_dict["agent_name"] == "Satyaki"
+    assert ident_dict["agent_name"] == "planner"
     ident_restored = Identity.from_dict(ident_dict)
-    assert ident_restored.role == "warrior"
+    assert ident_restored.role == "reviewer"
 
     # Test PolicyRule model
     rule = PolicyRule(rule_id="r1", action="read", effect="allow")
@@ -82,13 +82,13 @@ def test_publish_poll_and_sequences(tmp_path, monkeypatch):
     settings = _isolate(tmp_path, monkeypatch)
 
     ev1 = bus_publish_event(
-        Event(event_type=EventType.TASK_CREATED, agent_name="Satyaki", payload={"num": 1})
+        Event(event_type=EventType.TASK_CREATED, agent_name="planner", payload={"num": 1})
     )
     ev2 = bus_publish_event(
-        Event(event_type=EventType.JOB_STARTED, agent_name="Satyaki", payload={"num": 2})
+        Event(event_type=EventType.JOB_STARTED, agent_name="planner", payload={"num": 2})
     )
     ev3 = bus_publish_event(
-        Event(event_type=EventType.JOB_COMPLETED, agent_name="Satyaki", payload={"num": 3})
+        Event(event_type=EventType.JOB_COMPLETED, agent_name="planner", payload={"num": 3})
     )
 
     assert ev1.seq == 1
@@ -120,19 +120,19 @@ def test_publish_poll_and_sequences(tmp_path, monkeypatch):
 def test_subscribe_and_agent_polling(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
 
-    bus_subscribe("Satyaki", ["focus.changed"])
+    bus_subscribe("planner", ["focus.changed"])
 
     bus_publish_event(
-        Event(event_type=EventType.FOCUS_CHANGED, agent_name="Satyaki", payload={"focus": "f1"})
+        Event(event_type=EventType.FOCUS_CHANGED, agent_name="planner", payload={"focus": "f1"})
     )
     bus_publish_event(
-        Event(event_type=EventType.MEMORY_UPDATED, agent_name="Satyaki", payload={"mem": "m1"})
+        Event(event_type=EventType.MEMORY_UPDATED, agent_name="planner", payload={"mem": "m1"})
     )
 
-    # Polling for Satyaki uses subscribed event_types ("focus.changed")
-    satyaki_events = bus_poll_events(agent_name="Satyaki")
-    assert len(satyaki_events) == 1
-    assert satyaki_events[0].event_type == "focus.changed"
+    # Polling for planner uses subscribed event_types ("focus.changed")
+    planner_events = bus_poll_events(agent_name="planner")
+    assert len(planner_events) == 1
+    assert planner_events[0].event_type == "focus.changed"
 
 
 def test_server_mcp_event_tools(tmp_path, monkeypatch):
@@ -140,7 +140,7 @@ def test_server_mcp_event_tools(tmp_path, monkeypatch):
 
     # 1. Publish event via server tool
     pub_res = server.publish_event(
-        agent_name="Satyaki",
+        agent_name="planner",
         event_type="task.created",
         payload={"task": "deploy"},
         correlation_id="c123",
@@ -150,12 +150,12 @@ def test_server_mcp_event_tools(tmp_path, monkeypatch):
     assert pub_res["event"]["event_type"] == "task.created"
 
     # 2. Subscribe via server tool
-    sub_res = server.subscribe_events("Satyaki", ["task.created"])
+    sub_res = server.subscribe_events("planner", ["task.created"])
     assert sub_res["ok"] is True
     assert sub_res["event_types"] == ["task.created"]
 
     # 3. Poll via server tool
-    poll_res = server.poll_events("Satyaki", since_seq=0)
+    poll_res = server.poll_events("planner", since_seq=0)
     assert poll_res["ok"] is True
     assert poll_res["count"] == 1
     assert poll_res["events"][0]["payload"] == {"task": "deploy"}
@@ -164,13 +164,13 @@ def test_server_mcp_event_tools(tmp_path, monkeypatch):
 def test_server_auto_emit_focus_changed(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
 
-    res = server.update_focus("Satyaki", "proj-a", "main", "refactoring bus")
+    res = server.update_focus("planner", "proj-a", "main", "refactoring bus")
     assert res["ok"] is True
 
     events = bus_poll_events(since_seq=0)
     assert len(events) == 1
     assert events[0].event_type == "focus.changed"
-    assert events[0].agent_name == "Satyaki"
+    assert events[0].agent_name == "planner"
     assert events[0].payload["project"] == "proj-a"
     assert events[0].payload["focus"] == "refactoring bus"
 
@@ -178,13 +178,13 @@ def test_server_auto_emit_focus_changed(tmp_path, monkeypatch):
 def test_server_auto_emit_memory_updated(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
 
-    res = server.queue_durable_fact("Satyaki", "entity_x", "attr_y", "some durable fact text")
+    res = server.queue_durable_fact("planner", "entity_x", "attr_y", "some durable fact text")
     assert res["ok"] is True
 
     events = bus_poll_events(since_seq=0)
     assert len(events) == 1
     assert events[0].event_type == "memory.updated"
-    assert events[0].agent_name == "Satyaki"
+    assert events[0].agent_name == "planner"
     assert events[0].payload["entity"] == "entity_x"
     assert events[0].payload["attribute"] == "attr_y"
     assert events[0].payload["text"] == "some durable fact text"
