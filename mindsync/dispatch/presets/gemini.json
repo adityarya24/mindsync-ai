@@ -3,7 +3,7 @@
   "displayName": "Gemini CLI",
   "bin": "gemini",
   "input": "stdin",
-  "runArgs": [],
+  "runArgs": ["--skip-trust"],
   "writeArgs": ["--yolo"],
   "modelArgs": ["-m", "{model}"],
   "loginHint": "gemini (first run triggers login)",

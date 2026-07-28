@@ -38,6 +38,7 @@ from mindsync.conflict import detect_focus_conflicts
 from mindsync.dispatch import store as dispatch_store
 from mindsync.dispatch.runner import (
     cancel_job as dispatch_cancel_job,
+    describe_empty_result as dispatch_describe_empty_result,
     job_result as dispatch_job_result,
     run_task as dispatch_run_task,
 )
@@ -659,7 +660,7 @@ def job_result(job_id: str, agent_name: str = "default_agent") -> str:
         return str(exc)
     meta = res_data["meta"]
     log_audit(agent_name, "job_result", f"job={job_id} status={meta.get('status')}")
-    return res_data["result"] or f"(no result yet — job is {meta['status']})"
+    return res_data["result"] or dispatch_describe_empty_result(meta)
 
 
 @mcp.tool()

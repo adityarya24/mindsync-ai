@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Failed dispatch jobs now explain themselves.** The result file only ever held
+  stdout, so an agent that aborted early (bad auth, a trust prompt, a rejected
+  model) produced an empty result and the CLI reported `(no output)` — the real
+  error sat unread in `stderr.log`. Failed and timed-out jobs now append a
+  `[dispatch] Agent failed (…)` block with the stderr tail (capped at 4 KB),
+  keeping any partial stdout above it. Successful runs are unchanged.
+- `job_result` no longer answers `(no result yet — job is failed)` for a finished
+  job; empty results are now described per status (failed / cancelled / running).
+- **`gemini` preset works headless.** Gemini CLI refuses to run in an untrusted
+  directory, so every dispatched job died with exit 55 before starting. The preset
+  now passes `--skip-trust`.
+
 ## [1.1.0] - 2026-07-21
 
 ### Added

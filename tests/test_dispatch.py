@@ -247,3 +247,89 @@ def test_job_id_validation(tmp_path, monkeypatch):
     _isolate_dispatch(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="Invalid job id"):
         store.job_paths("../evil")
+
+
+def _register_failing_agent(tmp_path, monkeypatch, *, args: list[str]) -> None:
+    _isolate_dispatch(tmp_path, monkeypatch)
+    cfg = user_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {
+                        "name": "pyfail",
+                        "bin": sys.executable,
+                        "input": "stdin",
+                        "runArgs": args,
+                        "timeoutMs": 30_000,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_job_result_includes_stderr(tmp_path, monkeypatch):
+    """A failed job must explain itself: stderr is the only diagnostic there is."""
+    _register_failing_agent(
+        tmp_path,
+        monkeypatch,
+        args=["-c", "import sys; print('TRUST_GATE_BLOCKED', file=sys.stderr); sys.exit(3)"],
+    )
+
+    res = await run_task(
+        agent="pyfail", prompt="x", background=False, publisher_agent="test-agent"
+    )
+    assert res["job"]["status"] == "failed"
+    assert res["job"]["exitCode"] == 3
+    assert res["result"], "failed job returned an empty result"
+    assert "TRUST_GATE_BLOCKED" in res["result"]
+
+    # Same content must reach anyone polling after the fact.
+    assert "TRUST_GATE_BLOCKED" in job_result(res["job"]["id"])["result"]
+
+
+@pytest.mark.asyncio
+async def test_failed_job_keeps_partial_stdout_alongside_stderr(tmp_path, monkeypatch):
+    """Partial output stays first; the diagnostic is appended, not substituted."""
+    _register_failing_agent(
+        tmp_path,
+        monkeypatch,
+        args=[
+            "-c",
+            "import sys; print('PARTIAL_WORK'); print('BOOM', file=sys.stderr); sys.exit(1)",
+        ],
+    )
+
+    res = await run_task(
+        agent="pyfail", prompt="x", background=False, publisher_agent="test-agent"
+    )
+    result = res["result"]
+    assert "PARTIAL_WORK" in result
+    assert "BOOM" in result
+    assert result.index("PARTIAL_WORK") < result.index("BOOM")
+
+
+@pytest.mark.asyncio
+async def test_successful_job_result_has_no_diagnostic_block(tmp_path, monkeypatch):
+    """Stderr noise on a passing run must not pollute the result."""
+    _register_failing_agent(
+        tmp_path,
+        monkeypatch,
+        args=["-c", "import sys; print('OK'); print('just a warning', file=sys.stderr)"],
+    )
+
+    res = await run_task(
+        agent="pyfail", prompt="x", background=False, publisher_agent="test-agent"
+    )
+    assert res["job"]["status"] == "done"
+    assert res["result"].strip() == "OK"
+
+
+def test_gemini_preset_runs_headless():
+    """Gemini CLI aborts in an untrusted directory unless trust is waived."""
+    gemini = load_adapters()["gemini"]
+    assert "--skip-trust" in gemini.runArgs
