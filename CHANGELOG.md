@@ -5,7 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-07-28
+
+### Added
+
+- `MINDSYNC_SSH_BIN` pins the ssh client the bridge shells out to, for setups
+  where PATH resolution picks the wrong OpenSSH build.
+
+### Changed
+
+- `validate_entity` now accepts a single `namespace:` prefix (see below), so
+  entity keys that were previously rejected are stored as given.
 
 ### Fixed
 
