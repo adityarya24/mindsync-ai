@@ -6,7 +6,13 @@ import asyncio
 import sys
 
 from mindsync.dispatch.adapters import load_adapters, user_config_path
-from mindsync.dispatch.runner import cancel_job, job_result, run_task, supervise_job
+from mindsync.dispatch.runner import (
+    cancel_job,
+    describe_empty_result,
+    job_result,
+    run_task,
+    supervise_job,
+)
 from mindsync.dispatch.store import get_job, list_jobs, reconcile_job
 
 
@@ -61,7 +67,7 @@ async def _async_main(argv: list[str]) -> int:
                 f"Check: python -m mindsync.dispatch.cli status {job['id']}"
             )
             return 0
-        print(r.get("result") or "(no output)")
+        print(r.get("result") or describe_empty_result(job))
         if job.get("status") != "done":
             print(
                 f"\n[job {job['id']} {job['status']}"
@@ -90,7 +96,7 @@ async def _async_main(argv: list[str]) -> int:
         data = job_result(rest[0])
         reconcile_job(data["meta"])
         fresh = get_job(data["meta"]["id"])
-        print(data["result"] if data["result"] is not None else f"(no result yet — job is {fresh and fresh.get('status')})")
+        print(data["result"] or describe_empty_result(fresh or data["meta"]))
         return 0
 
     if cmd == "cancel":

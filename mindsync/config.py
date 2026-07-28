@@ -84,6 +84,11 @@ class Settings:
             "compiled-truth",
         )
 
+        # Path to the ssh client to shell out to. Empty means "auto-detect"
+        # (see mindsync.bridge.resolve_openssh_tool) — set this to pin a
+        # specific OpenSSH build when PATH resolution picks the wrong one.
+        self.ssh_bin: str = _env("MINDSYNC_SSH_BIN")
+
         self.ssh_connect_timeout: int = int(_env("MINDSYNC_SSH_TIMEOUT", "10") or "10")
         self.focus_stale_seconds: int = int(_env("MINDSYNC_FOCUS_STALE_SECS", "7200") or "7200")
         self.remote_cache_ttl_seconds: float = float(

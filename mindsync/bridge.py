@@ -8,19 +8,54 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 import shlex
 import subprocess
+import sys
 import time
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from mindsync.config import settings
 
+
+def resolve_openssh_tool(tool: str = "ssh") -> str:
+    """Resolve the ssh/scp binary to invoke.
+
+    An explicit ``MINDSYNC_SSH_BIN`` always wins; scp is taken from the same
+    directory. Otherwise, on Windows, prefer the OS OpenSSH client over a bare
+    PATH lookup: Git for Windows ships an MSYS ssh that cannot talk to the
+    Windows ssh-agent, so if it shadows the system client every agent-held key
+    fails to authenticate and the remote looks permanently offline.
+    """
+    configured = (settings.ssh_bin or "").strip()
+    if configured:
+        if tool == "ssh":
+            return configured
+        sibling = Path(configured).with_name(tool + Path(configured).suffix)
+        return str(sibling) if sibling.is_file() else tool
+
+    if sys.platform == "win32":
+        system_root = os.environ.get("SystemRoot") or r"C:\Windows"
+        candidate = Path(system_root) / "System32" / "OpenSSH" / f"{tool}.exe"
+        if candidate.is_file():
+            return str(candidate)
+
+    return tool
+
 # Safe identifier patterns (no shell metacharacters, path traversal, or colon)
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SAFE_SOURCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+# Entity keys are namespaced (`person:aditya`, `project:astro-skill`), so a
+# single leading `namespace:` prefix is allowed. The prefix itself may not
+# contain a dot, which keeps the Windows alternate-data-stream shape
+# (`file.txt:stream`) rejected exactly as a bare `_SAFE_ID` would.
+_SAFE_ENTITY = re.compile(
+    r"^(?:[A-Za-z0-9][A-Za-z0-9_-]{0,62}:)?[A-Za-z0-9][A-Za-z0-9_.-]*$"
+)
 _SAFE_HEX = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 _FORBIDDEN_WINDOWS = {
@@ -44,9 +79,13 @@ def _check_windows_safe(val: str) -> None:
             raise ValueError(f"Forbidden character {char!r} in {val}")
 
 def validate_entity(val: str) -> str:
-    if not val or not _SAFE_ID.match(val):
-        raise ValueError(f"Invalid entity name {val!r}: must be alphanumeric + _ . - (max 128)")
-    _check_windows_safe(val)
+    if not val or len(val) > 128 or not _SAFE_ENTITY.match(val):
+        raise ValueError(
+            f"Invalid entity name {val!r}: must be alphanumeric + _ . - "
+            "with an optional 'namespace:' prefix (max 128)"
+        )
+    for segment in val.split(":"):
+        _check_windows_safe(segment)
     return val
 
 def validate_attribute(val: str) -> str:
@@ -156,7 +195,7 @@ def get_remote_status(*, force: bool = False) -> dict[str, Any]:
         try:
             res = _run(
                 [
-                    "ssh",
+                    resolve_openssh_tool("ssh"),
                     "-o",
                     "BatchMode=yes",
                     "-o",
@@ -177,6 +216,13 @@ def get_remote_status(*, force: bool = False) -> dict[str, Any]:
             else:
                 status = "offline"
                 reason = f"exit_code_{res.returncode}"
+            # Without ssh's own words, every failure looks identical and the
+            # cause (wrong key, unknown host alias, agent not reachable) is
+            # unrecoverable from the outside. Sanitized: no paths or hostnames.
+            if status == "offline":
+                detail = _sanitize_error((res.stderr or "").strip())
+                if detail and detail != "unknown error":
+                    reason = f"{reason}: {detail.splitlines()[-1][:200]}"
         except subprocess.TimeoutExpired:
             status = "offline"
             reason = "timeout"
@@ -214,7 +260,7 @@ def _ssh_script(script: str, *, timeout: float = 60) -> subprocess.CompletedProc
     normalized = script.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
     res = subprocess.run(
         [
-            "ssh",
+            resolve_openssh_tool("ssh"),
             "-o",
             "BatchMode=yes",
             "-o",
@@ -306,24 +352,39 @@ python3 {shlex.quote(write_script)} batch --payload "$PAYLOAD"
     return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr, results=parsed_results)
 
 
-def _write_single_via_legacy_protocol(fact: dict[str, Any]) -> WriteResult:
-    """Write one fact using the older single-write-only remote protocol."""
+def _looks_like_unsupported_fact_id(result: "WriteResult") -> bool:
+    """Detect a remote whose `write` predates the `--fact_id` flag.
+
+    argparse reports it as "unrecognized arguments: --fact_id ..." (exit 2),
+    which is distinct from a rejected value and safe to retry without.
+    """
+    text = f"{result.stderr or ''}\n{result.stdout or ''}".lower()
+    return "unrecognized arguments" in text and "--fact_id" in text
+
+
+# None = not probed yet. Set once per process by the first legacy write, so a
+# remote that has no --fact_id costs one extra round trip in total rather than
+# one per fact. A benign race here only causes a repeat probe.
+_legacy_supports_fact_id: bool | None = None
+
+
+def _legacy_write_call(fact: dict[str, Any], *, with_fact_id: bool) -> WriteResult:
     write_script = settings.remote_write_script
-    args = " ".join(
-        [
-            f"--fact_id {shlex.quote(fact['fact_id'])}",
-            f"--agent {shlex.quote(fact['agent'])}",
-            f"--entity {shlex.quote(fact['entity'])}",
-            f"--attribute {shlex.quote(fact['attribute'])}",
-            f"--text {shlex.quote(fact['text'])}",
-            f"--source {shlex.quote(fact['source'])}",
-            f"--confidence {shlex.quote(str(fact['confidence']))}",
-        ]
-    )
+    parts = []
+    if with_fact_id:
+        parts.append(f"--fact_id {shlex.quote(fact['fact_id'])}")
+    parts += [
+        f"--agent {shlex.quote(fact['agent'])}",
+        f"--entity {shlex.quote(fact['entity'])}",
+        f"--attribute {shlex.quote(fact['attribute'])}",
+        f"--text {shlex.quote(fact['text'])}",
+        f"--source {shlex.quote(fact['source'])}",
+        f"--confidence {shlex.quote(str(fact['confidence']))}",
+    ]
     script = f"""set -euo pipefail
 cd {shlex.quote(settings.remote_root)}
 {_maybe_source_env()}
-python3 {shlex.quote(write_script)} write {args}
+python3 {shlex.quote(write_script)} write {' '.join(parts)}
 """
     try:
         res = _ssh_script(script, timeout=30)
@@ -336,6 +397,29 @@ python3 {shlex.quote(write_script)} write {args}
         err = (res.stderr or res.stdout or "unknown remote error").strip()
         return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
     return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr)
+
+
+def _write_single_via_legacy_protocol(fact: dict[str, Any]) -> WriteResult:
+    """Write one fact using the older single-write-only remote protocol.
+
+    Some deployed writers are older still and have no ``--fact_id`` at all.
+    Passing it makes argparse reject the whole call, which would strand every
+    queued fact, so the flag is dropped and the write retried once the remote
+    tells us it is unknown. The client tracks success per call either way.
+    """
+    global _legacy_supports_fact_id
+
+    if _legacy_supports_fact_id is False:
+        return _legacy_write_call(fact, with_fact_id=False)
+
+    result = _legacy_write_call(fact, with_fact_id=True)
+    if result.ok:
+        _legacy_supports_fact_id = True
+        return result
+    if _looks_like_unsupported_fact_id(result):
+        _legacy_supports_fact_id = False
+        return _legacy_write_call(fact, with_fact_id=False)
+    return result
 
 
 def _write_batch_via_legacy_single_writes(valid_facts: list[dict[str, Any]]) -> WriteResult:
@@ -484,7 +568,7 @@ def pull_compiled_truth() -> WriteResult:
     try:
         res = _run(
             [
-                "scp",
+                resolve_openssh_tool("scp"),
                 "-o",
                 "BatchMode=yes",
                 "-o",

@@ -23,6 +23,46 @@ from mindsync.dispatch.proc import (
 from mindsync.dispatch import store
 
 
+_STDERR_TAIL_CHARS = 4000
+
+
+def _compose_result(result: dict[str, Any]) -> str:
+    """Build the result file: stdout, plus a stderr diagnostic when the run failed.
+
+    Agents that abort early (bad auth, a trust prompt, a missing flag) write nothing
+    to stdout and everything to stderr. Storing stdout alone makes those jobs look
+    like they simply produced no output, hiding the only explanation there is.
+    """
+    stdout = result.get("stdout") or ""
+    if not (result.get("timedOut") or result.get("exitCode") != 0):
+        return stdout
+
+    reason = "timed out" if result.get("timedOut") else f"exit code {result.get('exitCode')}"
+    lines = [f"[dispatch] Agent failed ({reason})."]
+    stderr = (result.get("stderr") or "").strip()
+    if stderr:
+        if len(stderr) > _STDERR_TAIL_CHARS:
+            stderr = "…(stderr truncated)…\n" + stderr[-_STDERR_TAIL_CHARS:]
+        lines += ["stderr:", stderr]
+    else:
+        lines.append("stderr was empty; see supervisor.log in the job directory.")
+    diagnostic = "\n".join(lines)
+    return f"{stdout.rstrip()}\n\n{diagnostic}\n" if stdout.strip() else f"{diagnostic}\n"
+
+
+def describe_empty_result(meta: dict[str, Any]) -> str:
+    """Explain an empty result file without implying more output is coming."""
+    status = meta.get("status")
+    if status in ("running", "queued", "pending"):
+        return f"(no result yet — job is {status})"
+    if status == "cancelled":
+        return "(no output — job was cancelled)"
+    if status == "failed":
+        detail = "timed out" if meta.get("timedOut") else f"exit code {meta.get('exitCode')}"
+        return f"(no output — job failed: {detail}, and stderr was empty)"
+    return "(no output — the agent produced nothing)"
+
+
 class AgentNotInstalledError(RuntimeError):
     def __init__(self, adapter: Any) -> None:
         display = getattr(adapter, "displayName", None) or adapter.name
@@ -186,7 +226,7 @@ async def supervise_job(
     )
     paths["stdout"].write_text(result["stdout"], encoding="utf-8", errors="replace")
     paths["stderr"].write_text(result["stderr"], encoding="utf-8", errors="replace")
-    paths["result"].write_text(result["stdout"], encoding="utf-8", errors="replace")
+    paths["result"].write_text(_compose_result(result), encoding="utf-8", errors="replace")
 
     was_cancelled = store.get_job(job_id)
     if was_cancelled and was_cancelled.get("status") == "cancelled":

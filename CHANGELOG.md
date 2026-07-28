@@ -5,6 +5,41 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Failed dispatch jobs now explain themselves.** The result file only ever held
+  stdout, so an agent that aborted early (bad auth, a trust prompt, a rejected
+  model) produced an empty result and the CLI reported `(no output)` — the real
+  error sat unread in `stderr.log`. Failed and timed-out jobs now append a
+  `[dispatch] Agent failed (…)` block with the stderr tail (capped at 4 KB),
+  keeping any partial stdout above it. Successful runs are unchanged.
+- `job_result` no longer answers `(no result yet — job is failed)` for a finished
+  job; empty results are now described per status (failed / cancelled / running).
+- **`gemini` preset works headless.** Gemini CLI refuses to run in an untrusted
+  directory, so every dispatched job died with exit 55 before starting. The preset
+  now passes `--skip-trust`.
+- **Remote no longer looks permanently offline on Windows.** The bridge shelled
+  out to whatever `ssh` PATH resolved first; when Git for Windows' MSYS ssh won,
+  it could not reach the Windows ssh-agent, so every agent-held key failed and
+  the probe reported offline forever. ssh/scp now prefer the OS OpenSSH client on
+  Windows, overridable with `MINDSYNC_SSH_BIN`.
+- The remote probe's `reason` now carries ssh's own (sanitized) stderr, so an
+  offline result says *why* — wrong key, unknown host alias, refused connection —
+  instead of a bare `ssh_auth_or_timeout`.
+- **Legacy write fallback degrades one step further.** The fallback for a remote
+  with no `batch` subcommand still sent `--fact_id`, which older writers reject
+  outright — argparse fails the whole call, so every queued fact stayed stuck.
+  When the remote reports the flag as unrecognized, it is dropped and the write
+  retried; the result is probed once per process, not once per fact.
+- **Namespaced entity keys are valid again.** `validate_entity` rejected the
+  `namespace:name` form (`person:aditya`, `project:astro-skill`), so facts queued
+  under the documented convention could never sync and were quarantined to the
+  dead letter on flush. A single `namespace:` prefix is now accepted; the prefix
+  may not contain a dot, which keeps the Windows alternate-data-stream shape
+  (`file.txt:stream`) and reserved device names rejected as before.
+
 ## [1.1.0] - 2026-07-21
 
 ### Added

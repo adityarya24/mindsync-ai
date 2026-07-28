@@ -117,7 +117,7 @@ def test_write_batch_remote_mocked(monkeypatch):
     assert res.ok
     assert len(called_args) == 1
     cmd_args, stdin_data = called_args[0]
-    assert "ssh" in cmd_args
+    assert cmd_args[0] == bridge.resolve_openssh_tool("ssh")
     assert "test-host" in cmd_args
     assert b"mindsync_fact.py" in stdin_data
     assert b"base64 -d" in stdin_data
@@ -231,7 +231,7 @@ def test_pull_compiled_truth_mocked(monkeypatch, tmp_path):
     assert res.ok
     assert len(called_args) == 1
     scp_args = called_args[0]
-    assert "scp" in scp_args
+    assert scp_args[0] == bridge.resolve_openssh_tool("scp")
     assert "test-host:/test/root/compiled-truth/." in scp_args
     
     # Staging directory should be cleaned up
@@ -305,3 +305,181 @@ def test_pull_compiled_truth_sanitizes_scp_oserror(monkeypatch, tmp_path):
     assert "id_ed25519" not in res.error
     assert ".ssh" not in res.error
     assert "aditya" not in res.error
+
+
+def test_resolve_openssh_tool_honours_explicit_config(tmp_path, monkeypatch):
+    import mindsync.bridge as bridge
+
+    ssh = tmp_path / "ssh.exe"
+    scp = tmp_path / "scp.exe"
+    ssh.write_text("", encoding="utf-8")
+    scp.write_text("", encoding="utf-8")
+    monkeypatch.setattr(bridge.settings, "ssh_bin", str(ssh), raising=False)
+
+    assert bridge.resolve_openssh_tool("ssh") == str(ssh)
+    # scp is taken from the same install, not from PATH.
+    assert bridge.resolve_openssh_tool("scp") == str(scp)
+
+
+def test_resolve_openssh_tool_falls_back_when_sibling_missing(tmp_path, monkeypatch):
+    import mindsync.bridge as bridge
+
+    ssh = tmp_path / "ssh.exe"
+    ssh.write_text("", encoding="utf-8")
+    monkeypatch.setattr(bridge.settings, "ssh_bin", str(ssh), raising=False)
+
+    assert bridge.resolve_openssh_tool("scp") == "scp"
+
+
+def test_resolve_openssh_tool_prefers_system_openssh_on_windows(tmp_path, monkeypatch):
+    """Git for Windows' MSYS ssh cannot use the Windows agent; don't let it win."""
+    import mindsync.bridge as bridge
+
+    system_root = tmp_path / "Windows"
+    openssh = system_root / "System32" / "OpenSSH"
+    openssh.mkdir(parents=True)
+    (openssh / "ssh.exe").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(bridge.settings, "ssh_bin", "", raising=False)
+    monkeypatch.setattr(bridge.sys, "platform", "win32")
+    monkeypatch.setenv("SystemRoot", str(system_root))
+
+    assert bridge.resolve_openssh_tool("ssh") == str(openssh / "ssh.exe")
+    # scp.exe is absent here, so it must not be invented.
+    assert bridge.resolve_openssh_tool("scp") == "scp"
+
+
+def test_resolve_openssh_tool_plain_name_on_posix(monkeypatch):
+    import mindsync.bridge as bridge
+
+    monkeypatch.setattr(bridge.settings, "ssh_bin", "", raising=False)
+    monkeypatch.setattr(bridge.sys, "platform", "linux")
+    assert bridge.resolve_openssh_tool("ssh") == "ssh"
+    assert bridge.resolve_openssh_tool("scp") == "scp"
+
+
+def test_validate_entity_accepts_namespaced_keys():
+    """GBrain's entity keys are namespaced with a colon (person:aditya)."""
+    assert validate_entity("person:aditya") == "person:aditya"
+    assert validate_entity("project:astro-skill") == "project:astro-skill"
+    assert validate_entity("system:mindsync_ai") == "system:mindsync_ai"
+
+
+def test_validate_entity_still_rejects_dangerous_input():
+    for bad in (
+        "a b",            # whitespace
+        "a;rm -rf /",     # shell metacharacter
+        "../etc/passwd",  # traversal
+        "a$(id)",         # substitution
+        "a|b",
+        "a&b",
+        "file.txt:stream",  # Windows alternate data stream shape
+        "project:NUL",      # reserved device name behind a namespace
+        "a:b:c",            # only one namespace prefix
+        ":leading-colon",   # must still start alphanumeric
+        "",
+        "NUL",            # reserved Windows device name
+        "x" * 200,        # over length
+    ):
+        with pytest.raises(ValueError):
+            validate_entity(bad)
+
+
+def _fact(fid: str, entity: str = "ent-1"):
+    return {
+        "fact_id": fid,
+        "agent": "agent-a",
+        "entity": entity,
+        "attribute": "attr-1",
+        "text": "hello",
+        "source": "src-1",
+        "confidence": 1.0,
+    }
+
+
+def _old_remote_mock(calls, *, rejects_fact_id: bool):
+    """Simulate a remote with no `batch` and (optionally) no `--fact_id`."""
+    def mock_run(args, input=None, capture_output=True, timeout=None, check=False):
+        stdin_data = input or b""
+        calls.append(stdin_data)
+        res = Mock()
+        res.args = args
+        if b" batch " in stdin_data or stdin_data.strip().endswith(b"batch"):
+            res.returncode = 2
+            res.stdout = b""
+            res.stderr = (
+                b"usage: gbrain_fact.py [-h] {write,read} ...\n"
+                b"gbrain_fact.py: error: argument cmd: invalid choice: 'batch'"
+            )
+        elif rejects_fact_id and b"--fact_id" in stdin_data:
+            res.returncode = 2
+            res.stdout = b""
+            res.stderr = (
+                b"usage: gbrain_fact.py write [-h] --agent AGENT --entity ENTITY\n"
+                b"gbrain_fact.py: error: unrecognized arguments: --fact_id abc123"
+            )
+        else:
+            res.returncode = 0
+            res.stdout = b'{"ok": true, "count": 1}'
+            res.stderr = b""
+        return res
+    return mock_run
+
+
+def _configure_remote(monkeypatch):
+    s = Settings()
+    s.ssh_host = "test-host"
+    s.remote_root = "/test/root"
+    s.remote_write_script = "tools/gbrain_fact.py"
+    import mindsync.bridge as bridge
+    monkeypatch.setattr(bridge, "settings", s)
+    monkeypatch.setattr(bridge, "_legacy_supports_fact_id", None, raising=False)
+    return bridge
+
+
+def test_legacy_write_degrades_when_remote_rejects_fact_id(monkeypatch):
+    """A remote too old for --fact_id must still receive the fact, not lose it."""
+    bridge = _configure_remote(monkeypatch)
+    calls = []
+    monkeypatch.setattr(bridge.subprocess, "run", _old_remote_mock(calls, rejects_fact_id=True))
+
+    res = bridge.write_batch_remote([_fact("f1")])
+
+    assert res.ok
+    assert res.results["success_ids"] == ["f1"]
+    assert res.results.get("failed") == []
+    # batch attempt, --fact_id attempt, then the retry without it.
+    assert len(calls) == 3
+    assert b"--fact_id" in calls[1]
+    assert b"--fact_id" not in calls[2]
+    assert b"--entity" in calls[2]
+
+
+def test_legacy_write_learns_fact_id_is_unsupported(monkeypatch):
+    """The rejection is probed once, not re-paid on every remaining fact."""
+    bridge = _configure_remote(monkeypatch)
+    calls = []
+    monkeypatch.setattr(bridge.subprocess, "run", _old_remote_mock(calls, rejects_fact_id=True))
+
+    res = bridge.write_batch_remote([_fact("f1"), _fact("f2"), _fact("f3")])
+
+    assert res.ok
+    assert set(res.results["success_ids"]) == {"f1", "f2", "f3"}
+    # 1 batch + (f1: reject + retry) + f2 + f3 = 5, not 7.
+    assert len(calls) == 5
+    assert sum(1 for c in calls if b"--fact_id" in c) == 1
+
+
+def test_legacy_write_keeps_fact_id_when_remote_accepts_it(monkeypatch):
+    """Don't drop fact_id against a remote that understands it."""
+    bridge = _configure_remote(monkeypatch)
+    calls = []
+    monkeypatch.setattr(bridge.subprocess, "run", _old_remote_mock(calls, rejects_fact_id=False))
+
+    res = bridge.write_batch_remote([_fact("f1"), _fact("f2")])
+
+    assert res.ok
+    assert set(res.results["success_ids"]) == {"f1", "f2"}
+    assert len(calls) == 3  # batch probe + one write per fact, no retries
+    for c in calls[1:]:
+        assert b"--fact_id" in c
