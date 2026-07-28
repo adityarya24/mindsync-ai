@@ -256,14 +256,14 @@ def test_sanitize_error_redacts_ssh_key_and_paths(monkeypatch):
 
     msg = (
         "Permission denied (publickey) for prod-host, "
-        "identity file /home/aditya/.ssh/id_ed25519 rejected; "
-        "also tried C:\\Users\\aditya\\.ssh\\id_rsa "
+        "identity file /home/testuser/.ssh/id_ed25519 rejected; "
+        "also tried C:\\Users\\testuser\\.ssh\\id_rsa "
         "and ~/.ssh/id_ecdsa, "
         "remote root /srv/mindsync/compiled-truth unreachable"
     )
     sanitized = bridge._sanitize_error(msg)
 
-    for leaked in ("id_ed25519", "id_rsa", "id_ecdsa", ".ssh", "aditya", "prod-host", "/srv/mindsync"):
+    for leaked in ("id_ed25519", "id_rsa", "id_ecdsa", ".ssh", "testuser", "prod-host", "/srv/mindsync"):
         assert leaked not in sanitized, f"{leaked!r} leaked in: {sanitized!r}"
 
     assert "[SSH_HOST]" in sanitized
@@ -295,7 +295,7 @@ def test_pull_compiled_truth_sanitizes_scp_oserror(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge, "settings", s)
 
     def raise_oserror(args, timeout=None, check=False):
-        raise OSError("[Errno 2] No such file or directory: '/home/aditya/.ssh/id_ed25519'")
+        raise OSError("[Errno 2] No such file or directory: '/home/testuser/.ssh/id_ed25519'")
 
     monkeypatch.setattr(bridge, "_run", raise_oserror)
 
@@ -304,7 +304,7 @@ def test_pull_compiled_truth_sanitizes_scp_oserror(monkeypatch, tmp_path):
     assert res.error is not None
     assert "id_ed25519" not in res.error
     assert ".ssh" not in res.error
-    assert "aditya" not in res.error
+    assert "testuser" not in res.error
 
 
 def test_resolve_openssh_tool_honours_explicit_config(tmp_path, monkeypatch):

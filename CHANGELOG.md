@@ -39,6 +39,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dead letter on flush. A single `namespace:` prefix is now accepted; the prefix
   may not contain a dot, which keeps the Windows alternate-data-stream shape
   (`file.txt:stream`) and reserved device names rejected as before.
+- Docs, comments and test fixtures use neutral placeholders instead of the
+  maintainer's own entity keys, remote script name and agent roster.
+
+## [1.1.1] - 2026-07-26
+
+### Fixed
+
+- Republished so the PyPI project links point at `mindsync-ai`; the 1.1.0
+  artifacts were built before the rename landed and still linked to the old
+  `mindsync-mcp` repository.
+- `update_focus` no longer swallows a failed `focus.changed` publish. The focus
+  write still succeeds, but the dropped event is now reported in `warnings` and
+  written to the audit log instead of returning a clean success.
+- SSH sanitization tests use a neutral fixture path instead of a real home
+  directory.
 
 ## [1.1.0] - 2026-07-21
 
