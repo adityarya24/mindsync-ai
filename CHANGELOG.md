@@ -20,6 +20,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`gemini` preset works headless.** Gemini CLI refuses to run in an untrusted
   directory, so every dispatched job died with exit 55 before starting. The preset
   now passes `--skip-trust`.
+- **Remote no longer looks permanently offline on Windows.** The bridge shelled
+  out to whatever `ssh` PATH resolved first; when Git for Windows' MSYS ssh won,
+  it could not reach the Windows ssh-agent, so every agent-held key failed and
+  the probe reported offline forever. ssh/scp now prefer the OS OpenSSH client on
+  Windows, overridable with `MINDSYNC_SSH_BIN`.
+- The remote probe's `reason` now carries ssh's own (sanitized) stderr, so an
+  offline result says *why* — wrong key, unknown host alias, refused connection —
+  instead of a bare `ssh_auth_or_timeout`.
+- **Namespaced entity keys are valid again.** `validate_entity` rejected the
+  `namespace:name` form (`person:aditya`, `project:astro-skill`), so facts queued
+  under the documented convention could never sync and were quarantined to the
+  dead letter on flush. A single `namespace:` prefix is now accepted; the prefix
+  may not contain a dot, which keeps the Windows alternate-data-stream shape
+  (`file.txt:stream`) and reserved device names rejected as before.
 
 ## [1.1.0] - 2026-07-21
 

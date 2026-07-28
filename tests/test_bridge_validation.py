@@ -117,7 +117,7 @@ def test_write_batch_remote_mocked(monkeypatch):
     assert res.ok
     assert len(called_args) == 1
     cmd_args, stdin_data = called_args[0]
-    assert "ssh" in cmd_args
+    assert cmd_args[0] == bridge.resolve_openssh_tool("ssh")
     assert "test-host" in cmd_args
     assert b"mindsync_fact.py" in stdin_data
     assert b"base64 -d" in stdin_data
@@ -231,7 +231,7 @@ def test_pull_compiled_truth_mocked(monkeypatch, tmp_path):
     assert res.ok
     assert len(called_args) == 1
     scp_args = called_args[0]
-    assert "scp" in scp_args
+    assert scp_args[0] == bridge.resolve_openssh_tool("scp")
     assert "test-host:/test/root/compiled-truth/." in scp_args
     
     # Staging directory should be cleaned up
@@ -305,3 +305,81 @@ def test_pull_compiled_truth_sanitizes_scp_oserror(monkeypatch, tmp_path):
     assert "id_ed25519" not in res.error
     assert ".ssh" not in res.error
     assert "aditya" not in res.error
+
+
+def test_resolve_openssh_tool_honours_explicit_config(tmp_path, monkeypatch):
+    import mindsync.bridge as bridge
+
+    ssh = tmp_path / "ssh.exe"
+    scp = tmp_path / "scp.exe"
+    ssh.write_text("", encoding="utf-8")
+    scp.write_text("", encoding="utf-8")
+    monkeypatch.setattr(bridge.settings, "ssh_bin", str(ssh), raising=False)
+
+    assert bridge.resolve_openssh_tool("ssh") == str(ssh)
+    # scp is taken from the same install, not from PATH.
+    assert bridge.resolve_openssh_tool("scp") == str(scp)
+
+
+def test_resolve_openssh_tool_falls_back_when_sibling_missing(tmp_path, monkeypatch):
+    import mindsync.bridge as bridge
+
+    ssh = tmp_path / "ssh.exe"
+    ssh.write_text("", encoding="utf-8")
+    monkeypatch.setattr(bridge.settings, "ssh_bin", str(ssh), raising=False)
+
+    assert bridge.resolve_openssh_tool("scp") == "scp"
+
+
+def test_resolve_openssh_tool_prefers_system_openssh_on_windows(tmp_path, monkeypatch):
+    """Git for Windows' MSYS ssh cannot use the Windows agent; don't let it win."""
+    import mindsync.bridge as bridge
+
+    system_root = tmp_path / "Windows"
+    openssh = system_root / "System32" / "OpenSSH"
+    openssh.mkdir(parents=True)
+    (openssh / "ssh.exe").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(bridge.settings, "ssh_bin", "", raising=False)
+    monkeypatch.setattr(bridge.sys, "platform", "win32")
+    monkeypatch.setenv("SystemRoot", str(system_root))
+
+    assert bridge.resolve_openssh_tool("ssh") == str(openssh / "ssh.exe")
+    # scp.exe is absent here, so it must not be invented.
+    assert bridge.resolve_openssh_tool("scp") == "scp"
+
+
+def test_resolve_openssh_tool_plain_name_on_posix(monkeypatch):
+    import mindsync.bridge as bridge
+
+    monkeypatch.setattr(bridge.settings, "ssh_bin", "", raising=False)
+    monkeypatch.setattr(bridge.sys, "platform", "linux")
+    assert bridge.resolve_openssh_tool("ssh") == "ssh"
+    assert bridge.resolve_openssh_tool("scp") == "scp"
+
+
+def test_validate_entity_accepts_namespaced_keys():
+    """GBrain's entity keys are namespaced with a colon (person:aditya)."""
+    assert validate_entity("person:aditya") == "person:aditya"
+    assert validate_entity("project:astro-skill") == "project:astro-skill"
+    assert validate_entity("system:mindsync_ai") == "system:mindsync_ai"
+
+
+def test_validate_entity_still_rejects_dangerous_input():
+    for bad in (
+        "a b",            # whitespace
+        "a;rm -rf /",     # shell metacharacter
+        "../etc/passwd",  # traversal
+        "a$(id)",         # substitution
+        "a|b",
+        "a&b",
+        "file.txt:stream",  # Windows alternate data stream shape
+        "project:NUL",      # reserved device name behind a namespace
+        "a:b:c",            # only one namespace prefix
+        ":leading-colon",   # must still start alphanumeric
+        "",
+        "NUL",            # reserved Windows device name
+        "x" * 200,        # over length
+    ):
+        with pytest.raises(ValueError):
+            validate_entity(bad)
