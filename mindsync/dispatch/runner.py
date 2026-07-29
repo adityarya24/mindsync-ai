@@ -24,15 +24,23 @@ from mindsync.dispatch import store
 
 
 def _cleanup_worktree(job_id: str) -> None:
+    """Drop the job's worktree unless the agent left work in it.
+
+    Never raises and never touches job status — a cleanup problem must not turn a
+    successful job into a failed one. Work is never merged, rebased or pushed:
+    the agent's branch is left for a human to review.
+    """
     meta = store.get_job(job_id)
     if not meta or not meta.get("worktreePath"):
         return
+    if meta.get("worktreeKept") is not None:
+        return  # already cleaned up — cancel_job runs before the supervisor finishes
     try:
         from mindsync.dispatch.worktree import has_changes, remove_worktree
-        if has_changes(meta["worktreePath"], meta["baseCommit"]):
-            store.update_job(job_id, {"worktreeKept": True})
-            return
-        if remove_worktree(meta["repoRoot"], meta["worktreePath"], meta["branch"]):
+
+        if not has_changes(meta["worktreePath"], meta.get("baseCommit")) and remove_worktree(
+            meta["repoRoot"], meta["worktreePath"], meta["branch"]
+        ):
             store.update_job(job_id, {"worktreeKept": False})
             return
     except Exception:
@@ -175,12 +183,22 @@ async def run_task(
 
     if worktree:
         from mindsync.dispatch.worktree import create_worktree
-        wt_info = create_worktree(repo_rt, meta["id"])
+
+        try:
+            wt_info = create_worktree(repo_rt, meta["id"])
+        except Exception:
+            # Do not leave the job stuck in "pending" with nothing ever running it.
+            store.update_job(
+                meta["id"],
+                {"status": "failed", "exitCode": -1, "endedAt": store.utc_now()},
+            )
+            raise
         meta = store.update_job(meta["id"], {
             "cwd": wt_info["path"],
             "repoRoot": repo_rt,
             "worktreePath": wt_info["path"],
             "branch": wt_info["branch"],
+            "baseCommit": wt_info["baseCommit"],
         })
 
     if background:

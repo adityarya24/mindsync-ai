@@ -149,6 +149,68 @@ async def test_dirty_worktree_survives_after_job(fake_repo: Path, tmp_path: Path
     assert (Path(job["worktreePath"]) / "dirty.txt").exists()
 
 
+def test_has_changes_without_base_commit_keeps(fake_repo: Path):
+    """A missing base commit must never read as "no work" — that deletes the worktree."""
+    meta = create_worktree(str(fake_repo), "job-nobase")
+    assert has_changes(meta["path"], None) is True
+    remove_worktree(str(fake_repo), meta["path"], meta["branch"])
+
+
+def test_has_changes_on_unresolvable_base_keeps(fake_repo: Path):
+    """git failing to answer is not the same as git answering "nothing"."""
+    meta = create_worktree(str(fake_repo), "job-badbase")
+    assert has_changes(meta["path"], "deadbeef" * 5) is True
+    remove_worktree(str(fake_repo), meta["path"], meta["branch"])
+
+
+def test_has_changes_missing_path(tmp_path: Path):
+    assert has_changes(str(tmp_path / "never-created"), "abc123") is False
+
+
+@pytest.mark.asyncio
+async def test_committed_work_survives_after_job(fake_repo: Path, tmp_path: Path, monkeypatch):
+    """The realistic case: the agent commits its work, leaving a clean tree behind."""
+    _isolate_dispatch(tmp_path, monkeypatch)
+
+    import json
+    import sys
+
+    from tests.test_dispatch import user_config_path
+
+    script = (
+        "import subprocess;"
+        "open('feature.txt', 'w').write('agent work');"
+        "subprocess.run(['git', 'add', '-A'], check=True);"
+        "subprocess.run(['git', 'commit', '-m', 'agent work'], check=True)"
+    )
+    cfg = user_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({
+        "agents": [{
+            "name": "committer",
+            "bin": sys.executable,
+            "input": "stdin",
+            "runArgs": ["-c", script],
+        }]
+    }), encoding="utf-8")
+
+    res = await run_task(
+        agent="committer", prompt="x", background=False, publisher_agent="t",
+        cwd=str(fake_repo), worktree=True
+    )
+    job = res["job"]
+    assert job["status"] == "done"
+    assert job.get("worktreeKept") is True
+    assert Path(job["worktreePath"]).exists()
+    assert (Path(job["worktreePath"]) / "feature.txt").exists()
+
+    branches = subprocess.run(
+        ["git", "-C", str(fake_repo), "branch", "--list", job["branch"]],
+        capture_output=True, text=True,
+    ).stdout
+    assert job["branch"] in branches
+
+
 @pytest.mark.asyncio
 async def test_non_git_cwd_raises(tmp_path: Path):
     with pytest.raises(WorktreeError, match="not inside a git repo"):
