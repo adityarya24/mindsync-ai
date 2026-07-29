@@ -75,6 +75,11 @@ def create_job(
             "endedAt": None,
             "exitCode": None,
             "timedOut": False,
+            "repoRoot": None,
+            "worktreePath": None,
+            "branch": None,
+            "baseCommit": None,
+            "worktreeKept": None,
         }
         paths["meta"].write_text(json.dumps(meta, indent=2), encoding="utf-8")
         paths["prompt"].write_text(prompt, encoding="utf-8")

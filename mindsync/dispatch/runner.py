@@ -23,6 +23,23 @@ from mindsync.dispatch.proc import (
 from mindsync.dispatch import store
 
 
+def _cleanup_worktree(job_id: str) -> None:
+    meta = store.get_job(job_id)
+    if not meta or not meta.get("worktreePath"):
+        return
+    try:
+        from mindsync.dispatch.worktree import has_changes, remove_worktree
+        if has_changes(meta["worktreePath"], meta["baseCommit"]):
+            store.update_job(job_id, {"worktreeKept": True})
+            return
+        if remove_worktree(meta["repoRoot"], meta["worktreePath"], meta["branch"]):
+            store.update_job(job_id, {"worktreeKept": False})
+            return
+    except Exception:
+        pass
+    store.update_job(job_id, {"worktreeKept": True})
+
+
 _STDERR_TAIL_CHARS = 4000
 
 
@@ -131,9 +148,17 @@ async def run_task(
     write: bool = False,
     background: bool = False,
     cwd: str | None = None,
+    worktree: bool = False,
     publisher_agent: str = "dispatch",
 ) -> dict[str, Any]:
     workdir = cwd or os.getcwd()
+    supervisor_cwd = workdir
+    repo_rt = None
+    if worktree:
+        from mindsync.dispatch.worktree import repo_root
+        repo_rt = repo_root(workdir)
+        supervisor_cwd = repo_rt
+
     adapter = resolve_adapter(agent)
     bin_path = resolve_bin(adapter.bin)
     if not bin_path:
@@ -148,6 +173,16 @@ async def run_task(
         write=write,
     )
 
+    if worktree:
+        from mindsync.dispatch.worktree import create_worktree
+        wt_info = create_worktree(repo_rt, meta["id"])
+        meta = store.update_job(meta["id"], {
+            "cwd": wt_info["path"],
+            "repoRoot": repo_rt,
+            "worktreePath": wt_info["path"],
+            "branch": wt_info["branch"],
+        })
+
     if background:
         paths = store.job_paths(meta["id"])
         # Re-enter via CLI supervise so the MCP server process is not blocked.
@@ -155,7 +190,7 @@ async def run_task(
         bg = spawn_background(
             py,
             ["-m", "mindsync.dispatch.cli", "_supervise", meta["id"]],
-            cwd=workdir,
+            cwd=supervisor_cwd,
             stdout_path=paths["supervisorLog"],
             stderr_path=paths["supervisorLog"],
         )
@@ -245,6 +280,8 @@ async def supervise_job(
             "endedAt": store.utc_now(),
         },
     )
+    _cleanup_worktree(job_id)
+    final = store.get_job(job_id)
     if status == "done":
         _publish_job_event("job.completed", final, agent_name=publisher_agent)
     elif status == "failed":
@@ -261,6 +298,7 @@ def cancel_job(job_id: str) -> dict[str, Any]:
     pid = meta.get("pid")
     if pid is not None:
         kill_tree(int(pid))
+    _cleanup_worktree(job_id)
     return store.update_job(
         job_id,
         {

@@ -611,9 +611,14 @@ async def delegate_task(
     write: bool = False,
     background: bool = False,
     model: str | None = None,
+    cwd: str | None = None,
+    worktree: bool = False,
     agent_name: str = "default_agent",
 ) -> str:
-    """Delegate a task to a headless CLI agent (codex, claude, gemini, cursor, aider, grok)."""
+    """Delegate a task to a headless CLI agent (codex, claude, gemini, cursor, aider, grok).
+    
+    If worktree is True, the agent will run in an isolated git worktree branching from cwd.
+    """
     settings.ensure_dirs()
     try:
         res = await dispatch_run_task(
@@ -622,6 +627,8 @@ async def delegate_task(
             model=model,
             write=write,
             background=background,
+            cwd=cwd,
+            worktree=worktree,
             publisher_agent=agent_name,
         )
     except Exception as exc:
@@ -634,11 +641,13 @@ async def delegate_task(
         f"job={job.get('id')} agent={agent} bg={background} status={job.get('status')}",
     )
     if background:
+        wt_info = f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})" if job.get("worktreePath") else ""
         return (
-            f"Started background job {job['id']} (agent: {job['agent']}). "
+            f"Started background job {job['id']} (agent: {job['agent']}).{wt_info} "
             f"Check: job_status('{job['id']}')"
         )
-    return res.get("result") or "(no output)"
+    wt_info = f"worktree: {job['worktreePath']}  (branch: {job['branch']})\n" if job.get("worktreePath") else ""
+    return f"{wt_info}{res.get('result') or '(no output)'}"
 
 
 @mcp.tool()

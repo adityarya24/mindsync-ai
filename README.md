@@ -86,7 +86,7 @@ Or:
 
 | Tool | Purpose |
 | --- | --- |
-| `delegate_task` | Run a CLI agent (foreground or background) |
+| `delegate_task` | Run a CLI agent (foreground/background), optionally in an isolated `--worktree` |
 | `job_status` | Job status + PID reconciliation |
 | `job_result` | Read job result file |
 | `job_cancel` | Cancel running job and kill its process tree |
@@ -97,7 +97,7 @@ Dispatch also auto-emits `job.started`, `job.completed`, and `job.failed` on the
 
 ```bash
 mindsync-dispatch agents
-mindsync-dispatch run codex "summarize README" --background
+mindsync-dispatch run codex "summarize README" --background --worktree
 mindsync-dispatch status
 mindsync-dispatch result <job-id>
 mindsync-dispatch cancel <job-id>

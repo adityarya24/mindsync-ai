@@ -17,27 +17,33 @@ from mindsync.dispatch.store import get_job, list_jobs, reconcile_job
 
 
 def parse_run_args(argv: list[str]) -> dict:
-    flags: dict = {"model": None, "write": False, "background": False}
+    flags: dict = {"model": None, "write": False, "background": False, "cwd": None, "worktree": False}
     rest: list[str] = []
     i = 0
+    usage_str = 'usage: dispatch run <agent> "task..." [--background] [--write] [--model <m>] [--worktree] [--cwd <path>]'
     while i < len(argv):
         a = argv[i]
         if a == "--model":
             i += 1
             flags["model"] = argv[i] if i < len(argv) else None
+        elif a == "--cwd":
+            i += 1
+            flags["cwd"] = argv[i] if i < len(argv) else None
         elif a == "--write":
             flags["write"] = True
         elif a == "--background":
             flags["background"] = True
+        elif a == "--worktree":
+            flags["worktree"] = True
         else:
             rest.append(a)
         i += 1
     if not rest:
-        raise SystemExit('usage: dispatch run <agent> "task..." [--background] [--write] [--model <m>]')
+        raise SystemExit(usage_str)
     agent = rest[0]
     prompt = " ".join(rest[1:]).strip()
     if not agent or not prompt:
-        raise SystemExit('usage: dispatch run <agent> "task..." [--background] [--write] [--model <m>]')
+        raise SystemExit(usage_str)
     return {"agent": agent, "prompt": prompt, **flags}
 
 
@@ -49,7 +55,10 @@ def fmt_job(m: dict) -> str:
     prompt = m.get("prompt") or ""
     if len(prompt) > 100:
         prompt = prompt[:100] + "…"
-    return f"[{m['id']}] {m['agent']} — {m['status']}{exit_bit}\n  prompt: {prompt}"
+    lines = [f"[{m['id']}] {m['agent']} — {m['status']}{exit_bit}", f"  prompt: {prompt}"]
+    if m.get("worktreePath") and m.get("worktreeKept"):
+        lines.append(f"  worktree kept: {m['worktreePath']} (branch {m['branch']})")
+    return "\n".join(lines)
 
 
 async def _async_main(argv: list[str]) -> int:
@@ -62,12 +71,14 @@ async def _async_main(argv: list[str]) -> int:
         r = await run_task(**opts)
         job = r["job"]
         if opts["background"]:
+            wt_info = f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})" if job.get("worktreePath") else ""
             print(
-                f"Started background job {job['id']} (agent: {job['agent']}). "
+                f"Started background job {job['id']} (agent: {job['agent']}).{wt_info}\n"
                 f"Check: python -m mindsync.dispatch.cli status {job['id']}"
             )
             return 0
-        print(r.get("result") or describe_empty_result(job))
+        wt_info = f"worktree: {job['worktreePath']}  (branch: {job['branch']})\n" if job.get("worktreePath") else ""
+        print(f"{wt_info}{r.get('result') or describe_empty_result(job)}")
         if job.get("status") != "done":
             print(
                 f"\n[job {job['id']} {job['status']}"
