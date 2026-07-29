@@ -42,6 +42,31 @@ class UnknownAgentError(KeyError):
         self.name = "UnknownAgentError"
 
 
+class UnknownRoleError(KeyError):
+    def __init__(self, name: str, available: list[str]) -> None:
+        if available:
+            avail = ", ".join(available)
+            msg = (
+                f"Unknown role '{name}'. Available: {avail}. "
+                f"Configure roles in {user_config_path()}"
+            )
+        else:
+            msg = (
+                f"Unknown role '{name}'. No roles are configured; "
+                f"add a 'roles' block to {user_config_path()}"
+            )
+        super().__init__(msg)
+        self.name = "UnknownRoleError"
+
+
+class RoleConfig(BaseModel):
+    name: str
+    agent: str
+    model: str | None = None
+    effort: str | None = None
+
+
+
 class AdapterConfig(BaseModel):
     name: str
     bin: str
@@ -136,6 +161,62 @@ def resolve_adapter(name: str) -> AdapterConfig:
         return adapters[name]
     except KeyError as exc:
         raise UnknownAgentError(name, sorted(adapters.keys())) from exc
+
+
+def load_roles() -> dict[str, RoleConfig]:
+    """Load roles defined in user agents.json and validate against available agents."""
+    user_path = user_config_path()
+    if not user_path.is_file():
+        return {}
+
+    try:
+        user = json.loads(user_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Your agents.json at {user_path} is invalid: {exc}") from exc
+
+    raw_roles = user.get("roles")
+    if not raw_roles or not isinstance(raw_roles, dict):
+        return {}
+
+    adapters = load_adapters()
+    roles: dict[str, RoleConfig] = {}
+
+    for name, data in raw_roles.items():
+        if not isinstance(data, dict):
+            continue
+        role_data = {"name": name, **data}
+        try:
+            cfg = RoleConfig.model_validate(role_data)
+        except Exception as exc:
+            raise ValueError(f"Role '{name}' definition is invalid: {exc}") from exc
+
+        if cfg.agent not in adapters:
+            raise ValueError(
+                f"Role '{name}' references unknown agent '{cfg.agent}'. "
+                f"Configured in {user_path}"
+            )
+
+        adapter = adapters[cfg.agent]
+        if cfg.effort:
+            if not adapter.efforts or cfg.effort.lower() not in [e.lower() for e in adapter.efforts]:
+                supported = ", ".join(adapter.efforts) if adapter.efforts else "none"
+                raise ValueError(
+                    f"Role '{name}' specifies effort '{cfg.effort}' which agent '{cfg.agent}' "
+                    f"does not support (supported: {supported}). Configured in {user_path}"
+                )
+
+        roles[name] = cfg
+
+    return roles
+
+
+def resolve_role(name: str) -> RoleConfig:
+    """Resolve a role name to its RoleConfig, raising UnknownRoleError if missing."""
+    roles = load_roles()
+    if name not in roles:
+        raise UnknownRoleError(name, sorted(roles.keys()))
+    return roles[name]
+
 
 
 def list_models(adapter: AdapterConfig) -> list[str]:

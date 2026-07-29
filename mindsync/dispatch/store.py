@@ -47,6 +47,7 @@ def create_job(
     cwd: str,
     model: str | None = None,
     effort: str | None = None,
+    role: str | None = None,
     write: bool = False,
 ) -> dict[str, Any]:
     root = jobs_root()
@@ -65,6 +66,7 @@ def create_job(
         meta = {
             "id": job_id,
             "agent": agent,
+            "role": role,
             "prompt": prompt,
             "cwd": cwd,
             "model": model,

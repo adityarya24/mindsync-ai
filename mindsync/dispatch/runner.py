@@ -11,6 +11,7 @@ from typing import Any
 from mindsync.dispatch.adapters import (
     build_invocation,
     resolve_adapter,
+    resolve_role,
     user_config_path,
 )
 from mindsync.dispatch.proc import (
@@ -162,7 +163,8 @@ def _publish_job_event(event_type: str, meta: dict[str, Any], agent_name: str = 
 
 async def run_task(
     *,
-    agent: str,
+    agent: str | None = None,
+    role: str | None = None,
     prompt: str,
     model: str | None = None,
     effort: str | None = None,
@@ -172,6 +174,21 @@ async def run_task(
     worktree: bool = False,
     publisher_agent: str = "dispatch",
 ) -> dict[str, Any]:
+    if (agent is None and role is None) or (agent is not None and role is not None):
+        raise ValueError("Exactly one of 'agent' or 'role' must be provided.")
+
+    if role is not None:
+        role_cfg = resolve_role(role)
+        eff_agent = role_cfg.agent
+        eff_model = model if model is not None else role_cfg.model
+        eff_effort = effort if effort is not None else role_cfg.effort
+        job_role = role
+    else:
+        eff_agent = agent  # type: ignore[assignment]
+        eff_model = model
+        eff_effort = effort
+        job_role = None
+
     workdir = cwd or os.getcwd()
     supervisor_cwd = workdir
     repo_rt = None
@@ -180,19 +197,20 @@ async def run_task(
         repo_rt = repo_root(workdir)
         supervisor_cwd = repo_rt
 
-    adapter = resolve_adapter(agent)
+    adapter = resolve_adapter(eff_agent)
     bin_path = resolve_bin(adapter.bin)
     if not bin_path:
         raise AgentNotInstalledError(adapter)
     assert_arg_mode_spawn_safe(adapter, bin_path)
 
     meta = store.create_job(
-        agent=agent,
+        agent=eff_agent,
+        role=job_role,
         # Stored as sent, so prompt.txt always shows what the agent actually received.
         prompt=prompt + _WORKTREE_PROMPT_NOTE if worktree else prompt,
         cwd=workdir,
-        model=model,
-        effort=effort,
+        model=eff_model,
+        effort=eff_effort,
         write=write,
     )
 
