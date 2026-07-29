@@ -1,4 +1,4 @@
-"""CLI entry: python -m mindsync.dispatch.cli <run|status|result|cancel|agents|_supervise>."""
+"""CLI entry: python -m mindsync.dispatch.cli <run|status|result|review|cancel|agents|models|_supervise>."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 import sys
 
 from mindsync.dispatch.adapters import load_adapters, user_config_path
+from mindsync.dispatch.review import format_review, verdict
 from mindsync.dispatch.runner import (
     cancel_job,
     describe_empty_result,
@@ -25,6 +26,7 @@ def parse_run_args(argv: list[str]) -> dict:
         "background": False,
         "cwd": None,
         "worktree": False,
+        "checks": [],
     }
     rest: list[str] = []
     i = 0
@@ -32,7 +34,7 @@ def parse_run_args(argv: list[str]) -> dict:
         'usage: dispatch run <agent> "task..." [options]\n'
         '   or: dispatch run --role <name> "task..." [options]   (no agent: the role picks one)\n'
         "options: [--background] [--write] [--model <m>] [--effort <level>] "
-        "[--worktree] [--cwd <path>]"
+        "[--worktree] [--cwd <path>] [--check <command>]..."
     )
     while i < len(argv):
         a = argv[i]
@@ -48,6 +50,10 @@ def parse_run_args(argv: list[str]) -> dict:
         elif a == "--cwd":
             i += 1
             flags["cwd"] = argv[i] if i < len(argv) else None
+        elif a == "--check":
+            i += 1
+            if i < len(argv):
+                flags["checks"].append(argv[i])
         elif a == "--write":
             flags["write"] = True
         elif a == "--background":
@@ -85,11 +91,19 @@ def fmt_job(m: dict) -> str:
     if m.get("exitCode") is not None:
         to = ", TIMED OUT" if m.get("timedOut") else ""
         exit_bit = f" (exit {m['exitCode']}{to})"
+    verdict_bit = ""
+    if m.get("checkResults"):
+        v = verdict(m)
+        v_str = "pass" if v["passed"] else "fail"
+        verdict_bit = f"  verdict: {v_str}"
     prompt = m.get("prompt") or ""
     if len(prompt) > 100:
         prompt = prompt[:100] + "…"
     agent_str = f"{m['agent']} (role: {m['role']})" if m.get("role") else m["agent"]
-    lines = [f"[{m['id']}] {agent_str} — {m['status']}{exit_bit}", f"  prompt: {prompt}"]
+    lines = [
+        f"[{m['id']}] {agent_str} — {m['status']}{exit_bit}{verdict_bit}",
+        f"  prompt: {prompt}",
+    ]
     if m.get("worktreePath") and m.get("worktreeKept"):
         lines.append(f"  worktree kept: {m['worktreePath']} (branch {m['branch']})")
     return "\n".join(lines)
@@ -97,7 +111,11 @@ def fmt_job(m: dict) -> str:
 
 async def _async_main(argv: list[str]) -> int:
     if not argv:
-        print("usage: dispatch <run|status|result|cancel|agents|models|roles|_supervise> ...", file=sys.stderr)
+        print(
+            "usage: dispatch "
+            "<run|status|result|review|cancel|agents|models|roles|_supervise> ...",
+            file=sys.stderr,
+        )
         return 1
     cmd, *rest = argv
     if cmd == "run":
@@ -105,20 +123,36 @@ async def _async_main(argv: list[str]) -> int:
         r = await run_task(**opts)
         job = r["job"]
         if opts["background"]:
-            wt_info = f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})" if job.get("worktreePath") else ""
+            wt_info = (
+                f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})"
+                if job.get("worktreePath")
+                else ""
+            )
             print(
                 f"Started background job {job['id']} (agent: {job['agent']}).{wt_info}\n"
                 f"Check: python -m mindsync.dispatch.cli status {job['id']}"
             )
             return 0
-        wt_info = f"worktree: {job['worktreePath']}  (branch: {job['branch']})\n" if job.get("worktreePath") else ""
+        wt_info = (
+            f"worktree: {job['worktreePath']}  (branch: {job['branch']})\n"
+            if job.get("worktreePath")
+            else ""
+        )
         print(f"{wt_info}{r.get('result') or describe_empty_result(job)}")
-        if job.get("status") != "done":
-            print(
-                f"\n[job {job['id']} {job['status']}"
-                f"{' — timed out' if job.get('timedOut') else ''}, exit {job.get('exitCode')}]",
-                file=sys.stderr,
-            )
+
+        v_pass = True
+        if opts.get("checks"):
+            v = verdict(job)
+            v_pass = v["passed"]
+            print(f"\nVERDICT: {'PASS' if v_pass else 'FAIL'}")
+
+        if job.get("status") != "done" or not v_pass:
+            if job.get("status") != "done":
+                print(
+                    f"\n[job {job['id']} {job['status']}"
+                    f"{' — timed out' if job.get('timedOut') else ''}, exit {job.get('exitCode')}]",
+                    file=sys.stderr,
+                )
             return 1
         return 0
 
@@ -144,6 +178,20 @@ async def _async_main(argv: list[str]) -> int:
         print(data["result"] or describe_empty_result(fresh or data["meta"]))
         return 0
 
+    if cmd == "review":
+        if not rest:
+            print("usage: dispatch review <job-id>", file=sys.stderr)
+            return 1
+        meta = get_job(rest[0])
+        if not meta:
+            print(f"No such job: {rest[0]}", file=sys.stderr)
+            return 1
+        reconcile_job(meta)
+        fresh = get_job(rest[0]) or meta
+        print(format_review(fresh))
+        v = verdict(fresh)
+        return 0 if v["passed"] else 1
+
     if cmd == "cancel":
         if not rest:
             print("usage: dispatch cancel <job-id>", file=sys.stderr)
@@ -167,7 +215,11 @@ async def _async_main(argv: list[str]) -> int:
         return 0
 
     if cmd == "models":
-        from mindsync.dispatch.adapters import list_models as adapter_list_models, resolve_adapter
+        from mindsync.dispatch.adapters import (
+            list_models as adapter_list_models,
+            resolve_adapter,
+        )
+
         agents_to_list = [resolve_adapter(rest[0])] if rest else load_adapters().values()
         for a in agents_to_list:
             print(f"Models for {a.name}:")
@@ -203,7 +255,10 @@ async def _async_main(argv: list[str]) -> int:
         await supervise_job(rest[0])
         return 0
 
-    print("usage: dispatch <run|status|result|cancel|agents|models|roles|_supervise> ...", file=sys.stderr)
+    print(
+        "usage: dispatch <run|status|result|review|cancel|agents|models|roles|_supervise> ...",
+        file=sys.stderr,
+    )
     return 1
 
 

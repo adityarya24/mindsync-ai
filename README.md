@@ -91,6 +91,7 @@ Or:
 | `list_roles` | List configured roles and their agent, model, and effort mappings |
 | `job_status` | Job status + PID reconciliation |
 | `job_result` | Read job result file |
+| `job_review` | Read mechanical review verdict (check results + git diff summary) |
 | `job_cancel` | Cancel running job and kill its process tree |
 
 Dispatch also auto-emits `job.started`, `job.completed`, and `job.failed` on the bus.
@@ -102,8 +103,9 @@ mindsync-dispatch agents
 mindsync-dispatch models <agent>
 mindsync-dispatch roles
 mindsync-dispatch run --role bulk "summarize README" --background --worktree
-mindsync-dispatch run codex "summarize README" --background --worktree --effort high
+mindsync-dispatch run codex "summarize README" --worktree --effort high --check "pytest -q"
 mindsync-dispatch status
+mindsync-dispatch review <job-id>
 mindsync-dispatch result <job-id>
 mindsync-dispatch cancel <job-id>
 ```

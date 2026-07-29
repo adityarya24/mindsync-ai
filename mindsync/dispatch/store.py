@@ -49,6 +49,7 @@ def create_job(
     effort: str | None = None,
     role: str | None = None,
     write: bool = False,
+    checks: list[str] | None = None,
 ) -> dict[str, Any]:
     root = jobs_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -72,6 +73,9 @@ def create_job(
             "model": model,
             "effort": effort,
             "write": write,
+            "checks": checks or [],
+            "checkResults": [],
+            "diff": None,
             "status": "pending",
             "pid": None,
             "spawnedName": None,

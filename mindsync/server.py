@@ -36,6 +36,7 @@ from mindsync.bus import (
 from mindsync.config import settings
 from mindsync.conflict import detect_focus_conflicts
 from mindsync.dispatch import store as dispatch_store
+from mindsync.dispatch.review import format_review as dispatch_format_review
 from mindsync.dispatch.runner import (
     cancel_job as dispatch_cancel_job,
     describe_empty_result as dispatch_describe_empty_result,
@@ -616,13 +617,16 @@ async def delegate_task(
     effort: str | None = None,
     cwd: str | None = None,
     worktree: bool = False,
+    checks: list[str] | None = None,
     agent_name: str = "default_agent",
 ) -> str:
     """Delegate a task to a headless CLI agent or role.
-    
-    If worktree is True, the agent will run in an isolated git worktree branching from cwd.
-    Specify either agent or role (not both). Prefer specifying a role over an agent name
-    so that model and effort configurations are applied automatically.
+
+    Specify either agent or role, not both. Prefer a role: it carries the model and
+    effort along with the choice, so the task is routed by what kind of work it is.
+    If worktree is True, the agent runs in an isolated git worktree branching from cwd.
+    checks are shell commands run after the agent finishes (for example a test command);
+    read their outcome with job_review before spending anything on the job's output.
     """
     settings.ensure_dirs()
     try:
@@ -636,6 +640,7 @@ async def delegate_task(
             background=background,
             cwd=cwd,
             worktree=worktree,
+            checks=checks,
             publisher_agent=agent_name,
         )
     except Exception as exc:
@@ -667,6 +672,18 @@ def job_status(job_id: str, agent_name: str = "default_agent") -> str:
     reconciled = dispatch_store.reconcile_job(job)
     log_audit(agent_name, "job_status", f"job={job_id} status={reconciled.get('status')}")
     return _fmt_dispatch_job(reconciled)
+
+
+@mcp.tool()
+def job_review(job_id: str, agent_name: str = "default_agent") -> str:
+    """Get a mechanical review verdict for a job, including check results and diff summary. Call this before job_result to skip reading the output of work that did not pass."""
+    settings.ensure_dirs()
+    job = dispatch_store.get_job(job_id)
+    if not job:
+        return f"No such job: {job_id}"
+    reconciled = dispatch_store.reconcile_job(job)
+    log_audit(agent_name, "job_review", f"job={job_id} status={reconciled.get('status')}")
+    return dispatch_format_review(reconciled)
 
 
 @mcp.tool()
