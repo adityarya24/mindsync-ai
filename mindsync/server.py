@@ -615,11 +615,14 @@ async def delegate_task(
     effort: str | None = None,
     cwd: str | None = None,
     worktree: bool = False,
+    checks: list[str] | None = None,
     agent_name: str = "default_agent",
 ) -> str:
     """Delegate a task to a headless CLI agent (codex, claude, gemini, cursor, aider, grok).
-    
+
     If worktree is True, the agent will run in an isolated git worktree branching from cwd.
+    checks are shell commands run after the agent finishes (for example a test command);
+    read their outcome with job_review before spending anything on the job's output.
     """
     settings.ensure_dirs()
     try:
@@ -632,6 +635,7 @@ async def delegate_task(
             background=background,
             cwd=cwd,
             worktree=worktree,
+            checks=checks,
             publisher_agent=agent_name,
         )
     except Exception as exc:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -228,6 +229,111 @@ async def test_checks_run_before_worktree_cleanup(tmp_path, monkeypatch):
     assert job["status"] == "done"
     assert len(job["checkResults"]) == 1
     assert job["checkResults"][0]["passed"] is True
+
+
+def test_verdict_fails_when_requested_checks_produced_no_result():
+    """A gate that never ran must never read as a gate that passed."""
+    meta = {
+        "status": "done",
+        "exitCode": 0,
+        "write": False,
+        "checks": ["pytest -q"],
+        "checkResults": [],
+    }
+    v = verdict(meta)
+    assert v["passed"] is False
+    assert any("produced no result" in r for r in v["reasons"])
+
+
+def test_verdict_fails_when_only_some_checks_produced_results():
+    meta = {
+        "status": "done",
+        "exitCode": 0,
+        "write": False,
+        "checks": ["ruff check .", "pytest -q"],
+        "checkResults": [
+            {"name": "ruff check .", "passed": True, "exitCode": 0,
+             "output": "", "durationMs": 10},
+        ],
+    }
+    v = verdict(meta)
+    assert v["passed"] is False
+    assert any("1 of 2" in r for r in v["reasons"])
+
+
+def test_failed_check_without_exit_code_is_not_called_a_timeout():
+    """"Could not start" and "ran too long" need different fixes, so say which."""
+    meta = {
+        "status": "done",
+        "exitCode": 0,
+        "write": False,
+        "checks": ["nope"],
+        "checkResults": [
+            {"name": "nope", "passed": False, "exitCode": None, "output": "",
+             "durationMs": 1, "timedOut": False},
+        ],
+    }
+    reasons = verdict(meta)["reasons"]
+    assert any("could not be run" in r for r in reasons)
+    assert not any("timed out" in r for r in reasons)
+
+
+def test_timed_out_check_kills_its_children(tmp_path):
+    """Killing only the shell leaves the real command holding Windows file handles."""
+    marker = tmp_path / "still_alive.txt"
+    # A shell that spawns a python child which would outlive a naive shell kill.
+    child = (
+        f'"{sys.executable}" -c "import time,pathlib;'
+        f"time.sleep(6);pathlib.Path(r'{marker}').write_text('x')\""
+    )
+    results = run_checks(str(tmp_path), [child], timeout_ms=1500)
+
+    assert results[0].passed is False
+    assert results[0].exitCode is None
+    assert results[0].timedOut is True
+
+    time.sleep(7)
+    assert not marker.exists(), "the timed-out check's child process survived the kill"
+
+
+@pytest.mark.asyncio
+async def test_write_job_without_worktree_is_not_falsely_failed(tmp_path, monkeypatch):
+    """The ordinary case: a write job in a plain repo, with no isolation.
+
+    A base commit is only obvious for worktree jobs; without one recorded here the
+    diff is always empty and every successful write job verdicts as FAIL.
+    """
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+    (repo_dir / "init.txt").write_text("initial", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True)
+
+    _register_python_agent(
+        tmp_path,
+        monkeypatch,
+        "import pathlib; pathlib.Path('agent_output.txt').write_text('real work')",
+    )
+
+    res = await run_task(
+        agent="pyagent",
+        prompt="do work",
+        cwd=str(repo_dir),
+        write=True,
+        checks=["exit 0"],
+    )
+    job = res["job"]
+    assert job["status"] == "done"
+    assert (repo_dir / "agent_output.txt").exists()
+    assert job.get("baseCommit"), "a non-worktree job must still record a base commit"
+    assert job["diff"]["filesChanged"] > 0
+    assert "agent_output.txt" in job["diff"]["files"]
+
+    v = verdict(job)
+    assert v["passed"] is True, v["reasons"]
 
 
 @pytest.mark.asyncio

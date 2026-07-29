@@ -10,20 +10,32 @@ from typing import Any
 from pydantic import BaseModel
 
 
+_OUTPUT_TAIL_CHARS = 2000
+
+
 class CheckResult(BaseModel):
     name: str
     passed: bool
     exitCode: int | None
     output: str  # tail only
     durationMs: int
+    # A check can end without an exit code for two different reasons; the reader
+    # needs to know which, because a timeout and a command that could not start
+    # call for different fixes.
+    timedOut: bool = False
+
+
+def _tail(text: str) -> str:
+    """Keep the end of a check's output — the start of a failure is rarely the reason."""
+    return text[-_OUTPUT_TAIL_CHARS:] if len(text) > _OUTPUT_TAIL_CHARS else text
 
 
 def run_checks(
     cwd: str, checks: list[str], timeout_ms: int = 600_000
 ) -> list[CheckResult]:
-    """Run check commands in cwd using platform shell, keeping stdout+stderr tail.
+    """Run check commands in cwd through the platform shell, keeping stdout+stderr tail.
 
-    A check that times out or fails to run is marked passed=False with exitCode=None.
+    A check that times out or fails to start is recorded as failed with no exit code.
     """
     results: list[CheckResult] = []
     timeout_sec = timeout_ms / 1000.0
@@ -31,55 +43,61 @@ def run_checks(
     for cmd in checks:
         start = time.perf_counter()
         try:
-            res = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 shell=True,
                 cwd=cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=timeout_sec,
                 errors="replace",
             )
-            elapsed_ms = int((time.perf_counter() - start) * 1000)
-            output = res.stdout or ""
-            if len(output) > 2000:
-                output = output[-2000:]
-            passed = res.returncode == 0
-            results.append(
-                CheckResult(
-                    name=cmd,
-                    passed=passed,
-                    exitCode=res.returncode,
-                    output=output,
-                    durationMs=elapsed_ms,
-                )
-            )
-        except subprocess.TimeoutExpired as exc:
-            elapsed_ms = int((time.perf_counter() - start) * 1000)
-            output = (exc.stdout or "") if hasattr(exc, "stdout") and exc.stdout else ""
-            if len(output) > 2000:
-                output = output[-2000:]
-            results.append(
-                CheckResult(
-                    name=cmd,
-                    passed=False,
-                    exitCode=None,
-                    output=output,
-                    durationMs=elapsed_ms,
-                )
-            )
         except Exception as exc:
-            elapsed_ms = int((time.perf_counter() - start) * 1000)
             results.append(
                 CheckResult(
                     name=cmd,
                     passed=False,
                     exitCode=None,
-                    output=f"Error executing check: {exc}"[-2000:],
-                    durationMs=elapsed_ms,
+                    output=_tail(f"Check could not be started: {exc}"),
+                    durationMs=int((time.perf_counter() - start) * 1000),
                 )
             )
+            continue
+
+        timed_out = False
+        try:
+            output = proc.communicate(timeout=timeout_sec)[0] or ""
+            exit_code: int | None = proc.returncode
+        except subprocess.TimeoutExpired:
+            # Killing the shell is not enough: on Windows the real command survives
+            # as a grandchild, keeps holding file handles, and then blocks worktree
+            # cleanup on a directory the check itself is sitting in.
+            timed_out = True
+            exit_code = None
+            from mindsync.dispatch.proc import kill_tree
+
+            try:
+                kill_tree(proc.pid)
+            except Exception:
+                pass
+            try:
+                output = proc.communicate(timeout=10)[0] or ""
+            except Exception:
+                output = ""
+        except Exception as exc:
+            exit_code = None
+            output = f"Check failed to run: {exc}"
+
+        results.append(
+            CheckResult(
+                name=cmd,
+                passed=exit_code == 0,
+                exitCode=exit_code,
+                output=_tail(output),
+                durationMs=int((time.perf_counter() - start) * 1000),
+                timedOut=timed_out,
+            )
+        )
     return results
 
 
@@ -198,16 +216,30 @@ def verdict(meta: dict[str, Any]) -> dict[str, Any]:
             c_name = check.name
             c_passed = check.passed
             c_exit = check.exitCode
+            c_timed_out = check.timedOut
         else:
             c_name = check.get("name", "unknown")
             c_passed = check.get("passed", False)
             c_exit = check.get("exitCode")
+            c_timed_out = check.get("timedOut", False)
 
         if not c_passed:
-            if c_exit is None:
+            if c_timed_out:
                 reasons.append(f'check "{c_name}" timed out')
+            elif c_exit is None:
+                reasons.append(f'check "{c_name}" could not be run')
             else:
                 reasons.append(f'check "{c_name}" failed (exit {c_exit})')
+
+    # Missing results are not the same as passing results. Anything that stops the
+    # checks from being recorded — a crash in the review block, a job that never got
+    # that far — would otherwise produce a clean PASS from a gate that never ran.
+    requested = meta.get("checks") or []
+    if len(requested) > len(check_results):
+        missing = len(requested) - len(check_results)
+        reasons.append(
+            f"{missing} of {len(requested)} requested checks produced no result"
+        )
 
     if meta.get("write"):
         diff = meta.get("diff")

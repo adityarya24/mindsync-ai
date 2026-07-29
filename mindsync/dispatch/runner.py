@@ -218,6 +218,15 @@ async def run_task(
             "branch": wt_info["branch"],
             "baseCommit": wt_info["baseCommit"],
         })
+    else:
+        # Every job needs a base, not just isolated ones: the review gate diffs the
+        # job's tree against it, and without one a write job that really did change
+        # files reports as having changed nothing — a permanent false FAIL.
+        from mindsync.dispatch.worktree import head_commit
+
+        base = head_commit(workdir)
+        if base:
+            meta = store.update_job(meta["id"], {"baseCommit": base})
 
     if background:
         paths = store.job_paths(meta["id"])

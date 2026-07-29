@@ -38,6 +38,12 @@ def repo_root(path: str) -> str:
     return out.strip()
 
 
+def head_commit(path: str) -> str | None:
+    """Resolve HEAD for a directory, or None when it is not a usable git repo."""
+    out = _git(path, "rev-parse", "HEAD")
+    return out.strip() if out else None
+
+
 def create_worktree(root: str, job_id: str) -> dict[str, str]:
     """Create a git worktree for a specific job.
 
