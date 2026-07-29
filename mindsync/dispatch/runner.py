@@ -176,6 +176,10 @@ async def run_task(
 ) -> dict[str, Any]:
     if (agent is None and role is None) or (agent is not None and role is not None):
         raise ValueError("Exactly one of 'agent' or 'role' must be provided.")
+    # The CLI rejects this, but callers that build arguments programmatically — the MCP
+    # tool most of all — otherwise spend a whole agent run on an empty prompt.
+    if not prompt or not prompt.strip():
+        raise ValueError("prompt must not be empty.")
 
     if role is not None:
         role_cfg = resolve_role(role)

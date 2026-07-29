@@ -29,8 +29,10 @@ def parse_run_args(argv: list[str]) -> dict:
     rest: list[str] = []
     i = 0
     usage_str = (
-        'usage: dispatch run [<agent>] "task..." [--role <name>] '
-        '[--background] [--write] [--model <m>] [--effort <level>] [--worktree] [--cwd <path>]'
+        'usage: dispatch run <agent> "task..." [options]\n'
+        '   or: dispatch run --role <name> "task..." [options]   (no agent: the role picks one)\n'
+        "options: [--background] [--write] [--model <m>] [--effort <level>] "
+        "[--worktree] [--cwd <path>]"
     )
     while i < len(argv):
         a = argv[i]
@@ -58,12 +60,12 @@ def parse_run_args(argv: list[str]) -> dict:
 
     role = flags.pop("role")
 
+    # With --role there is no positional agent, so every remaining word is prompt.
+    # Deciding by "does the first word happen to name an agent" looked convenient but
+    # is unworkable: prompts talk about agents by name ("codex is hanging on Windows"),
+    # so that rule rejects valid tasks, and it silently swallows a mistyped agent name
+    # into the prompt when it does not match.
     if role is not None:
-        if not rest:
-            raise SystemExit(usage_str)
-        adapters = load_adapters()
-        if rest[0] in adapters:
-            raise SystemExit(usage_str)
         agent = None
         prompt = " ".join(rest).strip()
     else:

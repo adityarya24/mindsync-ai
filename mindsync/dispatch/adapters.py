@@ -183,7 +183,10 @@ def load_roles() -> dict[str, RoleConfig]:
 
     for name, data in raw_roles.items():
         if not isinstance(data, dict):
-            continue
+            raise ValueError(
+                f"Role '{name}' must be an object with at least an 'agent' key, "
+                f"not {type(data).__name__}. Configured in {user_path}"
+            )
         role_data = {"name": name, **data}
         try:
             cfg = RoleConfig.model_validate(role_data)
@@ -203,6 +206,21 @@ def load_roles() -> dict[str, RoleConfig]:
                 raise ValueError(
                     f"Role '{name}' specifies effort '{cfg.effort}' which agent '{cfg.agent}' "
                     f"does not support (supported: {supported}). Configured in {user_path}"
+                )
+
+        # Validate the model here for the same reason as effort: a role bakes it into
+        # config, so left to run time it would surface from inside a job that is already
+        # marked running, instead of the moment the config is read.
+        if cfg.model:
+            if not adapter.modelArgs:
+                raise ValueError(
+                    f"Role '{name}' specifies model '{cfg.model}' but agent '{cfg.agent}' "
+                    f"has no modelArgs to pass it with. Configured in {user_path}"
+                )
+            if not SAFE_MODEL.match(cfg.model):
+                raise ValueError(
+                    f"Role '{name}' has an invalid model '{cfg.model}': use letters, digits, "
+                    f"and . _ / : - only. Configured in {user_path}"
                 )
 
         roles[name] = cfg
