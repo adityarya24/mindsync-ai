@@ -34,6 +34,7 @@ EXPECTED_TOOLS = {
     "job_status",
     "job_result",
     "job_cancel",
+    "list_models",
 }
 
 

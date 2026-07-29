@@ -6,6 +6,8 @@
   "runArgs": ["exec", "--skip-git-repo-check", "-"],
   "writeArgs": ["--sandbox", "workspace-write"],
   "modelArgs": ["--model", "{model}"],
+  "effortArgs": ["-c", "model_reasoning_effort={effort}"],
+  "efforts": ["low", "medium", "high"],
   "authCheckArgs": ["login", "status"],
   "loginHint": "codex login",
   "installHint": "npm install -g @openai/codex"

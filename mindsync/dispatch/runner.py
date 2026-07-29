@@ -153,6 +153,7 @@ async def run_task(
     agent: str,
     prompt: str,
     model: str | None = None,
+    effort: str | None = None,
     write: bool = False,
     background: bool = False,
     cwd: str | None = None,
@@ -178,6 +179,7 @@ async def run_task(
         prompt=prompt,
         cwd=workdir,
         model=model,
+        effort=effort,
         write=write,
     )
 
@@ -267,6 +269,7 @@ async def supervise_job(
         adapter,
         prompt=meta["prompt"],
         model=meta.get("model"),
+        effort=meta.get("effort"),
         write=bool(meta.get("write")),
     )
     paths = store.job_paths(job_id)

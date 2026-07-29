@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Literal
 
@@ -23,6 +24,11 @@ _DEFAULTS: dict[str, Any] = {
     "loginHint": None,
     "installHint": None,
     "timeoutMs": 600_000,
+    "defaultModel": None,
+    "efforts": [],
+    "effortArgs": [],
+    "modelsArgs": None,
+    "models": [],
 }
 
 
@@ -50,12 +56,24 @@ class AdapterConfig(BaseModel):
     installHint: str | None = None
     timeoutMs: int = 600_000
 
+    defaultModel: str | None = None
+    efforts: list[str] = Field(default_factory=list)
+    effortArgs: list[str] = Field(default_factory=list)
+    modelsArgs: list[str] | None = None
+    models: list[str] = Field(default_factory=list)
+
     @model_validator(mode="after")
     def _require_prompt_placeholder(self) -> AdapterConfig:
         if self.input == "arg" and not any("{prompt}" in t for t in self.runArgs):
             raise ValueError(
                 f"Adapter '{self.name}': input 'arg' requires a {{prompt}} placeholder in runArgs"
             )
+        if self.efforts and not any("{effort}" in t for t in self.effortArgs):
+            raise ValueError(f"Adapter '{self.name}': efforts is set but effortArgs lacks {{effort}}")
+        if self.effortArgs and not self.efforts:
+            raise ValueError(f"Adapter '{self.name}': effortArgs is set but efforts is empty")
+        if self.defaultModel and not any("{model}" in t for t in self.modelArgs):
+            raise ValueError(f"Adapter '{self.name}': defaultModel is set but modelArgs lacks {{model}}")
         return self
 
 
@@ -120,22 +138,79 @@ def resolve_adapter(name: str) -> AdapterConfig:
         raise UnknownAgentError(name, sorted(adapters.keys())) from exc
 
 
+def list_models(adapter: AdapterConfig) -> list[str]:
+    if not adapter.modelsArgs:
+        return list(adapter.models)
+    
+    from mindsync.dispatch.proc import resolve_bin
+    bin_path = resolve_bin(adapter.bin)
+    if not bin_path:
+        return list(adapter.models)
+
+    try:
+        res = subprocess.run(
+            [bin_path, *adapter.modelsArgs],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if res.returncode != 0:
+            return list(adapter.models)
+        
+        models = []
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            # strip leading * or -
+            line = re.sub(r"^[*>-]\s*", "", line)
+            # strip trailing (default) marker
+            line = re.sub(r"\s*\(default\)$", "", line)
+            
+            if not line:
+                continue
+            if " " in line or line.endswith(":"):
+                continue
+                
+            models.append(line)
+        return models or list(adapter.models)
+    except Exception:
+        return list(adapter.models)
+
+
 def build_invocation(
     adapter: AdapterConfig,
     *,
     prompt: str,
     model: str | None = None,
+    effort: str | None = None,
     write: bool = False,
 ) -> dict[str, Any]:
-    if model and not SAFE_MODEL.match(model):
-        raise ValueError(
-            f"Invalid model '{model}': use letters, digits, and . _ / : - only"
-        )
+    eff_model = model or adapter.defaultModel
+    if eff_model:
+        if not adapter.modelArgs:
+            raise ValueError(f"Adapter '{adapter.name}' does not support models (modelArgs is empty) but model '{eff_model}' was requested. Fix this in {user_config_path()}")
+        if not SAFE_MODEL.match(eff_model):
+            raise ValueError(
+                f"Invalid model '{eff_model}': use letters, digits, and . _ / : - only"
+            )
+
+    if effort:
+        if not adapter.effortArgs or not adapter.efforts:
+            raise ValueError(f"Adapter '{adapter.name}' does not support reasoning effort but effort '{effort}' was requested.")
+        if effort.lower() not in [e.lower() for e in adapter.efforts]:
+            raise ValueError(f"Invalid effort '{effort}' for adapter '{adapter.name}'. Allowed values: {', '.join(adapter.efforts)}")
+        if not SAFE_MODEL.match(effort):
+            raise ValueError(f"Invalid effort '{effort}': use letters, digits, and . _ / : - only")
+
     args = list(adapter.runArgs)
     if write:
         args.extend(adapter.writeArgs)
-    if model:
-        args.extend(t.replace("{model}", model) for t in adapter.modelArgs)
+    if eff_model:
+        args.extend(t.replace("{model}", eff_model) for t in adapter.modelArgs)
+    if effort:
+        # keep case for substitution
+        actual_effort = next(e for e in adapter.efforts if e.lower() == effort.lower())
+        args.extend(t.replace("{effort}", actual_effort) for t in adapter.effortArgs)
+        
     input_text: str | None = None
     if adapter.input == "stdin":
         input_text = prompt

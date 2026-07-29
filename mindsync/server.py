@@ -611,6 +611,7 @@ async def delegate_task(
     write: bool = False,
     background: bool = False,
     model: str | None = None,
+    effort: str | None = None,
     cwd: str | None = None,
     worktree: bool = False,
     agent_name: str = "default_agent",
@@ -625,6 +626,7 @@ async def delegate_task(
             agent=agent,
             prompt=prompt,
             model=model,
+            effort=effort,
             write=write,
             background=background,
             cwd=cwd,
@@ -685,6 +687,30 @@ def job_cancel(job_id: str, agent_name: str = "default_agent") -> str:
         return str(exc)
     log_audit(agent_name, "job_cancel", f"job={job_id} status={meta.get('status')}")
     return f"Job {meta['id']}: {meta['status']}"
+
+
+@mcp.tool()
+def list_models(agent: str | None = None, agent_name: str = "default_agent") -> str:
+    """List available models for the given agent or all agents. Use this for choosing a model before delegating a task."""
+    settings.ensure_dirs()
+    from mindsync.dispatch.adapters import resolve_adapter, list_models as adapter_list_models, load_adapters
+    
+    try:
+        agents_to_list = [resolve_adapter(agent)] if agent else load_adapters().values()
+    except KeyError as exc:
+        return f"Error: {exc}"
+        
+    out = []
+    for a in agents_to_list:
+        out.append(f"Models for {a.name}:")
+        models = adapter_list_models(a)
+        if not models:
+            out.append("  (none discovered)")
+        for m in models:
+            marker = "  (default)" if m == a.defaultModel else ""
+            out.append(f"  {m}{marker}")
+    
+    return "\n".join(out)
 
 
 @mcp.tool()

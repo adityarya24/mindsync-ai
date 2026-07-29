@@ -46,6 +46,7 @@ def create_job(
     prompt: str,
     cwd: str,
     model: str | None = None,
+    effort: str | None = None,
     write: bool = False,
 ) -> dict[str, Any]:
     root = jobs_root()
@@ -67,6 +68,7 @@ def create_job(
             "prompt": prompt,
             "cwd": cwd,
             "model": model,
+            "effort": effort,
             "write": write,
             "status": "pending",
             "pid": None,

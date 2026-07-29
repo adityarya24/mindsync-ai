@@ -5,7 +5,7 @@
   "input": "stdin",
   "runArgs": ["--skip-trust"],
   "writeArgs": ["--yolo"],
-  "modelArgs": ["-m", "{model}"],
+  "modelArgs": ["--model", "{model}"],
   "loginHint": "gemini (first run triggers login)",
   "installHint": "npm install -g @google/gemini-cli"
 }

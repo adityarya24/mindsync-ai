@@ -17,15 +17,18 @@ from mindsync.dispatch.store import get_job, list_jobs, reconcile_job
 
 
 def parse_run_args(argv: list[str]) -> dict:
-    flags: dict = {"model": None, "write": False, "background": False, "cwd": None, "worktree": False}
+    flags: dict = {"model": None, "effort": None, "write": False, "background": False, "cwd": None, "worktree": False}
     rest: list[str] = []
     i = 0
-    usage_str = 'usage: dispatch run <agent> "task..." [--background] [--write] [--model <m>] [--worktree] [--cwd <path>]'
+    usage_str = 'usage: dispatch run <agent> "task..." [--background] [--write] [--model <m>] [--effort <level>] [--worktree] [--cwd <path>]'
     while i < len(argv):
         a = argv[i]
         if a == "--model":
             i += 1
             flags["model"] = argv[i] if i < len(argv) else None
+        elif a == "--effort":
+            i += 1
+            flags["effort"] = argv[i] if i < len(argv) else None
         elif a == "--cwd":
             i += 1
             flags["cwd"] = argv[i] if i < len(argv) else None
@@ -63,7 +66,7 @@ def fmt_job(m: dict) -> str:
 
 async def _async_main(argv: list[str]) -> int:
     if not argv:
-        print("usage: dispatch <run|status|result|cancel|agents|_supervise> ...", file=sys.stderr)
+        print("usage: dispatch <run|status|result|cancel|agents|models|_supervise> ...", file=sys.stderr)
         return 1
     cmd, *rest = argv
     if cmd == "run":
@@ -122,7 +125,27 @@ async def _async_main(argv: list[str]) -> int:
         for a in load_adapters().values():
             label = f" — {a.displayName}" if a.displayName else ""
             print(f"{a.name}{label} (bin: {a.bin})")
+            extras = []
+            if a.defaultModel:
+                extras.append(f"default model: {a.defaultModel}")
+            if a.efforts:
+                extras.append(f"effort: {'|'.join(a.efforts)}")
+            if extras:
+                print(f"    {'    '.join(extras)}")
         print(f"\nCustom agents: {user_config_path()}")
+        return 0
+
+    if cmd == "models":
+        from mindsync.dispatch.adapters import resolve_adapter, list_models
+        agents_to_list = [resolve_adapter(rest[0])] if rest else load_adapters().values()
+        for a in agents_to_list:
+            print(f"Models for {a.name}:")
+            models = list_models(a)
+            if not models:
+                print("  (none discovered)")
+            for m in models:
+                marker = "  (default)" if m == a.defaultModel else ""
+                print(f"  {m}{marker}")
         return 0
 
     if cmd == "_supervise":
@@ -132,7 +155,7 @@ async def _async_main(argv: list[str]) -> int:
         await supervise_job(rest[0])
         return 0
 
-    print("usage: dispatch <run|status|result|cancel|agents|_supervise> ...", file=sys.stderr)
+    print("usage: dispatch <run|status|result|cancel|agents|models|_supervise> ...", file=sys.stderr)
     return 1
 
 

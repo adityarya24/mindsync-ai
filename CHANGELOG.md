@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Opt-in git worktree isolation for dispatch jobs (`--worktree` / `--cwd` flags on the CLI, `worktree=True` / `cwd=...` kwargs on the `delegate_task` MCP tool). Each job runs in a dedicated sibling directory (`.mindsync-wt/<job-id>`) on its own branch. Unchanged worktrees are auto-cleaned; worktrees with commits or untracked files are kept for review.
+- Dispatch layer supports discovering models, applying default models, and reasoning-effort options (`--effort`) natively, passed through to the underlying CLI adapters. Added `models` command to CLI and `list_models` MCP tool.
 
 ## [1.2.0] - 2026-07-28
 
