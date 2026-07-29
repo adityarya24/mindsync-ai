@@ -46,6 +46,7 @@ def create_job(
     prompt: str,
     cwd: str,
     model: str | None = None,
+    effort: str | None = None,
     write: bool = False,
 ) -> dict[str, Any]:
     root = jobs_root()
@@ -67,6 +68,7 @@ def create_job(
             "prompt": prompt,
             "cwd": cwd,
             "model": model,
+            "effort": effort,
             "write": write,
             "status": "pending",
             "pid": None,
@@ -75,6 +77,11 @@ def create_job(
             "endedAt": None,
             "exitCode": None,
             "timedOut": False,
+            "repoRoot": None,
+            "worktreePath": None,
+            "branch": None,
+            "baseCommit": None,
+            "worktreeKept": None,
         }
         paths["meta"].write_text(json.dumps(meta, indent=2), encoding="utf-8")
         paths["prompt"].write_text(prompt, encoding="utf-8")

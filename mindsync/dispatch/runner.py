@@ -23,7 +23,44 @@ from mindsync.dispatch.proc import (
 from mindsync.dispatch import store
 
 
+def _cleanup_worktree(job_id: str) -> None:
+    """Drop the job's worktree unless the agent left work in it.
+
+    Never raises and never touches job status — a cleanup problem must not turn a
+    successful job into a failed one. Work is never merged, rebased or pushed:
+    the agent's branch is left for a human to review.
+    """
+    meta = store.get_job(job_id)
+    if not meta or not meta.get("worktreePath"):
+        return
+    if meta.get("worktreeKept") is not None:
+        return  # already cleaned up — cancel_job runs before the supervisor finishes
+    try:
+        from mindsync.dispatch.worktree import has_changes, remove_worktree
+
+        if not has_changes(meta["worktreePath"], meta.get("baseCommit")) and remove_worktree(
+            meta["repoRoot"], meta["worktreePath"], meta["branch"]
+        ):
+            store.update_job(job_id, {"worktreeKept": False})
+            return
+    except Exception:
+        pass
+    store.update_job(job_id, {"worktreeKept": True})
+
+
 _STDERR_TAIL_CHARS = 4000
+
+# Worktree isolation is advisory: nothing stops an agent from writing outside its
+# working directory, and an absolute path anywhere in the task text is enough to
+# send it back to the original checkout. That failure is silent — the job succeeds
+# and only the isolation is lost — so say it in the prompt rather than hoping.
+_WORKTREE_PROMPT_NOTE = (
+    "\n\n---\n"
+    "You are running in an isolated git worktree on your own branch. Do all of your work "
+    "inside your current working directory, and refer to files by paths relative to it. "
+    "Do not use an absolute path to any other checkout of this repository: writing there "
+    "defeats the isolation and can collide with other agents working in parallel."
+)
 
 
 def _compose_result(result: dict[str, Any]) -> str:
@@ -128,12 +165,21 @@ async def run_task(
     agent: str,
     prompt: str,
     model: str | None = None,
+    effort: str | None = None,
     write: bool = False,
     background: bool = False,
     cwd: str | None = None,
+    worktree: bool = False,
     publisher_agent: str = "dispatch",
 ) -> dict[str, Any]:
     workdir = cwd or os.getcwd()
+    supervisor_cwd = workdir
+    repo_rt = None
+    if worktree:
+        from mindsync.dispatch.worktree import repo_root
+        repo_rt = repo_root(workdir)
+        supervisor_cwd = repo_rt
+
     adapter = resolve_adapter(agent)
     bin_path = resolve_bin(adapter.bin)
     if not bin_path:
@@ -142,11 +188,33 @@ async def run_task(
 
     meta = store.create_job(
         agent=agent,
-        prompt=prompt,
+        # Stored as sent, so prompt.txt always shows what the agent actually received.
+        prompt=prompt + _WORKTREE_PROMPT_NOTE if worktree else prompt,
         cwd=workdir,
         model=model,
+        effort=effort,
         write=write,
     )
+
+    if worktree:
+        from mindsync.dispatch.worktree import create_worktree
+
+        try:
+            wt_info = create_worktree(repo_rt, meta["id"])
+        except Exception:
+            # Do not leave the job stuck in "pending" with nothing ever running it.
+            store.update_job(
+                meta["id"],
+                {"status": "failed", "exitCode": -1, "endedAt": store.utc_now()},
+            )
+            raise
+        meta = store.update_job(meta["id"], {
+            "cwd": wt_info["path"],
+            "repoRoot": repo_rt,
+            "worktreePath": wt_info["path"],
+            "branch": wt_info["branch"],
+            "baseCommit": wt_info["baseCommit"],
+        })
 
     if background:
         paths = store.job_paths(meta["id"])
@@ -155,7 +223,7 @@ async def run_task(
         bg = spawn_background(
             py,
             ["-m", "mindsync.dispatch.cli", "_supervise", meta["id"]],
-            cwd=workdir,
+            cwd=supervisor_cwd,
             stdout_path=paths["supervisorLog"],
             stderr_path=paths["supervisorLog"],
         )
@@ -214,6 +282,7 @@ async def supervise_job(
         adapter,
         prompt=meta["prompt"],
         model=meta.get("model"),
+        effort=meta.get("effort"),
         write=bool(meta.get("write")),
     )
     paths = store.job_paths(job_id)
@@ -245,6 +314,8 @@ async def supervise_job(
             "endedAt": store.utc_now(),
         },
     )
+    _cleanup_worktree(job_id)
+    final = store.get_job(job_id)
     if status == "done":
         _publish_job_event("job.completed", final, agent_name=publisher_agent)
     elif status == "failed":
@@ -261,6 +332,7 @@ def cancel_job(job_id: str) -> dict[str, Any]:
     pid = meta.get("pid")
     if pid is not None:
         kill_tree(int(pid))
+    _cleanup_worktree(job_id)
     return store.update_job(
         job_id,
         {

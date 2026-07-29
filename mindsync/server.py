@@ -611,17 +611,26 @@ async def delegate_task(
     write: bool = False,
     background: bool = False,
     model: str | None = None,
+    effort: str | None = None,
+    cwd: str | None = None,
+    worktree: bool = False,
     agent_name: str = "default_agent",
 ) -> str:
-    """Delegate a task to a headless CLI agent (codex, claude, gemini, cursor, aider, grok)."""
+    """Delegate a task to a headless CLI agent (codex, claude, gemini, cursor, aider, grok).
+    
+    If worktree is True, the agent will run in an isolated git worktree branching from cwd.
+    """
     settings.ensure_dirs()
     try:
         res = await dispatch_run_task(
             agent=agent,
             prompt=prompt,
             model=model,
+            effort=effort,
             write=write,
             background=background,
+            cwd=cwd,
+            worktree=worktree,
             publisher_agent=agent_name,
         )
     except Exception as exc:
@@ -634,11 +643,13 @@ async def delegate_task(
         f"job={job.get('id')} agent={agent} bg={background} status={job.get('status')}",
     )
     if background:
+        wt_info = f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})" if job.get("worktreePath") else ""
         return (
-            f"Started background job {job['id']} (agent: {job['agent']}). "
+            f"Started background job {job['id']} (agent: {job['agent']}).{wt_info} "
             f"Check: job_status('{job['id']}')"
         )
-    return res.get("result") or "(no output)"
+    wt_info = f"worktree: {job['worktreePath']}  (branch: {job['branch']})\n" if job.get("worktreePath") else ""
+    return f"{wt_info}{res.get('result') or '(no output)'}"
 
 
 @mcp.tool()
@@ -676,6 +687,30 @@ def job_cancel(job_id: str, agent_name: str = "default_agent") -> str:
         return str(exc)
     log_audit(agent_name, "job_cancel", f"job={job_id} status={meta.get('status')}")
     return f"Job {meta['id']}: {meta['status']}"
+
+
+@mcp.tool()
+def list_models(agent: str | None = None, agent_name: str = "default_agent") -> str:
+    """List available models for the given agent or all agents. Use this for choosing a model before delegating a task."""
+    settings.ensure_dirs()
+    from mindsync.dispatch.adapters import resolve_adapter, list_models as adapter_list_models, load_adapters
+    
+    try:
+        agents_to_list = [resolve_adapter(agent)] if agent else load_adapters().values()
+    except KeyError as exc:
+        return f"Error: {exc}"
+        
+    out = []
+    for a in agents_to_list:
+        out.append(f"Models for {a.name}:")
+        models = adapter_list_models(a)
+        if not models:
+            out.append("  (none discovered)")
+        for m in models:
+            marker = "  (default)" if m == a.defaultModel else ""
+            out.append(f"  {m}{marker}")
+    
+    return "\n".join(out)
 
 
 @mcp.tool()

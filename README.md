@@ -61,7 +61,7 @@ Or:
 
 (Windows: point at your venv’s `python.exe` if agents don’t share PATH.)
 
-## Tools (13)
+## Tools (14)
 
 ### Core memory / focus
 
@@ -86,7 +86,8 @@ Or:
 
 | Tool | Purpose |
 | --- | --- |
-| `delegate_task` | Run a CLI agent (foreground or background) |
+| `delegate_task` | Run a CLI agent (foreground/background), optionally in an isolated `--worktree` |
+| `list_models` | Discover available models for agents |
 | `job_status` | Job status + PID reconciliation |
 | `job_result` | Read job result file |
 | `job_cancel` | Cancel running job and kill its process tree |
@@ -97,7 +98,8 @@ Dispatch also auto-emits `job.started`, `job.completed`, and `job.failed` on the
 
 ```bash
 mindsync-dispatch agents
-mindsync-dispatch run codex "summarize README" --background
+mindsync-dispatch models <agent>
+mindsync-dispatch run codex "summarize README" --background --worktree --effort high
 mindsync-dispatch status
 mindsync-dispatch result <job-id>
 mindsync-dispatch cancel <job-id>
@@ -105,6 +107,12 @@ mindsync-dispatch cancel <job-id>
 
 Jobs live under `~/.claude/agent-dispatch/jobs/` (override with `AGENT_DISPATCH_HOME`).  
 Custom agents: `~/.claude/agent-dispatch/agents.json`.
+
+`--worktree` is advisory isolation: nothing prevents an agent from writing outside its
+working directory. Write the task text in terms of the current directory — a single absolute
+path to another checkout will send the agent straight back to it, the job will still succeed,
+and only the isolation will be lost. Dispatch appends a warning to the task text for you, but
+the wording of your own task has to agree with it.
 
 Built-in presets: `codex`, `claude`, `gemini`, `cursor`, `aider`, `grok`.
 
