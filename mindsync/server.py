@@ -36,6 +36,7 @@ from mindsync.bus import (
 from mindsync.config import settings
 from mindsync.conflict import detect_focus_conflicts
 from mindsync.dispatch import store as dispatch_store
+from mindsync.dispatch.review import format_review as dispatch_format_review
 from mindsync.dispatch.runner import (
     cancel_job as dispatch_cancel_job,
     describe_empty_result as dispatch_describe_empty_result,
@@ -662,6 +663,18 @@ def job_status(job_id: str, agent_name: str = "default_agent") -> str:
     reconciled = dispatch_store.reconcile_job(job)
     log_audit(agent_name, "job_status", f"job={job_id} status={reconciled.get('status')}")
     return _fmt_dispatch_job(reconciled)
+
+
+@mcp.tool()
+def job_review(job_id: str, agent_name: str = "default_agent") -> str:
+    """Get a mechanical review verdict for a job, including check results and diff summary. Call this before job_result to skip reading the output of work that did not pass."""
+    settings.ensure_dirs()
+    job = dispatch_store.get_job(job_id)
+    if not job:
+        return f"No such job: {job_id}"
+    reconciled = dispatch_store.reconcile_job(job)
+    log_audit(agent_name, "job_review", f"job={job_id} status={reconciled.get('status')}")
+    return dispatch_format_review(reconciled)
 
 
 @mcp.tool()

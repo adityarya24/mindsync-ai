@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Mechanical review gate for dispatch jobs (`--check "<command>"` on `run`, `review <job-id>` command, and `job_review` MCP tool). Runs cheap objective check commands and computes git diff metrics against base_commit prior to worktree cleanup, recording a `VERDICT: PASS` / `FAIL` summary so callers can skip broken outputs.
 - Opt-in git worktree isolation for dispatch jobs (`--worktree` / `--cwd` flags on the CLI, `worktree=True` / `cwd=...` kwargs on the `delegate_task` MCP tool). Each job runs in a dedicated sibling directory (`.mindsync-wt/<job-id>`) on its own branch. Unchanged worktrees are auto-cleaned; worktrees with commits or untracked files are kept for review.
 - Dispatch layer supports discovering models, applying default models, and reasoning-effort options (`--effort`) natively, passed through to the underlying CLI adapters. Added `models` command to CLI and `list_models` MCP tool.
 - Worktree jobs append a note to the task text telling the agent to stay inside its working directory. Isolation is advisory, and an absolute path in the task text is enough to send an agent back to the original checkout — a failure that is otherwise silent, since the job still succeeds.

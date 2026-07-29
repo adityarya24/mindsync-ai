@@ -61,7 +61,7 @@ Or:
 
 (Windows: point at your venv’s `python.exe` if agents don’t share PATH.)
 
-## Tools (14)
+## Tools (15)
 
 ### Core memory / focus
 
@@ -90,6 +90,7 @@ Or:
 | `list_models` | Discover available models for agents |
 | `job_status` | Job status + PID reconciliation |
 | `job_result` | Read job result file |
+| `job_review` | Read mechanical review verdict (check results + git diff summary) |
 | `job_cancel` | Cancel running job and kill its process tree |
 
 Dispatch also auto-emits `job.started`, `job.completed`, and `job.failed` on the bus.
@@ -99,8 +100,9 @@ Dispatch also auto-emits `job.started`, `job.completed`, and `job.failed` on the
 ```bash
 mindsync-dispatch agents
 mindsync-dispatch models <agent>
-mindsync-dispatch run codex "summarize README" --background --worktree --effort high
+mindsync-dispatch run codex "summarize README" --background --worktree --effort high --check "pytest -q"
 mindsync-dispatch status
+mindsync-dispatch review <job-id>
 mindsync-dispatch result <job-id>
 mindsync-dispatch cancel <job-id>
 ```

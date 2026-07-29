@@ -21,6 +21,7 @@ from mindsync.dispatch.proc import (
     spawn_foreground,
 )
 from mindsync.dispatch import store
+from mindsync.dispatch.review import diff_summary, run_checks
 
 
 def _cleanup_worktree(job_id: str) -> None:
@@ -167,6 +168,7 @@ async def run_task(
     model: str | None = None,
     effort: str | None = None,
     write: bool = False,
+    checks: list[str] | None = None,
     background: bool = False,
     cwd: str | None = None,
     worktree: bool = False,
@@ -194,6 +196,7 @@ async def run_task(
         model=model,
         effort=effort,
         write=write,
+        checks=checks,
     )
 
     if worktree:
@@ -314,6 +317,37 @@ async def supervise_job(
             "endedAt": store.utc_now(),
         },
     )
+    if status != "cancelled":
+        try:
+            job_cwd = final.get("cwd") or os.getcwd()
+            base_commit = final.get("baseCommit")
+            diff_info = diff_summary(job_cwd, base_commit)
+            checks_to_run = final.get("checks") or []
+            check_dicts: list[dict[str, Any]] = []
+            if checks_to_run:
+                try:
+                    check_objs = run_checks(job_cwd, checks_to_run)
+                    check_dicts = [c.model_dump() for c in check_objs]
+                except Exception as exc:
+                    check_dicts = [
+                        {
+                            "name": "check runner",
+                            "passed": False,
+                            "exitCode": None,
+                            "output": f"Check runner error: {exc}",
+                            "durationMs": 0,
+                        }
+                    ]
+            store.update_job(
+                job_id,
+                {
+                    "checkResults": check_dicts,
+                    "diff": diff_info,
+                },
+            )
+        except Exception:
+            pass
+
     _cleanup_worktree(job_id)
     final = store.get_job(job_id)
     if status == "done":

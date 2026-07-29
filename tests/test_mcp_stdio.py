@@ -33,6 +33,7 @@ EXPECTED_TOOLS = {
     "delegate_task",
     "job_status",
     "job_result",
+    "job_review",
     "job_cancel",
     "list_models",
 }
