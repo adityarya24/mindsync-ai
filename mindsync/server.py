@@ -601,13 +601,15 @@ def _fmt_dispatch_job(m: dict[str, Any]) -> str:
     prompt = m.get("prompt") or ""
     if len(prompt) > 100:
         prompt = prompt[:100] + "…"
-    return f"[{m['id']}] {m['agent']} — {m['status']}{exit_bit}\n  prompt: {prompt}"
+    agent_str = f"{m['agent']} (role: {m['role']})" if m.get("role") else m["agent"]
+    return f"[{m['id']}] {agent_str} — {m['status']}{exit_bit}\n  prompt: {prompt}"
 
 
 @mcp.tool()
 async def delegate_task(
-    agent: str,
-    prompt: str,
+    agent: str | None = None,
+    prompt: str = "",
+    role: str | None = None,
     write: bool = False,
     background: bool = False,
     model: str | None = None,
@@ -616,14 +618,17 @@ async def delegate_task(
     worktree: bool = False,
     agent_name: str = "default_agent",
 ) -> str:
-    """Delegate a task to a headless CLI agent (codex, claude, gemini, cursor, aider, grok).
+    """Delegate a task to a headless CLI agent or role.
     
     If worktree is True, the agent will run in an isolated git worktree branching from cwd.
+    Specify either agent or role (not both). Prefer specifying a role over an agent name
+    so that model and effort configurations are applied automatically.
     """
     settings.ensure_dirs()
     try:
         res = await dispatch_run_task(
             agent=agent,
+            role=role,
             prompt=prompt,
             model=model,
             effort=effort,
@@ -640,7 +645,7 @@ async def delegate_task(
     log_audit(
         agent_name,
         "delegate_task",
-        f"job={job.get('id')} agent={agent} bg={background} status={job.get('status')}",
+        f"job={job.get('id')} agent={job.get('agent')} role={job.get('role')} bg={background} status={job.get('status')}",
     )
     if background:
         wt_info = f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})" if job.get("worktreePath") else ""
@@ -710,6 +715,34 @@ def list_models(agent: str | None = None, agent_name: str = "default_agent") -> 
             marker = "  (default)" if m == a.defaultModel else ""
             out.append(f"  {m}{marker}")
     
+    return "\n".join(out)
+
+
+@mcp.tool()
+def list_roles(agent_name: str = "default_agent") -> str:
+    """List configured roles and their agent, model, and effort mappings.
+
+    Prefer specifying a role over an agent name when delegating tasks so that
+    model and effort configurations are applied automatically.
+    """
+    settings.ensure_dirs()
+    from mindsync.dispatch.adapters import load_roles, user_config_path
+
+    roles = load_roles()
+    if not roles:
+        return f"No roles are configured; add a 'roles' block to {user_config_path()}"
+
+    width = max((len(r.name) for r in roles.values()), default=10)
+    width = max(width, 10)
+    out = []
+    for r in roles.values():
+        parts = [f"{r.name:<{width}} -> {r.agent}"]
+        if r.model:
+            parts.append(f"model: {r.model}")
+        if r.effort:
+            parts.append(f"effort: {r.effort}")
+        out.append("   ".join(parts))
+
     return "\n".join(out)
 
 

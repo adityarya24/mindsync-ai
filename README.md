@@ -61,7 +61,7 @@ Or:
 
 (Windows: point at your venv’s `python.exe` if agents don’t share PATH.)
 
-## Tools (14)
+## Tools (15)
 
 ### Core memory / focus
 
@@ -86,8 +86,9 @@ Or:
 
 | Tool | Purpose |
 | --- | --- |
-| `delegate_task` | Run a CLI agent (foreground/background), optionally in an isolated `--worktree` |
+| `delegate_task` | Run a CLI agent or role (foreground/background), optionally in an isolated `--worktree` |
 | `list_models` | Discover available models for agents |
+| `list_roles` | List configured roles and their agent, model, and effort mappings |
 | `job_status` | Job status + PID reconciliation |
 | `job_result` | Read job result file |
 | `job_cancel` | Cancel running job and kill its process tree |
@@ -99,6 +100,8 @@ Dispatch also auto-emits `job.started`, `job.completed`, and `job.failed` on the
 ```bash
 mindsync-dispatch agents
 mindsync-dispatch models <agent>
+mindsync-dispatch roles
+mindsync-dispatch run --role bulk "summarize README" --background --worktree
 mindsync-dispatch run codex "summarize README" --background --worktree --effort high
 mindsync-dispatch status
 mindsync-dispatch result <job-id>
