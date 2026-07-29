@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,40 @@ def _isolate_dispatch(tmp_path: Path, monkeypatch):
     storage.settings = config_mod.settings
     config_mod.settings.ensure_dirs()
     return home
+
+
+@pytest.mark.asyncio
+async def test_timed_out_agent_leaves_no_children_running(tmp_path: Path):
+    """kill_tree has to reach the agent's children, not only the agent itself.
+
+    On POSIX that only works when the agent is its own process group leader, which
+    the foreground path has to ask for explicitly.
+    """
+    marker = tmp_path / "child_was_alive.txt"
+    child_py = tmp_path / "child.py"
+    child_py.write_text(
+        "import time, pathlib, sys\n"
+        "time.sleep(6)\n"
+        "pathlib.Path(sys.argv[1]).write_text('survived')\n",
+        encoding="utf-8",
+    )
+    parent_py = tmp_path / "parent.py"
+    parent_py.write_text(
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]])\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+
+    res = await spawn_foreground(
+        sys.executable,
+        [str(parent_py), str(child_py), str(marker)],
+        timeout_ms=1500,
+    )
+    assert res["timedOut"] is True
+
+    time.sleep(8)
+    assert not marker.exists(), "the timed-out agent's child process outlived it"
 
 
 def test_names_match_rules():

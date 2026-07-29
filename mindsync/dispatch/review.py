@@ -9,6 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from mindsync.dispatch.proc import IS_WIN, kill_tree
+
 
 _OUTPUT_TAIL_CHARS = 2000
 
@@ -51,6 +53,11 @@ def run_checks(
                 stderr=subprocess.STDOUT,
                 text=True,
                 errors="replace",
+                # POSIX: make the shell its own process group leader, so killing it
+                # on timeout reaches the command it spawned. Without this there is no
+                # group for os.killpg to aim at and only the shell itself dies — the
+                # same reason spawn_background already does this.
+                start_new_session=not IS_WIN,
             )
         except Exception as exc:
             results.append(
@@ -74,8 +81,6 @@ def run_checks(
             # cleanup on a directory the check itself is sitting in.
             timed_out = True
             exit_code = None
-            from mindsync.dispatch.proc import kill_tree
-
             try:
                 kill_tree(proc.pid)
             except Exception:

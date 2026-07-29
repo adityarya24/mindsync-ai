@@ -239,6 +239,10 @@ async def spawn_foreground(
             stdin=asyncio.subprocess.PIPE if input_text is not None else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # POSIX: without its own process group the kill_tree below has nothing to
+            # aim at, so a timed-out agent's children outlive it. spawn_background
+            # already does this; the foreground path was missing it.
+            start_new_session=not IS_WIN,
         )
     except OSError as exc:
         return {
