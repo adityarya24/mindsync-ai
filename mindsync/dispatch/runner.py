@@ -50,6 +50,18 @@ def _cleanup_worktree(job_id: str) -> None:
 
 _STDERR_TAIL_CHARS = 4000
 
+# Worktree isolation is advisory: nothing stops an agent from writing outside its
+# working directory, and an absolute path anywhere in the task text is enough to
+# send it back to the original checkout. That failure is silent — the job succeeds
+# and only the isolation is lost — so say it in the prompt rather than hoping.
+_WORKTREE_PROMPT_NOTE = (
+    "\n\n---\n"
+    "You are running in an isolated git worktree on your own branch. Do all of your work "
+    "inside your current working directory, and refer to files by paths relative to it. "
+    "Do not use an absolute path to any other checkout of this repository: writing there "
+    "defeats the isolation and can collide with other agents working in parallel."
+)
+
 
 def _compose_result(result: dict[str, Any]) -> str:
     """Build the result file: stdout, plus a stderr diagnostic when the run failed.
@@ -176,7 +188,8 @@ async def run_task(
 
     meta = store.create_job(
         agent=agent,
-        prompt=prompt,
+        # Stored as sent, so prompt.txt always shows what the agent actually received.
+        prompt=prompt + _WORKTREE_PROMPT_NOTE if worktree else prompt,
         cwd=workdir,
         model=model,
         effort=effort,

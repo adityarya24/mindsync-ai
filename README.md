@@ -108,6 +108,12 @@ mindsync-dispatch cancel <job-id>
 Jobs live under `~/.claude/agent-dispatch/jobs/` (override with `AGENT_DISPATCH_HOME`).  
 Custom agents: `~/.claude/agent-dispatch/agents.json`.
 
+`--worktree` is advisory isolation: nothing prevents an agent from writing outside its
+working directory. Write the task text in terms of the current directory — a single absolute
+path to another checkout will send the agent straight back to it, the job will still succeed,
+and only the isolation will be lost. Dispatch appends a warning to the task text for you, but
+the wording of your own task has to agree with it.
+
 Built-in presets: `codex`, `claude`, `gemini`, `cursor`, `aider`, `grok`.
 
 ## Quick start (local only)

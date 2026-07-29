@@ -212,6 +212,46 @@ async def test_committed_work_survives_after_job(fake_repo: Path, tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_worktree_job_prompt_warns_against_absolute_paths(
+    fake_repo: Path, tmp_path: Path, monkeypatch
+):
+    """Without this note an absolute path in the task text silently defeats isolation."""
+    _isolate_dispatch(tmp_path, monkeypatch)
+
+    import json
+    import sys
+
+    from tests.test_dispatch import user_config_path
+
+    cfg = user_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({
+        "agents": [{
+            "name": "noop",
+            "bin": sys.executable,
+            "input": "stdin",
+            "runArgs": ["-c", "pass"],
+        }]
+    }), encoding="utf-8")
+
+    res = await run_task(
+        agent="noop", prompt="do the thing", background=False, publisher_agent="t",
+        cwd=str(fake_repo), worktree=True
+    )
+    sent = store.get_job(res["job"]["id"])["prompt"]
+    assert sent.startswith("do the thing")
+    assert "isolated git worktree" in sent
+    assert "absolute path" in sent
+
+    # A job without isolation must not have its prompt rewritten.
+    plain = await run_task(
+        agent="noop", prompt="do the thing", background=False, publisher_agent="t",
+        cwd=str(fake_repo)
+    )
+    assert store.get_job(plain["job"]["id"])["prompt"] == "do the thing"
+
+
+@pytest.mark.asyncio
 async def test_non_git_cwd_raises(tmp_path: Path):
     with pytest.raises(WorktreeError, match="not inside a git repo"):
         await run_task(
