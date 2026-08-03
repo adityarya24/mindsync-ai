@@ -279,6 +279,12 @@ async def test_background_worktree_supervisor_cwd(fake_repo: Path, tmp_path: Pat
     
     # Mock resolve_bin so it doesn't fail
     monkeypatch.setattr(runner, "resolve_bin", lambda x: "/fake/bin")
+    published = []
+    monkeypatch.setattr(
+        runner,
+        "_publish_job_event",
+        lambda *args, **kwargs: published.append((args, kwargs)),
+    )
     
     # We need to register the agent
     import json
@@ -300,4 +306,6 @@ async def test_background_worktree_supervisor_cwd(fake_repo: Path, tmp_path: Pat
     meta = store.get_job(job_id)
     assert meta["worktreePath"] is not None
     assert Path(meta["cwd"]).resolve() == Path(meta["worktreePath"]).resolve()
+    assert meta["publisherAgent"] == "t"
+    assert published == []  # the spawned supervisor emits the one started event
 

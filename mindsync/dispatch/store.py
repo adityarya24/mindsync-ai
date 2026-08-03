@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from mindsync.dispatch.proc import is_alive, names_match, process_name
+from mindsync.storage import file_lock
 
 _JOB_ID_RE = re.compile(r"^[0-9a-z]+-[0-9a-f]+$", re.I)
 
@@ -40,6 +41,34 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _private_write(path: Path, text: str) -> None:
+    """Atomically replace a private dispatch file in its existing directory."""
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    try:
+        with open(tmp, "x", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            tmp.chmod(0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _write_meta(job_id: str, meta: dict[str, Any]) -> None:
+    _private_write(job_paths(job_id)["meta"], json.dumps(meta, indent=2))
+
+
+def write_job_file(job_id: str, name: str, text: str) -> None:
+    paths = job_paths(job_id)
+    if name not in {"stdout", "stderr", "result", "supervisorLog"}:
+        raise ValueError(f"Invalid job file: {name}")
+    _private_write(paths[name], text)
+
+
 def create_job(
     *,
     agent: str,
@@ -50,6 +79,7 @@ def create_job(
     role: str | None = None,
     write: bool = False,
     checks: list[str] | None = None,
+    publisher_agent: str = "dispatch",
 ) -> dict[str, Any]:
     root = jobs_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -60,6 +90,10 @@ def create_job(
         paths = job_paths(job_id)
         try:
             paths["dir"].mkdir(exist_ok=False)
+            try:
+                paths["dir"].chmod(0o700)
+            except OSError:
+                pass
         except FileExistsError:
             if attempt < 4:
                 continue
@@ -88,9 +122,10 @@ def create_job(
             "branch": None,
             "baseCommit": None,
             "worktreeKept": None,
+            "publisherAgent": publisher_agent,
         }
-        paths["meta"].write_text(json.dumps(meta, indent=2), encoding="utf-8")
-        paths["prompt"].write_text(prompt, encoding="utf-8")
+        _write_meta(job_id, meta)
+        _private_write(paths["prompt"], prompt)
         return meta
     raise RuntimeError("Failed to allocate job id")
 
@@ -105,13 +140,30 @@ def get_job(job_id: str) -> dict[str, Any] | None:
         return None
 
 
-def update_job(job_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-    existing = get_job(job_id)
-    if existing is None:
-        raise ValueError(f"No such job: {job_id}")
-    meta = {**existing, **patch}
-    job_paths(job_id)["meta"].write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    return meta
+def update_job(
+    job_id: str,
+    patch: dict[str, Any],
+    *,
+    expected_status: str | set[str] | None = None,
+) -> dict[str, Any]:
+    """Atomically merge a job patch, optionally as a status transition.
+
+    ``expected_status`` makes lifecycle races deterministic: cancellation and
+    completion can both attempt a transition, but only the one that still sees
+    the expected current state is applied.
+    """
+    job_paths(job_id)  # validate before using the id in a lock name
+    with file_lock(f"dispatch-job-{job_id}"):
+        existing = get_job(job_id)
+        if existing is None:
+            raise ValueError(f"No such job: {job_id}")
+        if expected_status is not None:
+            allowed = {expected_status} if isinstance(expected_status, str) else expected_status
+            if existing.get("status") not in allowed:
+                return existing
+        meta = {**existing, **patch}
+        _write_meta(job_id, meta)
+        return meta
 
 
 def reconcile_job(meta: dict[str, Any]) -> dict[str, Any]:
@@ -132,6 +184,7 @@ def reconcile_job(meta: dict[str, Any]) -> dict[str, Any]:
     return update_job(
         str(meta["id"]),
         {"status": "failed", "endedAt": utc_now()},
+        expected_status="running",
     )
 
 

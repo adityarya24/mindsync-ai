@@ -7,6 +7,7 @@ import mindsync.server as server
 import mindsync.storage as storage
 from mindsync.bus import (
     Event,
+    EventBus,
     EventType,
     Identity,
     Message,
@@ -115,6 +116,24 @@ def test_publish_poll_and_sequences(tmp_path, monkeypatch):
     # Poll with limit
     limited = bus_poll_events(since_seq=0, limit=2)
     assert len(limited) == 2
+
+
+def test_sequence_checkpoint_avoids_rescanning_event_log(tmp_path, monkeypatch):
+    settings = _isolate(tmp_path, monkeypatch)
+    bus = EventBus()
+    first = bus.publish_event(Event(event_type="task.created", agent_name="planner"))
+
+    assert first.seq == 1
+    assert bus.seq_file.read_text(encoding="ascii").strip() == "1"
+    monkeypatch.setattr(
+        bus,
+        "_scan_max_seq",
+        lambda: (_ for _ in ()).throw(AssertionError("event log was rescanned")),
+    )
+
+    second = bus.publish_event(Event(event_type="task.created", agent_name="planner"))
+    assert second.seq == 2
+    assert settings.events_file.read_text(encoding="utf-8").count("\n") == 2
 
 
 def test_subscribe_and_agent_polling(tmp_path, monkeypatch):

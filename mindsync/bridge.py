@@ -11,8 +11,10 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import threading
 from dataclasses import dataclass
@@ -391,11 +393,16 @@ python3 {shlex.quote(write_script)} write {' '.join(parts)}
     except subprocess.TimeoutExpired:
         return WriteResult(ok=False, error="SSH write timed out")
     except OSError as exc:
-        return WriteResult(ok=False, error=f"SSH write failed: {exc}")
+        return WriteResult(ok=False, error=_sanitize_error(f"SSH write failed: {exc}"))
 
     if res.returncode != 0:
         err = (res.stderr or res.stdout or "unknown remote error").strip()
-        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=err)
+        return WriteResult(
+            ok=False,
+            stdout=res.stdout,
+            stderr=res.stderr,
+            error=_sanitize_error(err),
+        )
     return WriteResult(ok=True, stdout=res.stdout.strip(), stderr=res.stderr)
 
 
@@ -556,45 +563,49 @@ def pull_compiled_truth() -> WriteResult:
         return WriteResult(ok=False, error=remote_not_configured_error())
 
     settings.ensure_dirs()
-    staging_dir = settings.home / "staging-truth"
-    if staging_dir.exists():
-        import shutil
+    staging_dir = Path(tempfile.mkdtemp(dir=str(settings.home), prefix="staging-truth-"))
+
+    try:
+        truth = settings.remote_truth_subdir.strip("/")
+        remote = f"{settings.ssh_host}:{settings.remote_root}/{truth}/."
+        try:
+            res = _run(
+                [
+                    resolve_openssh_tool("scp"),
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    f"ConnectTimeout={settings.ssh_connect_timeout}",
+                    "-r",
+                    remote,
+                    str(staging_dir),
+                ],
+                timeout=120,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return WriteResult(ok=False, error="SCP pull timed out")
+        except OSError as exc:
+            return WriteResult(ok=False, error=_sanitize_error(f"SCP pull failed: {exc}"))
+
+        if res.returncode != 0:
+            err = (res.stderr or res.stdout or "scp failed").strip()
+            return WriteResult(
+                ok=False,
+                stdout=res.stdout,
+                stderr=res.stderr,
+                error=_sanitize_error(err),
+            )
+
+        from mindsync.storage import publish_compiled_truth
+
+        try:
+            publish_compiled_truth(staging_dir)
+        except Exception as exc:
+            return WriteResult(
+                ok=False,
+                error=_sanitize_error(f"Failed to publish truth: {exc}"),
+            )
+        return WriteResult(ok=True)
+    finally:
         shutil.rmtree(staging_dir, ignore_errors=True)
-    staging_dir.mkdir(parents=True, exist_ok=True)
-
-    truth = settings.remote_truth_subdir.strip("/")
-    remote = f"{settings.ssh_host}:{settings.remote_root}/{truth}/."
-    dest = str(staging_dir)
-    try:
-        res = _run(
-            [
-                resolve_openssh_tool("scp"),
-                "-o",
-                "BatchMode=yes",
-                "-o",
-                f"ConnectTimeout={settings.ssh_connect_timeout}",
-                "-r",
-                remote,
-                dest,
-            ],
-            timeout=120,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        return WriteResult(ok=False, error="SCP pull timed out")
-    except OSError as exc:
-        return WriteResult(ok=False, error=_sanitize_error(f"SCP pull failed: {exc}"))
-
-    if res.returncode != 0:
-        err = (res.stderr or res.stdout or "scp failed").strip()
-        return WriteResult(ok=False, stdout=res.stdout, stderr=res.stderr, error=_sanitize_error(err))
-    
-    from mindsync.storage import publish_compiled_truth
-    try:
-        publish_compiled_truth(staging_dir)
-    except Exception as exc:
-        return WriteResult(ok=False, error=_sanitize_error(f"Failed to publish truth: {exc}"))
-        
-    import shutil
-    shutil.rmtree(staging_dir, ignore_errors=True)
-    return WriteResult(ok=True)

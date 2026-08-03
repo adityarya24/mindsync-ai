@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -42,9 +43,13 @@ class EventBus:
         except OSError:
             pass
 
-    def _get_next_seq(self) -> int:
+    @property
+    def seq_file(self) -> Path:
+        return self.events_file.with_name(f"{self.events_file.name}.seq")
+
+    def _scan_max_seq(self) -> int:
         if not self.events_file.exists():
-            return 1
+            return 0
         max_seq = 0
         try:
             with open(self.events_file, "r", encoding="utf-8") as f:
@@ -61,18 +66,44 @@ class EventBus:
                         continue
         except OSError:
             pass
-        return max_seq + 1
+        return max_seq
+
+    def _get_next_seq(self) -> int:
+        try:
+            current = int(self.seq_file.read_text(encoding="ascii").strip())
+            if current >= 0:
+                return current + 1
+        except (OSError, ValueError):
+            pass
+        return self._scan_max_seq() + 1
+
+    def _reserve_seq(self, seq: int) -> None:
+        """Persist a sequence before append; crashes may leave gaps, never duplicates."""
+        tmp = self.seq_file.with_name(f".{self.seq_file.name}.{os.getpid()}.tmp")
+        try:
+            with open(tmp, "w", encoding="ascii") as f:
+                f.write(f"{seq}\n")
+                f.flush()
+                os.fsync(f.fileno())
+            self._set_file_permissions(tmp)
+            os.replace(tmp, self.seq_file)
+            self._set_file_permissions(self.seq_file)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def publish_event(self, event: Event) -> Event:
         self._ensure_dir(self.events_file)
         with file_lock("events"):
             seq = self._get_next_seq()
+            self._reserve_seq(seq)
             event.seq = seq
             if not event.timestamp:
                 event.timestamp = _utc_now_iso()
             event_dict = event.to_dict()
             with open(self.events_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(event_dict, ensure_ascii=False) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
             self._set_file_permissions(self.events_file)
         return event
 

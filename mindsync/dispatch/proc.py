@@ -172,6 +172,11 @@ def spawn_background(
     stderr_path = Path(stderr_path)
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
+    for directory in {stdout_path.parent, stderr_path.parent}:
+        try:
+            directory.chmod(0o700)
+        except OSError:
+            pass
 
     out_f = open(stdout_path, "a", encoding="utf-8", errors="replace")
     err_f = (
@@ -179,6 +184,11 @@ def spawn_background(
         if Path(stdout_path).resolve() == Path(stderr_path).resolve()
         else open(stderr_path, "a", encoding="utf-8", errors="replace")
     )
+    for path in {stdout_path, stderr_path}:
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
     in_f = open(stdin_path, "r", encoding="utf-8", errors="replace") if stdin_path else subprocess.DEVNULL
 
     creationflags = 0

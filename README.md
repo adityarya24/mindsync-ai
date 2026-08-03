@@ -61,7 +61,7 @@ Or:
 
 (Windows: point at your venv’s `python.exe` if agents don’t share PATH.)
 
-## Tools (15)
+## Tools (16)
 
 ### Core memory / focus
 
@@ -155,7 +155,7 @@ See [`.env.example`](.env.example) and [`examples/remote/`](examples/remote/).
 | `MINDSYNC_FOCUS_STALE_SECS` | `7200` | Ignore older focus entries |
 | `MINDSYNC_REMOTE_CACHE_TTL` | `30` | Cache TTL for online probe |
 | `MINDSYNC_LOCK_TIMEOUT` | `5` | Local lock wait (seconds) |
-| `MINDSYNC_LOCK_STALE_SECS` | `60` | Steal lock after holder stops renewing |
+| `MINDSYNC_LOCK_STALE_SECS` | `60` | Legacy compatibility setting; OS locks now recover automatically on process exit |
 
 SSH must be key-based / `BatchMode`-friendly.
 
@@ -175,9 +175,10 @@ Under `MINDSYNC_HOME` (default `~/.mindsync`):
 - `local-audit.jsonl` — append-only action log  
 - `offline_queue.jsonl` — durable facts waiting for remote  
 - `events.jsonl` — event bus log  
+- `events.jsonl.seq` — constant-time monotonic sequence checkpoint
 - `subscriptions.json` — event subscriptions  
 - `compiled-truth/*.md` — pulled remote summaries  
-- `.locks/` — exclusive lockfiles  
+- `.locks/` — persistent files holding kernel-managed exclusive locks
 
 ## Layout
 
@@ -209,7 +210,7 @@ CI runs on every push/PR to `master` (Python 3.10 / 3.12 / 3.13 × Ubuntu + Wind
 ## Design principles
 
 1. **Offline-first** — local tools always work; remote is opt-in.  
-2. **Locked local state** — exclusive locks around state/queue/events.  
+2. **Locked local state** — crash-safe OS locks around state/queue/events.
 3. **Safe remote writes** — identifier allowlists + base64 text over SSH.  
 4. **No false-positive conflicts** — same project alone is not a conflict.  
 5. **Generic by default** — zero personal paths in code.  
