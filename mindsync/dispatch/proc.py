@@ -238,6 +238,7 @@ async def spawn_foreground(
     cwd: str | None = None,
     timeout_ms: int = 600_000,
     input_text: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     spec = spawn_spec(resolved_bin, args)
     timed_out = False
@@ -253,6 +254,7 @@ async def spawn_foreground(
             # aim at, so a timed-out agent's children outlive it. spawn_background
             # already does this; the foreground path was missing it.
             start_new_session=not IS_WIN,
+            env=env,
         )
     except OSError as exc:
         return {
@@ -275,6 +277,14 @@ async def spawn_foreground(
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=5.0)
         except (asyncio.TimeoutError, Exception):
             stdout_b, stderr_b = b"", b""
+    except asyncio.CancelledError:
+        if proc.pid:
+            kill_tree(proc.pid)
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+        raise
 
     code = proc.returncode if proc.returncode is not None else -1
     return {

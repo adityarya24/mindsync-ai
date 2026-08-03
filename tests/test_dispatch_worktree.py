@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from mindsync.dispatch import store
+from mindsync.dispatch import worktree as worktree_mod
 from mindsync.dispatch.runner import run_task
 from mindsync.dispatch.worktree import (
     WorktreeError,
@@ -25,6 +26,15 @@ def _git_available() -> bool:
 
 
 pytestmark = pytest.mark.skipif(not _git_available(), reason="git is not on PATH")
+
+
+def test_git_probe_timeout_returns_none(monkeypatch):
+    def timeout(*args, **kwargs):
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        raise subprocess.TimeoutExpired(args[0], timeout=15)
+
+    monkeypatch.setattr(worktree_mod.subprocess, "run", timeout)
+    assert worktree_mod.head_commit(".") is None
 
 
 @pytest.fixture

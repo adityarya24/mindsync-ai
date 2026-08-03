@@ -4,7 +4,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
 [![Python versions](https://img.shields.io/pypi/pyversions/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
 
-**One Python MCP server** for multi-agent teams: shared memory, focus conflict detection, an in-process event bus, and CLI agent dispatch (Codex, Claude, Gemini, Cursor, Aider, Grok).
+**One Python MCP server** for multi-agent teams: shared memory, focus conflict detection, an in-process event bus, and CLI agent dispatch (Codex, Claude, Gemini/Antigravity, Cursor, Aider, Grok).
 
 | Layer | What it does |
 | --- | --- |
@@ -26,6 +26,18 @@ pip install mindsync-ai
 
 Requires Python 3.10+.
 
+Run one-time onboarding after installation:
+
+```bash
+mindsync setup --mode auto
+mindsync doctor
+```
+
+`setup` detects installed CLIs, registers MindSync where their supported MCP
+surface allows it, and stores the shared orchestration policy. It is idempotent:
+existing `mindsync` registrations are preserved unless `--force` is explicitly used.
+Preview without changing anything with `mindsync setup --dry-run`.
+
 From source:
 
 ```bash
@@ -35,6 +47,12 @@ python -m pip install -e ".[dev]"
 ```
 
 ## MCP client config
+
+Automatic setup currently supports Codex, Claude, Gemini CLI, Grok, and Cursor.
+Detected CLIs without a documented MCP registration surface are reported but not
+modified. Antigravity (`agy`) and Gemini CLI belong to one logical worker family:
+Antigravity is the preferred worker backend, while Gemini CLI can host MindSync through
+its native MCP commands and remains an alternate worker backend. Manual registration remains available:
 
 ```json
 {
@@ -61,7 +79,7 @@ Or:
 
 (Windows: point at your venv’s `python.exe` if agents don’t share PATH.)
 
-## Tools (16)
+## Tools (19)
 
 ### Core memory / focus
 
@@ -87,6 +105,9 @@ Or:
 | Tool | Purpose |
 | --- | --- |
 | `delegate_task` | Run a CLI agent or role (foreground/background), optionally in an isolated `--worktree` |
+| `route_task` | Preview capability-based automatic worker selection without launching anything |
+| `list_agents` | List worker availability, capabilities, defaults, and routing priority |
+| `get_orchestration_policy` | Read the active `auto` / `suggest` / `off` delegation policy |
 | `list_models` | Discover available models for agents |
 | `list_roles` | List configured roles and their agent, model, and effort mappings |
 | `job_status` | Job status + PID reconciliation |
@@ -104,6 +125,7 @@ mindsync-dispatch models <agent>
 mindsync-dispatch roles
 mindsync-dispatch run --role bulk "summarize README" --background --worktree
 mindsync-dispatch run codex "summarize README" --worktree --effort high --check "pytest -q"
+mindsync-dispatch run auto "implement and test the fix" --capability coding --capability testing --exclude-agent codex
 mindsync-dispatch status
 mindsync-dispatch review <job-id>
 mindsync-dispatch result <job-id>
@@ -119,7 +141,81 @@ path to another checkout will send the agent straight back to it, the job will s
 and only the isolation will be lost. Dispatch appends a warning to the task text for you, but
 the wording of your own task has to agree with it.
 
-Built-in presets: `codex`, `claude`, `gemini`, `cursor`, `aider`, `grok`.
+Built-in presets: `codex`, `claude`, `agy`, `gemini`, `cursor`, `aider`, `grok`.
+
+The `agy` and `gemini` presets are two execution backends in the same
+`gemini-antigravity` family, not two logical agents. If either one is the human-facing
+orchestrator, automatic routing excludes both family members to prevent self-delegation.
+
+### Automatic orchestration
+
+Static roles are optional. The human-facing CLI can remain the orchestrator and
+delegate to an automatically selected installed worker:
+
+```text
+delegate_task(
+  prompt="Audit authentication and report concrete vulnerabilities",
+  required_capabilities=["security", "review"],
+  exclude_agents=["codex"]
+)
+```
+
+Omitting `agent` in the MCP tool is equivalent to `agent="auto"`. The router ranks
+installed agents using their declared `capabilities`, per-capability weights, and
+`routingPriority`; the selection reason is returned and stored with the job. When
+`required_capabilities` is omitted, MindSync infers broad needs from the task text.
+Use `route_task` to preview a decision and `list_agents` to inspect the worker pool.
+
+Custom agents can extend `agents.json` with routing metadata:
+
+```json
+{
+  "name": "my-worker",
+  "family": "my-provider-family",
+  "bin": "my-cli",
+  "capabilities": ["general", "coding", "testing"],
+  "capabilityWeights": {"coding": 100, "testing": 90},
+  "routingPriority": 75
+}
+```
+
+Automatic routing only chooses a worker that is installed and on `PATH`. Authentication
+is still verified by the selected CLI when the job starts. MindSync does not retry a
+failed write-capable job on another worker automatically, avoiding duplicate edits.
+
+The MCP handshake tells the human-facing CLI to act as orchestrator: keep tiny or
+blocking work local, delegate useful bounded work, respect the original authorization,
+verify worker output, and own final integration. MindSync identifies the caller from MCP
+`clientInfo`; setup also tags new registrations with `MINDSYNC_CALLER_CLI` as a fallback,
+allowing automatic routing to exclude the CLI talking to the human.
+
+Policy is stored in `~/.mindsync/orchestration.json`:
+
+```json
+{
+  "mode": "auto",
+  "announce": true,
+  "maxParallel": 3,
+  "avoidHumanFacingAgent": true
+}
+```
+
+Manage it without editing JSON:
+
+```bash
+mindsync config
+mindsync config orchestration.mode suggest
+mindsync config orchestration.announce false
+mindsync config orchestration.maxParallel 4
+```
+
+- `auto` delegates useful work without blocking confirmation and briefly announces it.
+- `suggest` previews a worker but launches nothing until the human approves.
+- `off` keeps automatic work local; an explicit agent or role remains available when requested.
+
+The parallel limit applies to automatically routed pending/running jobs. Existing CLI MCP
+registrations are never silently replaced; use native CLI management or the explicit
+`mindsync setup --force` path when replacement is intended.
 
 ## Quick start (local only)
 
@@ -177,6 +273,7 @@ Under `MINDSYNC_HOME` (default `~/.mindsync`):
 - `events.jsonl` — event bus log  
 - `events.jsonl.seq` — constant-time monotonic sequence checkpoint
 - `subscriptions.json` — event subscriptions  
+- `orchestration.json` — persistent automatic delegation policy
 - `compiled-truth/*.md` — pulled remote summaries  
 - `.locks/` — persistent files holding kernel-managed exclusive locks
 
@@ -215,10 +312,12 @@ CI runs on every push/PR to `master` (Python 3.10 / 3.12 / 3.13 × Ubuntu + Wind
 4. **No false-positive conflicts** — same project alone is not a conflict.  
 5. **Generic by default** — zero personal paths in code.  
 6. **Safe dispatch** — model tokens validated; Windows `.cmd`/`.bat` arg-mode prompts blocked.  
+7. **Human-owned orchestration** — workers never expand authority; the user-facing CLI integrates and answers.
 
 ## Security notes
 
 - Runs with the privileges of the executing user. Wire only into trusted local agents.  
+- `mindsync setup --dry-run` is non-mutating. Setup preserves existing MCP registrations by default; Cursor JSON is merged atomically and backed up before forced replacement.
 - Pulled remote truth is treated as untrusted (filename/UTF-8 validation, atomic swap).  
 - Local store defaults to Unix `0700` dirs / `0600` files where the OS allows.  
 - SSH errors are scrubbed before return to clients.  

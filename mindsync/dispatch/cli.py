@@ -15,6 +15,7 @@ from mindsync.dispatch.runner import (
     supervise_job,
 )
 from mindsync.dispatch.store import get_job, list_jobs, reconcile_job
+from mindsync.orchestration import load_policy
 
 
 def parse_run_args(argv: list[str]) -> dict:
@@ -27,14 +28,17 @@ def parse_run_args(argv: list[str]) -> dict:
         "cwd": None,
         "worktree": False,
         "checks": [],
+        "required_capabilities": [],
+        "exclude_agents": [],
     }
     rest: list[str] = []
     i = 0
     usage_str = (
-        'usage: dispatch run <agent> "task..." [options]\n'
+        'usage: dispatch run <agent|auto> "task..." [options]\n'
         '   or: dispatch run --role <name> "task..." [options]   (no agent: the role picks one)\n'
         "options: [--background] [--write] [--model <m>] [--effort <level>] "
-        "[--worktree] [--cwd <path>] [--check <command>]..."
+        "[--worktree] [--cwd <path>] [--check <command>]... "
+        "[--capability <name>]... [--exclude-agent <name>]..."
     )
     while i < len(argv):
         a = argv[i]
@@ -54,6 +58,14 @@ def parse_run_args(argv: list[str]) -> dict:
             i += 1
             if i < len(argv):
                 flags["checks"].append(argv[i])
+        elif a == "--capability":
+            i += 1
+            if i < len(argv):
+                flags["required_capabilities"].append(argv[i])
+        elif a == "--exclude-agent":
+            i += 1
+            if i < len(argv):
+                flags["exclude_agents"].append(argv[i])
         elif a == "--write":
             flags["write"] = True
         elif a == "--background":
@@ -99,13 +111,20 @@ def fmt_job(m: dict) -> str:
     prompt = m.get("prompt") or ""
     if len(prompt) > 100:
         prompt = prompt[:100] + "…"
-    agent_str = f"{m['agent']} (role: {m['role']})" if m.get("role") else m["agent"]
+    if m.get("role"):
+        agent_str = f"{m['agent']} (role: {m['role']})"
+    elif m.get("routing"):
+        agent_str = f"{m['agent']} (auto)"
+    else:
+        agent_str = m["agent"]
     lines = [
         f"[{m['id']}] {agent_str} — {m['status']}{exit_bit}{verdict_bit}",
         f"  prompt: {prompt}",
     ]
     if m.get("worktreePath") and m.get("worktreeKept"):
         lines.append(f"  worktree kept: {m['worktreePath']} (branch {m['branch']})")
+    if m.get("routing"):
+        lines.append(f"  route: {m['routing']['reason']}")
     return "\n".join(lines)
 
 
@@ -122,6 +141,9 @@ async def _async_main(argv: list[str]) -> int:
         opts = parse_run_args(rest)
         r = await run_task(**opts)
         job = r["job"]
+        route_info = job.get("routing")
+        if route_info and load_policy().announce:
+            print(f"AUTO ROUTE: {route_info['reason']}")
         if opts["background"]:
             wt_info = (
                 f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})"
@@ -201,14 +223,21 @@ async def _async_main(argv: list[str]) -> int:
         return 0
 
     if cmd == "agents":
+        from mindsync.dispatch.proc import resolve_bin
+
         for a in load_adapters().values():
             label = f" — {a.displayName}" if a.displayName else ""
-            print(f"{a.name}{label} (bin: {a.bin})")
+            state = "available" if resolve_bin(a.bin) else "missing"
+            print(f"{a.name}{label} (bin: {a.bin}, {state})")
             extras = []
             if a.defaultModel:
                 extras.append(f"default model: {a.defaultModel}")
             if a.efforts:
                 extras.append(f"effort: {'|'.join(a.efforts)}")
+            if a.capabilities:
+                extras.append(f"capabilities: {','.join(a.capabilities)}")
+            if a.routingPriority:
+                extras.append(f"routing priority: {a.routingPriority}")
             if extras:
                 print(f"    {'    '.join(extras)}")
         print(f"\nCustom agents: {user_config_path()}")

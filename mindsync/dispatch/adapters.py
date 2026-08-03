@@ -15,6 +15,7 @@ SAFE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$")
 
 _DEFAULTS: dict[str, Any] = {
     "displayName": None,
+    "family": None,
     "input": "stdin",
     "runArgs": [],
     "writeArgs": [],
@@ -29,6 +30,9 @@ _DEFAULTS: dict[str, Any] = {
     "effortArgs": [],
     "modelsArgs": None,
     "models": [],
+    "capabilities": [],
+    "capabilityWeights": {},
+    "routingPriority": 0,
 }
 
 
@@ -71,6 +75,7 @@ class AdapterConfig(BaseModel):
     name: str
     bin: str
     displayName: str | None = None
+    family: str | None = None
     input: Literal["stdin", "arg"] = "stdin"
     runArgs: list[str] = Field(default_factory=list)
     writeArgs: list[str] = Field(default_factory=list)
@@ -86,6 +91,9 @@ class AdapterConfig(BaseModel):
     effortArgs: list[str] = Field(default_factory=list)
     modelsArgs: list[str] | None = None
     models: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    capabilityWeights: dict[str, int] = Field(default_factory=dict)
+    routingPriority: int = Field(default=0, ge=0, le=100)
 
     @model_validator(mode="after")
     def _require_prompt_placeholder(self) -> AdapterConfig:
@@ -99,6 +107,34 @@ class AdapterConfig(BaseModel):
             raise ValueError(f"Adapter '{self.name}': effortArgs is set but efforts is empty")
         if self.defaultModel and not any("{model}" in t for t in self.modelArgs):
             raise ValueError(f"Adapter '{self.name}': defaultModel is set but modelArgs lacks {{model}}")
+        normalized = []
+        for capability in self.capabilities:
+            value = capability.strip().lower()
+            if value and value not in normalized:
+                normalized.append(value)
+        self.capabilities = normalized
+        if self.family is not None:
+            self.family = self.family.strip().lower() or None
+        self.capabilityWeights = {
+            capability.strip().lower(): weight
+            for capability, weight in self.capabilityWeights.items()
+            if capability.strip()
+        }
+        unknown_weights = set(self.capabilityWeights) - set(self.capabilities)
+        if unknown_weights:
+            raise ValueError(
+                f"Adapter '{self.name}': capabilityWeights contains undeclared capabilities: "
+                f"{', '.join(sorted(unknown_weights))}"
+            )
+        invalid_weights = {
+            capability: weight
+            for capability, weight in self.capabilityWeights.items()
+            if not 0 <= weight <= 100
+        }
+        if invalid_weights:
+            raise ValueError(
+                f"Adapter '{self.name}': capability weights must be between 0 and 100"
+            )
         return self
 
 

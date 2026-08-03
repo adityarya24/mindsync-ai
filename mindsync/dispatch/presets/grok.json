@@ -10,5 +10,8 @@
   "efforts": ["low", "medium", "high"],
   "modelsArgs": ["models"],
   "loginHint": "Set GROK_API_KEY (see grok-cli docs)",
-  "installHint": "npm install -g @vibe-kit/grok-cli"
+  "installHint": "npm install -g @vibe-kit/grok-cli",
+  "capabilities": ["general", "review", "security", "research", "reasoning"],
+  "capabilityWeights": {"review": 100, "security": 100, "research": 85, "reasoning": 85},
+  "routingPriority": 70
 }

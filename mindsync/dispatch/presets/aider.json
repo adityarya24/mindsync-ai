@@ -7,5 +7,8 @@
   "writeArgs": [],
   "modelArgs": ["--model", "{model}"],
   "loginHint": "Set the API key env var for your chosen model (see aider docs)",
-  "installHint": "python -m pip install aider-install && aider-install"
+  "installHint": "python -m pip install aider-install && aider-install",
+  "capabilities": ["general", "coding", "refactoring", "repository"],
+  "capabilityWeights": {"refactoring": 100, "coding": 80, "repository": 75},
+  "routingPriority": 60
 }

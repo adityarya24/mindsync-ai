@@ -1,11 +1,15 @@
 {
   "name": "gemini",
-  "displayName": "Gemini CLI",
+  "displayName": "Gemini CLI (Antigravity family)",
+  "family": "gemini-antigravity",
   "bin": "gemini",
   "input": "stdin",
   "runArgs": ["--skip-trust"],
   "writeArgs": ["--yolo"],
   "modelArgs": ["--model", "{model}"],
   "loginHint": "gemini (first run triggers login)",
-  "installHint": "npm install -g @google/gemini-cli"
+  "installHint": "npm install -g @google/gemini-cli",
+  "capabilities": ["general", "research", "large-context", "multimodal", "coding", "writing"],
+  "capabilityWeights": {"research": 95, "large-context": 100, "multimodal": 100, "writing": 80, "coding": 65},
+  "routingPriority": 70
 }

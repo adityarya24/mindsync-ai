@@ -23,6 +23,7 @@ from mindsync.dispatch.adapters import (
 from mindsync.dispatch.proc import names_match, resolve_bin, spawn_foreground
 from mindsync.dispatch.runner import (
     assert_arg_mode_spawn_safe,
+    cancel_job,
     job_result,
     run_task,
     supervise_job,
@@ -79,6 +80,16 @@ def test_expected_status_prevents_cancelled_job_becoming_done(tmp_path, monkeypa
 
     assert result["status"] == "cancelled"
     assert result["exitCode"] is None
+
+
+def test_pending_job_can_be_cancelled(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    meta = store.create_job(agent="test", prompt="x", cwd=str(tmp_path))
+
+    cancelled = cancel_job(meta["id"])
+
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["endedAt"] is not None
 
 
 @pytest.mark.asyncio
@@ -185,11 +196,12 @@ def test_names_match_rules():
 
 def test_presets_load():
     adapters = load_adapters()
-    for name in ("codex", "claude", "gemini", "cursor", "aider", "grok"):
+    for name in ("codex", "claude", "gemini", "agy", "cursor", "aider", "grok"):
         assert name in adapters
     assert adapters["codex"].input == "stdin"
     assert adapters["grok"].input == "arg"
     assert any("{prompt}" in t for t in adapters["grok"].runArgs)
+    assert adapters["agy"].family == adapters["gemini"].family == "gemini-antigravity"
 
 
 def test_user_config_merge(tmp_path, monkeypatch):
@@ -367,6 +379,19 @@ async def test_spawn_foreground_timeout(tmp_path):
         cwd=str(tmp_path),
     )
     assert r["timedOut"] is True
+
+
+@pytest.mark.asyncio
+async def test_spawn_foreground_passes_worker_environment(tmp_path):
+    r = await spawn_foreground(
+        sys.executable,
+        ["-c", "import os; print(os.environ.get('MINDSYNC_WORKER'))"],
+        timeout_ms=5_000,
+        cwd=str(tmp_path),
+        env={**os.environ, "MINDSYNC_WORKER": "1"},
+    )
+    assert r["exitCode"] == 0
+    assert r["stdout"].strip() == "1"
 
 
 def test_resolve_bin_python():

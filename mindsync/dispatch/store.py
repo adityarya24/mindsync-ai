@@ -80,6 +80,7 @@ def create_job(
     write: bool = False,
     checks: list[str] | None = None,
     publisher_agent: str = "dispatch",
+    routing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = jobs_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -123,6 +124,7 @@ def create_job(
             "baseCommit": None,
             "worktreeKept": None,
             "publisherAgent": publisher_agent,
+            "routing": routing,
         }
         _write_meta(job_id, meta)
         _private_write(paths["prompt"], prompt)

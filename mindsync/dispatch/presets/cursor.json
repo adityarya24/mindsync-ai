@@ -7,5 +7,8 @@
   "writeArgs": ["--force"],
   "modelArgs": ["--model", "{model}"],
   "loginHint": "cursor-agent login",
-  "installHint": "See https://cursor.com/cli"
+  "installHint": "See https://cursor.com/cli",
+  "capabilities": ["general", "coding", "repository", "debugging"],
+  "capabilityWeights": {"repository": 95, "coding": 85, "debugging": 85},
+  "routingPriority": 65
 }

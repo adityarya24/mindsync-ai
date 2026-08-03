@@ -31,6 +31,9 @@ EXPECTED_TOOLS = {
     "subscribe_events",
     # Agent dispatch
     "delegate_task",
+    "route_task",
+    "list_agents",
+    "get_orchestration_policy",
     "job_status",
     "job_result",
     "job_review",
@@ -68,6 +71,8 @@ def test_stdio_handshake_reports_server_identity_and_version(tmp_path):
     # version, not the underlying `mcp` SDK version it happens to be
     # built against.
     assert init_result.serverInfo.version == __version__
+    assert "human" in (init_result.instructions or "").lower()
+    assert "orchestration mode" in (init_result.instructions or "").lower()
 
 
 def test_stdio_handshake_lists_all_mindsync_tools(tmp_path):

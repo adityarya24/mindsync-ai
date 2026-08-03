@@ -19,11 +19,13 @@ def _git(cwd: str, *args: str) -> str | None:
     try:
         res = subprocess.run(
             ["git", "-C", cwd, *args],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=False,
+            timeout=15,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     return res.stdout if res.returncode == 0 else None
 
@@ -61,11 +63,13 @@ def create_worktree(root: str, job_id: str) -> dict[str, str]:
     try:
         subprocess.run(
             ["git", "-C", root, "worktree", "add", str(wt_path), "-b", branch],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             check=True,
+            timeout=60,
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         detail = getattr(exc, "stderr", "") or str(exc)
         raise WorktreeError(f"Failed to create worktree: {detail}") from exc
 

@@ -23,6 +23,8 @@ from mindsync.dispatch.proc import (
 )
 from mindsync.dispatch import store
 from mindsync.dispatch.review import diff_summary, run_checks
+from mindsync.dispatch.routing import select_agent
+from mindsync.orchestration import effective_exclusions, load_policy
 
 
 def _cleanup_worktree(job_id: str) -> None:
@@ -113,6 +115,32 @@ class AgentNotInstalledError(RuntimeError):
         self.name = "AgentNotInstalledError"
 
 
+class AutoDelegationSuggestion(RuntimeError):
+    def __init__(self, decision: dict[str, Any]) -> None:
+        self.decision = decision
+        super().__init__(
+            "Automatic delegation is in suggest mode. "
+            f"Suggested worker: {decision['agent']}. {decision['reason']}"
+        )
+
+
+class AutoDelegationDisabled(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__(
+            "Automatic delegation is off. Work locally, or use an explicit agent/role "
+            "after the human requests delegation."
+        )
+
+
+def _active_auto_jobs() -> int:
+    active = 0
+    for job in store.list_jobs():
+        fresh = store.reconcile_job(job)
+        if fresh.get("routing") and fresh.get("status") in {"pending", "running"}:
+            active += 1
+    return active
+
+
 def assert_arg_mode_spawn_safe(
     adapter: Any,
     resolved_bin: str,
@@ -153,6 +181,10 @@ def _publish_job_event(event_type: str, meta: dict[str, Any], agent_name: str = 
                     "timed_out": meta.get("timedOut"),
                     "model": meta.get("model"),
                     "write": meta.get("write"),
+                    "routed_automatically": bool(meta.get("routing")),
+                    "required_capabilities": (meta.get("routing") or {}).get(
+                        "requiredCapabilities", []
+                    ),
                 },
                 correlation_id=meta.get("id"),
             )
@@ -175,6 +207,8 @@ async def run_task(
     cwd: str | None = None,
     worktree: bool = False,
     publisher_agent: str = "dispatch",
+    required_capabilities: list[str] | None = None,
+    exclude_agents: list[str] | None = None,
 ) -> dict[str, Any]:
     if (agent is None and role is None) or (agent is not None and role is not None):
         raise ValueError("Exactly one of 'agent' or 'role' must be provided.")
@@ -183,6 +217,7 @@ async def run_task(
     if not prompt or not prompt.strip():
         raise ValueError("prompt must not be empty.")
 
+    routing = None
     if role is not None:
         role_cfg = resolve_role(role)
         eff_agent = role_cfg.agent
@@ -190,7 +225,30 @@ async def run_task(
         eff_effort = effort if effort is not None else role_cfg.effort
         job_role = role
     else:
-        eff_agent = agent  # type: ignore[assignment]
+        if agent == "auto":
+            policy = load_policy()
+            if policy.mode == "off":
+                raise AutoDelegationDisabled()
+            exclusions = effective_exclusions(exclude_agents, policy)
+            routing = select_agent(
+                prompt,
+                required_capabilities=required_capabilities,
+                exclude_agents=exclusions,
+            )
+            if policy.mode == "suggest":
+                raise AutoDelegationSuggestion(routing)
+            if _active_auto_jobs() >= policy.maxParallel:
+                raise RuntimeError(
+                    f"Automatic delegation limit reached ({policy.maxParallel} active jobs). "
+                    "Wait for a job to finish or change orchestration.maxParallel."
+                )
+            eff_agent = routing["agent"]
+        else:
+            if required_capabilities or exclude_agents:
+                raise ValueError(
+                    "required_capabilities and exclude_agents require agent='auto'."
+                )
+            eff_agent = agent  # type: ignore[assignment]
         eff_model = model
         eff_effort = effort
         job_role = None
@@ -220,6 +278,7 @@ async def run_task(
         write=write,
         checks=checks,
         publisher_agent=publisher_agent,
+        routing=routing,
     )
 
     if worktree:
@@ -329,6 +388,7 @@ async def supervise_job(
         cwd=meta.get("cwd") or os.getcwd(),
         timeout_ms=int(inv["timeoutMs"]),
         input_text=inv["input"],
+        env={**os.environ, "MINDSYNC_WORKER": "1"},
     )
     store.write_job_file(job_id, "stdout", result["stdout"])
     store.write_job_file(job_id, "stderr", result["stderr"])
@@ -397,7 +457,7 @@ def cancel_job(job_id: str) -> dict[str, Any]:
     meta = store.get_job(job_id)
     if not meta:
         raise ValueError(f"No such job: {job_id}")
-    if meta.get("status") != "running":
+    if meta.get("status") not in {"pending", "running"}:
         return meta
     pid = meta.get("pid")
     if pid is not None:
@@ -409,7 +469,7 @@ def cancel_job(job_id: str) -> dict[str, Any]:
             "status": "cancelled",
             "endedAt": store.utc_now(),
         },
-        expected_status="running",
+        expected_status={"pending", "running"},
     )
 
 

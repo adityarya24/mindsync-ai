@@ -7,5 +7,8 @@
   "writeArgs": ["--permission-mode", "acceptEdits"],
   "modelArgs": ["--model", "{model}"],
   "loginHint": "claude login (run `claude` once interactively)",
-  "installHint": "npm install -g @anthropic-ai/claude-code"
+  "installHint": "npm install -g @anthropic-ai/claude-code",
+  "capabilities": ["general", "architecture", "reasoning", "review", "writing", "coding"],
+  "capabilityWeights": {"architecture": 100, "reasoning": 95, "review": 90, "writing": 90, "coding": 75},
+  "routingPriority": 75
 }

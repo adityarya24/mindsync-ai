@@ -1,0 +1,16 @@
+{
+  "name": "agy",
+  "displayName": "Antigravity CLI (Gemini family)",
+  "family": "gemini-antigravity",
+  "bin": "agy",
+  "input": "arg",
+  "runArgs": ["-p", "{prompt}", "--print-timeout", "45m"],
+  "writeArgs": ["--dangerously-skip-permissions"],
+  "modelArgs": ["--model", "{model}"],
+  "effortArgs": ["--effort", "{effort}"],
+  "efforts": ["low", "medium", "high"],
+  "modelsArgs": ["models"],
+  "capabilities": ["general", "architecture", "reasoning", "research", "large-context", "multimodal", "coding", "review", "writing"],
+  "capabilityWeights": {"architecture": 90, "reasoning": 95, "research": 95, "large-context": 100, "multimodal": 95, "coding": 75, "review": 85, "writing": 85},
+  "routingPriority": 85
+}

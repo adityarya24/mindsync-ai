@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from mindsync import __version__
 from mindsync.bridge import (
@@ -38,6 +40,7 @@ from mindsync.conflict import detect_focus_conflicts
 from mindsync.dispatch import store as dispatch_store
 from mindsync.dispatch.review import format_review as dispatch_format_review
 from mindsync.dispatch.runner import (
+    AutoDelegationSuggestion,
     cancel_job as dispatch_cancel_job,
     describe_empty_result as dispatch_describe_empty_result,
     job_result as dispatch_job_result,
@@ -53,8 +56,16 @@ from mindsync.storage import (
     requeue_failed_facts,
     recover_orphan_spools,
 )
+from mindsync.orchestration import (
+    caller_cli_from_context,
+    effective_exclusions,
+    load_policy,
+    is_worker_process,
+    policy_snapshot,
+    server_instructions,
+)
 
-mcp = FastMCP("MindSync")
+mcp = FastMCP("MindSync", instructions=server_instructions())
 # FastMCP falls back to the `mcp` SDK's package version for serverInfo.version
 # unless we override it explicitly; report MindSync's own version instead.
 mcp._mcp_server.version = __version__
@@ -602,8 +613,14 @@ def _fmt_dispatch_job(m: dict[str, Any]) -> str:
     prompt = m.get("prompt") or ""
     if len(prompt) > 100:
         prompt = prompt[:100] + "…"
-    agent_str = f"{m['agent']} (role: {m['role']})" if m.get("role") else m["agent"]
-    return f"[{m['id']}] {agent_str} — {m['status']}{exit_bit}\n  prompt: {prompt}"
+    if m.get("role"):
+        agent_str = f"{m['agent']} (role: {m['role']})"
+    elif m.get("routing"):
+        agent_str = f"{m['agent']} (auto)"
+    else:
+        agent_str = m["agent"]
+    route_line = f"\n  route: {m['routing']['reason']}" if m.get("routing") else ""
+    return f"[{m['id']}] {agent_str} — {m['status']}{exit_bit}\n  prompt: {prompt}{route_line}"
 
 
 @mcp.tool()
@@ -618,20 +635,41 @@ async def delegate_task(
     cwd: str | None = None,
     worktree: bool = False,
     checks: list[str] | None = None,
+    required_capabilities: list[str] | None = None,
+    exclude_agents: list[str] | None = None,
     agent_name: str = "default_agent",
+    ctx: Context | None = None,
 ) -> str:
     """Delegate a task to a headless CLI agent or role.
 
-    Specify either agent or role, not both. Prefer a role: it carries the model and
-    effort along with the choice, so the task is routed by what kind of work it is.
+    The default agent='auto' selects an installed worker by capability. Pass
+    required_capabilities when the orchestrator already knows what the task needs,
+    and exclude_agents to keep the human-facing orchestrator out of the worker pool.
+    Direct agent selection and static roles remain available as explicit overrides.
     If worktree is True, the agent runs in an isolated git worktree branching from cwd.
     checks are shell commands run after the agent finishes (for example a test command);
     read their outcome with job_review before spending anything on the job's output.
     """
     settings.ensure_dirs()
+    if is_worker_process():
+        return (
+            "Error: recursive delegation is disabled for MindSync workers. "
+            "Complete the assigned task locally and return it to the orchestrator."
+        )
+    effective_agent = agent if agent is not None else (None if role is not None else "auto")
+    policy = load_policy() if effective_agent == "auto" else None
+    exclusions = (
+        effective_exclusions(
+            exclude_agents,
+            policy,
+            caller_cli_from_context(ctx),
+        )
+        if effective_agent == "auto"
+        else exclude_agents
+    )
     try:
         res = await dispatch_run_task(
-            agent=agent,
+            agent=effective_agent,
             role=role,
             prompt=prompt,
             model=model,
@@ -642,11 +680,25 @@ async def delegate_task(
             worktree=worktree,
             checks=checks,
             publisher_agent=agent_name,
+            required_capabilities=required_capabilities,
+            exclude_agents=exclusions,
+        )
+    except AutoDelegationSuggestion as exc:
+        log_audit(agent_name, "delegate_task", f"suggested={exc.decision['agent']}")
+        return (
+            "Suggestion only; no job was launched. "
+            f"{exc.decision['reason']} Ask the human or delegate explicitly if they approve."
         )
     except Exception as exc:
         log_audit(agent_name, "delegate_task", f"error={exc}")
         return f"Error: {exc}"
     job = res["job"]
+    route_info = job.get("routing")
+    route_line = (
+        f"Auto route: {route_info['reason']}\n"
+        if route_info and policy.announce
+        else ""
+    )
     log_audit(
         agent_name,
         "delegate_task",
@@ -655,11 +707,72 @@ async def delegate_task(
     if background:
         wt_info = f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})" if job.get("worktreePath") else ""
         return (
-            f"Started background job {job['id']} (agent: {job['agent']}).{wt_info} "
+            f"{route_line}Started background job {job['id']} (agent: {job['agent']}).{wt_info} "
             f"Check: job_status('{job['id']}')"
         )
     wt_info = f"worktree: {job['worktreePath']}  (branch: {job['branch']})\n" if job.get("worktreePath") else ""
-    return f"{wt_info}{res.get('result') or '(no output)'}"
+    return f"{route_line}{wt_info}{res.get('result') or '(no output)'}"
+
+
+@mcp.tool()
+def route_task(
+    prompt: str,
+    required_capabilities: list[str] | None = None,
+    exclude_agents: list[str] | None = None,
+    agent_name: str = "default_agent",
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Preview automatic worker selection without launching a job."""
+    from mindsync.dispatch.routing import select_agent
+
+    policy = load_policy()
+    decision = select_agent(
+        prompt,
+        required_capabilities=required_capabilities,
+        exclude_agents=effective_exclusions(
+            exclude_agents,
+            policy,
+            caller_cli_from_context(ctx),
+        ),
+    )
+    log_audit(agent_name, "route_task", decision["reason"])
+    return decision
+
+
+@mcp.tool()
+def get_orchestration_policy(
+    agent_name: str = "default_agent",
+    ctx: Context | None = None,
+) -> dict[str, Any]:
+    """Read automatic delegation policy. Call when deciding whether to delegate or offer it."""
+    snapshot = policy_snapshot()
+    snapshot["caller_cli"] = caller_cli_from_context(ctx) or os.environ.get(
+        "MINDSYNC_CALLER_CLI"
+    )
+    log_audit(agent_name, "get_orchestration_policy", f"mode={snapshot['mode']}")
+    return snapshot
+
+
+@mcp.tool()
+def list_agents(agent_name: str = "default_agent") -> list[dict[str, Any]]:
+    """List dispatch agents with live binary availability and routing capabilities."""
+    from mindsync.dispatch.adapters import load_adapters
+    from mindsync.dispatch.proc import resolve_bin
+
+    agents = []
+    for adapter in load_adapters().values():
+        agents.append({
+            "name": adapter.name,
+            "display_name": adapter.displayName or adapter.name,
+            "family": adapter.family or adapter.name,
+            "available": bool(resolve_bin(adapter.bin)),
+            "capabilities": adapter.capabilities or ["general"],
+            "routing_priority": adapter.routingPriority,
+            "default_model": adapter.defaultModel,
+            "efforts": adapter.efforts,
+        })
+    log_audit(agent_name, "list_agents", f"count={len(agents)}")
+    return agents
 
 
 @mcp.tool()
@@ -792,10 +905,15 @@ def health(agent_name: str = "system") -> dict[str, Any]:
         "remote_root": settings.remote_root or None,
         "active_agents": agents,
         "truth_files": list(read_compiled_truth().keys()),
+        "orchestration": policy_snapshot(),
     }
 
 
 def main() -> None:
+    if len(sys.argv) > 1:
+        from mindsync.manage import main as manage_main
+
+        raise SystemExit(manage_main(sys.argv[1:]))
     settings.ensure_dirs()
     mcp.run()
 

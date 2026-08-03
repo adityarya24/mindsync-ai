@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- One-time `mindsync setup`, `mindsync doctor`, and `mindsync config` onboarding commands. Setup detects supported local CLIs, idempotently registers the MCP server, identifies the human-facing caller, and supports non-mutating dry runs.
+- Antigravity (`agy`) and Gemini CLI are modeled as two backends in one `gemini-antigravity` worker family; family-wide caller exclusion prevents self-delegation and doctor groups their inventory.
+- Persistent `auto` / `suggest` / `off` orchestration policy with announcement control, automatic caller exclusion, and a configurable parallel-job limit.
+- Capability-based automatic worker routing (`agent="auto"`), live worker inventory, explainable route previews and stored routing metadata through the new `list_agents`, `route_task`, and `get_orchestration_policy` MCP tools.
+- MCP handshake instructions establish the human-facing CLI as orchestrator while keeping authorization, verification, integration, and the final response with that agent.
 - Support routing dispatch jobs by role instead of agent name (`--role` CLI flag, `role` parameter on `run_task` / `delegate_task` MCP tool, and new `roles` CLI command and `list_roles` MCP tool). Roles map to an agent, optional model, and optional effort triple in `agents.json`.
 - Mechanical review gate for dispatch jobs (`--check "<command>"` on `run`, `review <job-id>` command, and `job_review` MCP tool). Runs cheap objective check commands and computes git diff metrics against the job's base commit prior to worktree cleanup, recording a `VERDICT: PASS` / `FAIL` summary so callers can skip broken outputs. Every job now records the base commit it started from, not only isolated ones.
 - Opt-in git worktree isolation for dispatch jobs (`--worktree` / `--cwd` flags on the CLI, `worktree=True` / `cwd=...` kwargs on the `delegate_task` MCP tool). Each job runs in a dedicated sibling directory (`.mindsync-wt/<job-id>`) on its own branch. Unchanged worktrees are auto-cleaned; worktrees with commits or untracked files are kept for review.

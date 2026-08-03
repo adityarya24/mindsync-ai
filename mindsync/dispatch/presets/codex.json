@@ -10,5 +10,8 @@
   "efforts": ["low", "medium", "high"],
   "authCheckArgs": ["login", "status"],
   "loginHint": "codex login",
-  "installHint": "npm install -g @openai/codex"
+  "installHint": "npm install -g @openai/codex",
+  "capabilities": ["general", "coding", "debugging", "testing", "devops", "repository", "review"],
+  "capabilityWeights": {"coding": 100, "debugging": 95, "testing": 95, "devops": 90, "repository": 90, "review": 75},
+  "routingPriority": 80
 }

@@ -64,6 +64,7 @@ class Settings:
         self.lock_dir: Path = self.home / ".locks"
         self.events_file: Path = self.home / "events.jsonl"
         self.subscriptions_file: Path = self.home / "subscriptions.json"
+        self.orchestration_file: Path = self.home / "orchestration.json"
 
         # Remote is disabled until both host and root are set.
         self.ssh_host: str = _env("MINDSYNC_SSH_HOST")
