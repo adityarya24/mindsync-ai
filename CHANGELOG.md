@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dispatch layer supports discovering models, applying default models, and reasoning-effort options (`--effort`) natively, passed through to the underlying CLI adapters. Added `models` command to CLI and `list_models` MCP tool.
 - Worktree jobs append a note to the task text telling the agent to stay inside its working directory. Isolation is advisory, and an absolute path in the task text is enough to send an agent back to the original checkout — a failure that is otherwise silent, since the job still succeeds.
 
+### Fixed
+
+- Replaced age-based lock stealing with kernel-managed cross-platform file locks, eliminating a race that could remove a newly acquired live lock.
+- Made dispatch metadata updates locked and atomic, with conditional lifecycle transitions so cancellation cannot be overwritten by completion.
+- Background dispatch now emits one correctly attributed `job.started` event and preserves the requesting agent for terminal events.
+- Remote truth pulls use unique, always-cleaned staging directories so concurrent pulls cannot delete each other's data.
+- Legacy SSH write errors now pass through the same path/key/host sanitizer as native batch writes.
+- Dispatch job directories and artifacts now request private `0700`/`0600` permissions where supported.
+- Event publishing uses a persistent sequence checkpoint instead of rescanning the entire JSONL log for every event.
+
 ## [1.2.0] - 2026-07-28
 
 ### Added

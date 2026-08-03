@@ -154,22 +154,28 @@ def test_bounded_batches_count_complete_serialized_json():
         assert len(json.dumps(batch).encode("utf-8")) <= max_bytes
 
 
-def test_release_does_not_delete_foreign_lock(tmp_path, monkeypatch):
+def test_lock_file_is_persistent_and_reusable(tmp_path, monkeypatch):
     settings = _isolate(tmp_path, monkeypatch)
     lock_path = settings.lock_dir / "t.lock"
     with storage.file_lock("t"):
-        # Simulate a steal + re-acquire by another process while we hold it.
-        lock_path.write_text("someone-else\n", encoding="ascii")
+        pass
     assert lock_path.exists()
-    lock_path.unlink()
+    first_token = lock_path.read_text(encoding="ascii").strip()
+
+    with storage.file_lock("t"):
+        pass
+    second_token = lock_path.read_text(encoding="ascii").strip()
+
+    assert second_token != first_token
 
 
-def test_stale_lock_is_stolen(tmp_path, monkeypatch):
+def test_abandoned_lock_file_does_not_block_os_lock(tmp_path, monkeypatch):
     settings = _isolate(tmp_path, monkeypatch)
     lock_path = settings.lock_dir / "t.lock"
     lock_path.write_text("dead-process\n", encoding="ascii")
     old = time.time() - 120
     os.utime(lock_path, (old, old))
     with storage.file_lock("t", timeout=0.2):
-        assert lock_path.read_text(encoding="ascii").strip() != "dead-process"
-    assert not lock_path.exists()
+        pass
+    assert lock_path.exists()
+    assert lock_path.read_text(encoding="ascii").strip() != "dead-process"

@@ -95,10 +95,9 @@ class Settings:
             _env("MINDSYNC_REMOTE_CACHE_TTL", "30") or "30"
         )
         self.lock_timeout_seconds: float = float(_env("MINDSYNC_LOCK_TIMEOUT", "5") or "5")
-        # A lock is only eligible to be stolen once its holder has stopped
-        # renewing it for this long (see mindsync.storage.file_lock). A live
-        # holder renews well inside this window, so a slow-but-alive
-        # operation is never mistaken for a crashed one.
+        # Kept for compatibility with pre-1.3 deployments. Locks are now
+        # kernel-managed and released automatically when a process exits, so
+        # storage.file_lock no longer uses an age threshold.
         self.lock_stale_seconds: float = float(
             _env("MINDSYNC_LOCK_STALE_SECS", "60") or "60"
         )

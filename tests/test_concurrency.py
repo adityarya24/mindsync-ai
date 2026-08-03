@@ -109,10 +109,9 @@ def test_two_simultaneous_sync_calls(tmp_path, monkeypatch):
     assert len(locked_out) == 1
 
 
-def test_lock_beyond_stale_timeout_is_not_stolen(tmp_path, monkeypatch):
-    """A holder that outlives the stale window (but keeps heartbeating) must
-    never lose its lock, and the spool it owns must never be recovered/
-    deleted out from under it by a would-be thief."""
+def test_lock_beyond_legacy_stale_timeout_is_not_stolen(tmp_path, monkeypatch):
+    """A live OS-lock holder must not lose its lock merely because the
+    legacy stale interval elapsed."""
     settings = _isolate(tmp_path, monkeypatch)
     # Tiny windows so the test runs fast, but with the same ratios as prod
     # (thief's own acquire timeout << stale_after << holder's hold time).
@@ -141,8 +140,7 @@ def test_lock_beyond_stale_timeout_is_not_stolen(tmp_path, monkeypatch):
     holder = threading.Thread(target=long_holder)
     holder.start()
 
-    # Give the holder time to acquire, then wait well past the naive stale
-    # window while it's still alive and heartbeating.
+    # Give the holder time to acquire, then wait past the legacy stale window.
     time.sleep(settings.lock_stale_seconds * 1.5)
     assert holder_state["acquired"] is True
 
@@ -158,7 +156,7 @@ def test_lock_beyond_stale_timeout_is_not_stolen(tmp_path, monkeypatch):
 
     holder.join(timeout=10)
 
-    assert thief_stole_lock is False, "lock was stolen from a live, heartbeating holder"
+    assert thief_stole_lock is False, "lock was stolen from a live OS-lock holder"
     assert holder_state["held_full_duration"] is True
     # The spool must still exist right up until the legitimate holder
     # finishes and requeues it -- never deleted/recovered by a thief.

@@ -226,7 +226,6 @@ def test_pull_compiled_truth_mocked(monkeypatch, tmp_path):
     
     monkeypatch.setattr(bridge, "_run", mock_run)
     
-    staging_dir = s.home / "staging-truth"
     res = bridge.pull_compiled_truth()
     assert res.ok
     assert len(called_args) == 1
@@ -234,7 +233,9 @@ def test_pull_compiled_truth_mocked(monkeypatch, tmp_path):
     assert scp_args[0] == bridge.resolve_openssh_tool("scp")
     assert "test-host:/test/root/compiled-truth/." in scp_args
     
-    # Staging directory should be cleaned up
+    # Every pull gets a unique staging directory and cleans it up.
+    staging_dir = Path(scp_args[-1])
+    assert staging_dir.name.startswith("staging-truth-")
     assert not staging_dir.exists()
     
     # Target file should exist under compiled_truth_dir
@@ -275,6 +276,44 @@ def test_sanitize_error_empty_and_none_like():
     import mindsync.bridge as bridge
 
     assert bridge._sanitize_error("") == "unknown error"
+
+
+def test_legacy_write_sanitizes_remote_errors(monkeypatch):
+    import subprocess
+    import mindsync.bridge as bridge
+
+    s = Settings()
+    s.ssh_host = "prod-host"
+    s.remote_root = "/srv/mindsync"
+    monkeypatch.setattr(bridge, "settings", s)
+    monkeypatch.setattr(
+        bridge,
+        "_ssh_script",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="identity /home/testuser/.ssh/id_ed25519 rejected by prod-host",
+        ),
+    )
+
+    result = bridge._legacy_write_call(
+        {
+            "fact_id": "fact-1",
+            "agent": "agent-a",
+            "entity": "project:test",
+            "attribute": "status",
+            "text": "hello",
+            "source": "agent:agent-a",
+            "confidence": 1.0,
+        },
+        with_fact_id=True,
+    )
+
+    assert result.ok is False
+    assert "testuser" not in (result.error or "")
+    assert ".ssh" not in (result.error or "")
+    assert "id_ed25519" not in (result.error or "")
 
 
 def test_pull_compiled_truth_sanitizes_scp_oserror(monkeypatch, tmp_path):

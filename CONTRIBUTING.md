@@ -40,7 +40,7 @@ MindSync uses modern Python packaging via `pyproject.toml`.
 
 Releases are automated via GitHub Actions on tag pushes. To release a new version:
 
-1. Update `version` in `pyproject.toml`.
+1. Update `__version__` in `mindsync/__init__.py`.
 2. Update `CHANGELOG.md` with the release notes.
 3. Commit and PR the changes.
 4. Once merged, create a tag (e.g., `v1.0.1`) and push it.

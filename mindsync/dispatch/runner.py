@@ -219,6 +219,7 @@ async def run_task(
         effort=eff_effort,
         write=write,
         checks=checks,
+        publisher_agent=publisher_agent,
     )
 
     if worktree:
@@ -269,7 +270,6 @@ async def run_task(
                 "spawnedName": bg["spawnedName"],
             },
         )
-        _publish_job_event("job.started", updated, agent_name=publisher_agent)
         return {"job": updated}
 
     done = await supervise_job(meta["id"], publisher_agent=publisher_agent)
@@ -285,6 +285,7 @@ async def supervise_job(
     if meta is None:
         raise ValueError(f"No such job: {job_id}")
 
+    publisher_agent = meta.get("publisherAgent") or publisher_agent
     self_pid = os.getpid()
     running = store.update_job(
         job_id,
@@ -293,7 +294,10 @@ async def supervise_job(
             "pid": self_pid,
             "spawnedName": process_name(self_pid) or Path(sys.executable).name.lower(),
         },
+        expected_status={"pending", "running"},
     )
+    if running.get("status") != "running":
+        return running
     _publish_job_event("job.started", running, agent_name=publisher_agent)
 
     adapter = resolve_adapter(meta["agent"])
@@ -319,7 +323,6 @@ async def supervise_job(
         effort=meta.get("effort"),
         write=bool(meta.get("write")),
     )
-    paths = store.job_paths(job_id)
     result = await spawn_foreground(
         bin_path,
         inv["args"],
@@ -327,9 +330,9 @@ async def supervise_job(
         timeout_ms=int(inv["timeoutMs"]),
         input_text=inv["input"],
     )
-    paths["stdout"].write_text(result["stdout"], encoding="utf-8", errors="replace")
-    paths["stderr"].write_text(result["stderr"], encoding="utf-8", errors="replace")
-    paths["result"].write_text(_compose_result(result), encoding="utf-8", errors="replace")
+    store.write_job_file(job_id, "stdout", result["stdout"])
+    store.write_job_file(job_id, "stderr", result["stderr"])
+    store.write_job_file(job_id, "result", _compose_result(result))
 
     was_cancelled = store.get_job(job_id)
     if was_cancelled and was_cancelled.get("status") == "cancelled":
@@ -347,8 +350,9 @@ async def supervise_job(
             "timedOut": result["timedOut"],
             "endedAt": store.utc_now(),
         },
+        expected_status="running",
     )
-    if status != "cancelled":
+    if final.get("status") != "cancelled":
         try:
             job_cwd = final.get("cwd") or os.getcwd()
             base_commit = final.get("baseCommit")
@@ -381,9 +385,10 @@ async def supervise_job(
 
     _cleanup_worktree(job_id)
     final = store.get_job(job_id)
-    if status == "done":
+    final_status = final.get("status") if final else None
+    if final_status == "done":
         _publish_job_event("job.completed", final, agent_name=publisher_agent)
-    elif status == "failed":
+    elif final_status == "failed":
         _publish_job_event("job.failed", final, agent_name=publisher_agent)
     return final
 
@@ -404,6 +409,7 @@ def cancel_job(job_id: str) -> dict[str, Any]:
             "status": "cancelled",
             "endedAt": store.utc_now(),
         },
+        expected_status="running",
     )
 
 

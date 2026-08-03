@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -15,122 +14,94 @@ from typing import Any, Generator
 from mindsync.config import chmod_tree_0600, settings
 
 
-def _touch_lock(lock_path: Path, token: str) -> bool:
-    """Renew a lock's mtime iff we still own it.
+def _try_os_lock(fd: int) -> bool:
+    """Acquire an exclusive non-blocking OS lock on byte zero / the file."""
+    if os.name == "nt":
+        import msvcrt
 
-    Returns False (and does nothing) if the lock file is gone or now owned
-    by someone else, so a stray heartbeat thread never resurrects/corrupts a
-    lock it no longer holds.
-    """
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+
+    import fcntl
+
     try:
-        content = lock_path.read_text(encoding="ascii").strip()
-    except OSError:
-        return False
-    if content != token:
-        return False
-    try:
-        os.utime(lock_path, None)
-    except OSError:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
         return False
     return True
 
 
-def _heartbeat_interval(stale_after: float) -> float:
-    # Renew comfortably inside the stale window (several renewals per
-    # window) so a paused GC/scheduler tick doesn't cause a false steal.
-    return max(0.02, min(stale_after / 4.0, 15.0))
+def _release_os_lock(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 @contextmanager
 def file_lock(
     name: str, timeout: float | None = None, stale_after: float | None = None
 ) -> Generator[None, None, None]:
-    """Cross-platform exclusive lock via O_EXCL lockfiles.
+    """Cross-platform exclusive lock backed by the operating system.
 
-    A lock is only ever stolen from a holder that has gone silent for
-    ``stale_after`` seconds (default: settings.lock_stale_seconds). While a
-    lock is held, a background heartbeat thread renews its mtime well inside
-    that window, so a genuinely slow-but-alive operation (e.g. a remote
-    write that legitimately takes longer than the stale window) is never
-    mistaken for a crashed holder and stolen out from under it. A lock whose
-    holder really did die (process crash, no heartbeat) still becomes
-    stealable once ``stale_after`` seconds pass with no renewal.
+    The lock file is intentionally persistent. The kernel releases the actual
+    lock when a process exits, so crash recovery needs no age-based unlink or
+    rename. That removes the check-then-replace race where a stale-lock
+    contender could delete a newly acquired live lock.
+
+    ``stale_after`` remains accepted for API compatibility but is no longer
+    needed: abandoned OS locks are released immediately by the kernel.
     """
     settings.ensure_dirs()
     timeout = settings.lock_timeout_seconds if timeout is None else timeout
-    stale_after = settings.lock_stale_seconds if stale_after is None else stale_after
+    del stale_after
     lock_path = settings.lock_dir / f"{name}.lock"
-    # Unique token so release (and steal) only ever removes a lock we own;
-    # a bare unlink could delete a lock another process just acquired.
     token = f"{os.getpid()}-{uuid.uuid4().hex}"
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
+    fd: int | None = None
 
     while True:
         try:
-            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")
+            if _try_os_lock(fd):
+                os.lseek(fd, 0, os.SEEK_SET)
                 os.write(fd, f"{token}\n".encode("ascii"))
-            finally:
+                os.ftruncate(fd, len(token) + 1)
+                os.fsync(fd)
+                break
+            os.close(fd)
+            fd = None
+        except OSError:
+            if fd is not None:
                 os.close(fd)
-            break
-        except FileExistsError:
-            if time.time() >= deadline:
-                # Stale lock recovery: only steal a lock whose holder has
-                # stopped renewing it for stale_after seconds. os.replace is
-                # atomic, so concurrent stealers race for the rename and
-                # only the winner removes the stale file; losers just retry
-                # the acquire (or give up below).
-                try:
-                    age = time.time() - lock_path.stat().st_mtime
-                except OSError:
-                    continue  # lock vanished; retry acquire
-                if age <= stale_after:
-                    raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
-                stale = lock_path.with_name(f"{lock_path.name}.stale-{token}")
-                try:
-                    os.replace(str(lock_path), str(stale))
-                    os.unlink(str(stale))
-                except OSError:
-                    pass
-                continue
-            time.sleep(0.05)
-        except PermissionError:
-            # Windows raises PermissionError (sharing violation) instead of
-            # FileExistsError when the lockfile is momentarily contended by
-            # another thread creating/unlinking it. That is transient
-            # contention, not a real permission problem, so retry until the
-            # deadline. On POSIX a PermissionError is a genuine fault — let
-            # it propagate.
+                fd = None
             if os.name != "nt":
                 raise
-            if time.time() >= deadline:
-                raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
-            time.sleep(0.05)
 
-    stop_heartbeat = threading.Event()
-
-    def _heartbeat() -> None:
-        interval = _heartbeat_interval(stale_after)
-        while not stop_heartbeat.wait(interval):
-            if not _touch_lock(lock_path, token):
-                return
-
-    heartbeat_thread = threading.Thread(target=_heartbeat, daemon=True)
-    heartbeat_thread.start()
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
+        time.sleep(0.05)
 
     try:
         yield
     finally:
-        # Stop renewing before we consider releasing, so the heartbeat
-        # thread can never touch/resurrect the file after (or while) we
-        # unlink it.
-        stop_heartbeat.set()
-        heartbeat_thread.join(timeout=_heartbeat_interval(stale_after) * 2)
-        try:
-            if lock_path.read_text(encoding="ascii").strip() == token:
-                lock_path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if fd is not None:
+            try:
+                _release_os_lock(fd)
+            finally:
+                os.close(fd)
 
 
 def _default_state() -> dict[str, Any]:

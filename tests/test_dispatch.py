@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -22,6 +25,7 @@ from mindsync.dispatch.runner import (
     assert_arg_mode_spawn_safe,
     job_result,
     run_task,
+    supervise_job,
 )
 from mindsync.dispatch import store
 import mindsync.config as config_mod
@@ -39,6 +43,99 @@ def _isolate_dispatch(tmp_path: Path, monkeypatch):
     storage.settings = config_mod.settings
     config_mod.settings.ensure_dirs()
     return home
+
+
+def test_job_updates_are_atomic_and_preserve_concurrent_patches(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    meta = store.create_job(agent="test", prompt="x", cwd=str(tmp_path))
+    barrier = threading.Barrier(8)
+
+    def update(index: int) -> None:
+        barrier.wait()
+        store.update_job(meta["id"], {f"worker{index}": True})
+
+    threads = [threading.Thread(target=update, args=(i,)) for i in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    final = store.get_job(meta["id"])
+    assert final is not None
+    assert all(final.get(f"worker{i}") is True for i in range(8))
+
+
+def test_expected_status_prevents_cancelled_job_becoming_done(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    meta = store.create_job(agent="test", prompt="x", cwd=str(tmp_path))
+    store.update_job(meta["id"], {"status": "running"})
+    store.update_job(meta["id"], {"status": "cancelled"}, expected_status="running")
+
+    result = store.update_job(
+        meta["id"],
+        {"status": "done", "exitCode": 0},
+        expected_status="running",
+    )
+
+    assert result["status"] == "cancelled"
+    assert result["exitCode"] is None
+
+
+@pytest.mark.asyncio
+async def test_supervisor_does_not_complete_a_concurrently_cancelled_job(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    cfg = user_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {"name": "fake", "bin": sys.executable, "input": "stdin", "runArgs": []}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    meta = store.create_job(
+        agent="fake",
+        prompt="x",
+        cwd=str(tmp_path),
+        publisher_agent="requester",
+    )
+
+    async def cancel_during_run(*args, **kwargs):
+        store.update_job(
+            meta["id"],
+            {"status": "cancelled", "endedAt": store.utc_now()},
+            expected_status="running",
+        )
+        return {"stdout": "", "stderr": "", "exitCode": 0, "timedOut": False}
+
+    import mindsync.dispatch.runner as runner
+
+    events = []
+    monkeypatch.setattr(runner, "spawn_foreground", cancel_during_run)
+    monkeypatch.setattr(
+        runner,
+        "_publish_job_event",
+        lambda event_type, job, agent_name="dispatch": events.append((event_type, agent_name)),
+    )
+
+    final = await supervise_job(meta["id"])
+
+    assert final["status"] == "cancelled"
+    assert events == [("job.started", "requester")]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_dispatch_job_files_are_private(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    meta = store.create_job(agent="test", prompt="secret", cwd=str(tmp_path))
+    paths = store.job_paths(meta["id"])
+
+    assert stat.S_IMODE(paths["dir"].stat().st_mode) == 0o700
+    assert stat.S_IMODE(paths["meta"].stat().st_mode) == 0o600
+    assert stat.S_IMODE(paths["prompt"].stat().st_mode) == 0o600
 
 
 @pytest.mark.asyncio
