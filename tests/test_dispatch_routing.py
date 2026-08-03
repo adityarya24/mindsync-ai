@@ -11,7 +11,7 @@ import pytest
 import mindsync.config as config_mod
 import mindsync.storage as storage
 from mindsync.dispatch import store
-from mindsync.dispatch.adapters import user_config_path
+from mindsync.dispatch.adapters import load_adapters, user_config_path
 from mindsync.dispatch.cli import parse_run_args
 from mindsync.dispatch.routing import infer_capabilities, select_agent
 from mindsync.dispatch.runner import run_task
@@ -48,6 +48,15 @@ def _configure_agents(tmp_path: Path, monkeypatch) -> None:
                         "capabilities": ["general", "review", "security"],
                         "capabilityWeights": {"review": 100, "security": 100},
                         "routingPriority": 70,
+                    },
+                    {
+                        "name": "backup-builder",
+                        "bin": sys.executable,
+                        "input": "stdin",
+                        "runArgs": ["-c", "import sys; print('backup:' + sys.stdin.read())"],
+                        "capabilities": ["general", "coding"],
+                        "capabilityWeights": {"coding": 60},
+                        "routingPriority": 10,
                     },
                     {
                         "name": "missing-specialist",
@@ -87,15 +96,22 @@ def test_select_agent_ranks_installed_workers_by_capability(tmp_path, monkeypatc
 
 def test_select_agent_can_exclude_the_human_facing_orchestrator(tmp_path, monkeypatch):
     _configure_agents(tmp_path, monkeypatch)
+    loaded = load_adapters()
+    fixture_adapters = {
+        name: loaded[name]
+        for name in ("builder", "backup-builder", "auditor", "missing-specialist")
+    }
 
     decision = select_agent(
         "implement and test the fix",
         required_capabilities=["coding"],
         exclude_agents=["builder"],
+        adapters=fixture_adapters,
     )
 
-    # Bundled installed agents remain eligible, but the caller is never selected.
+    # The deterministic fallback remains eligible, but the caller is never selected.
     assert decision["agent"] != "builder"
+    assert decision["agent"] == "backup-builder"
     assert decision["excludedAgents"] == ["builder"]
 
 
