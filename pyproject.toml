@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "mindsync-ai"
 dynamic = ["version"]
-description = "MindSync AI — unified MCP server for multi-agent memory, event bus, and CLI agent dispatch"
+description = "Local-first MCP orchestration, shared memory, and automatic task routing for coding agents"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
