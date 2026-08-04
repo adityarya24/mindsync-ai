@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,35 @@ def test_state_roundtrip(tmp_path, monkeypatch):
     assert loaded["active_project"] == "mindsync-mcp"
     assert "agent-b" in loaded["agents_focus"]
     assert settings.state_file.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits only")
+def test_atomic_private_write_creates_replacement_at_0600(tmp_path):
+    target = tmp_path / "secret.json"
+    storage.atomic_private_write(target, '{"token":"secret"}\n')
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_file_lock_warns_when_legacy_stale_after_is_passed(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    with pytest.warns(DeprecationWarning, match="deprecated and ignored"):
+        with storage.file_lock("legacy", stale_after=0.1):
+            pass
+
+
+def test_file_lock_does_not_write_owner_token_before_acquiring(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    writes: list[bytes] = []
+    monkeypatch.setattr(storage, "_try_os_lock", lambda _fd: False)
+    monkeypatch.setattr(storage.os, "write", lambda _fd, data: writes.append(data))
+
+    with pytest.raises(TimeoutError):
+        with storage.file_lock("contended", timeout=0):
+            pass
+
+    assert writes == []
 
 
 def test_queue_enqueue_and_claim(tmp_path, monkeypatch):

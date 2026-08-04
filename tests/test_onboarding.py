@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from pathlib import Path
+
+import pytest
 
 import mindsync.config as config_mod
 import mindsync.onboarding as onboarding
@@ -154,6 +158,28 @@ def test_cursor_force_preserves_other_servers_and_creates_backup(tmp_path):
     assert data["mcpServers"]["other"]["command"] == "other"
     assert data["mcpServers"]["mindsync"]["command"] == "new-python"
     assert result["backup"] and Path(result["backup"]).is_file()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_cursor_config_and_backup_are_never_left_group_or_world_readable(tmp_path):
+    user_home = tmp_path / "user"
+    path = onboarding.cursor_config_path(user_home)
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"mcpServers": {"other": {"env": {"TOKEN": "secret"}}}}),
+        encoding="utf-8",
+    )
+    path.chmod(0o600)
+
+    result = onboarding._write_cursor_config(
+        user_home=user_home,
+        force=True,
+        dry_run=False,
+        python_exe="python",
+    )
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(Path(result["backup"]).stat().st_mode) == 0o600
 
 
 def test_setup_stops_when_list_command_fails(tmp_path, monkeypatch):

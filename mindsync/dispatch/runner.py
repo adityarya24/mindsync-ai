@@ -25,6 +25,7 @@ from mindsync.dispatch import store
 from mindsync.dispatch.review import diff_summary, run_checks
 from mindsync.dispatch.routing import select_agent
 from mindsync.orchestration import effective_exclusions, load_policy
+from mindsync.storage import file_lock
 
 
 def _cleanup_worktree(job_id: str) -> None:
@@ -133,12 +134,19 @@ class AutoDelegationDisabled(RuntimeError):
 
 
 def _active_auto_jobs() -> int:
-    active = 0
-    for job in store.list_jobs():
-        fresh = store.reconcile_job(job)
-        if fresh.get("routing") and fresh.get("status") in {"pending", "running"}:
-            active += 1
-    return active
+    return store.count_active_auto_jobs()
+
+
+def _create_job_with_auto_limit(*, max_parallel: int | None, **job: Any) -> dict[str, Any]:
+    if max_parallel is None:
+        return store.create_job(**job)
+    with file_lock("dispatch-auto-admission"):
+        if _active_auto_jobs() >= max_parallel:
+            raise RuntimeError(
+                f"Automatic delegation limit reached ({max_parallel} active jobs). "
+                "Wait for a job to finish or change orchestration.maxParallel."
+            )
+        return store.create_job(**job)
 
 
 def assert_arg_mode_spawn_safe(
@@ -218,6 +226,7 @@ async def run_task(
         raise ValueError("prompt must not be empty.")
 
     routing = None
+    auto_max_parallel = None
     if role is not None:
         role_cfg = resolve_role(role)
         eff_agent = role_cfg.agent
@@ -237,11 +246,7 @@ async def run_task(
             )
             if policy.mode == "suggest":
                 raise AutoDelegationSuggestion(routing)
-            if _active_auto_jobs() >= policy.maxParallel:
-                raise RuntimeError(
-                    f"Automatic delegation limit reached ({policy.maxParallel} active jobs). "
-                    "Wait for a job to finish or change orchestration.maxParallel."
-                )
+            auto_max_parallel = policy.maxParallel
             eff_agent = routing["agent"]
         else:
             if required_capabilities or exclude_agents:
@@ -267,7 +272,8 @@ async def run_task(
         raise AgentNotInstalledError(adapter)
     assert_arg_mode_spawn_safe(adapter, bin_path)
 
-    meta = store.create_job(
+    meta = _create_job_with_auto_limit(
+        max_parallel=auto_max_parallel,
         agent=eff_agent,
         role=job_role,
         # Stored as sent, so prompt.txt always shows what the agent actually received.

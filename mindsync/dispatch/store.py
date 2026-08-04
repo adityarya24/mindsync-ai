@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from mindsync.dispatch.proc import is_alive, names_match, process_name
-from mindsync.storage import file_lock
+from mindsync.storage import atomic_private_write, file_lock
 
 _JOB_ID_RE = re.compile(r"^[0-9a-z]+-[0-9a-f]+$", re.I)
 
@@ -20,6 +20,58 @@ def jobs_root() -> Path:
     env = os.environ.get("AGENT_DISPATCH_HOME")
     home = Path(env) if env else Path.home() / ".claude" / "agent-dispatch"
     return home / "jobs"
+
+
+def _active_auto_root() -> Path:
+    return jobs_root().parent / "active-auto-jobs"
+
+
+def _register_active_auto_job(job_id: str) -> None:
+    root = _active_auto_root()
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.chmod(0o700)
+    except OSError:
+        pass
+    atomic_private_write(root / job_id, job_id + "\n")
+
+
+def _initialize_active_auto_index() -> None:
+    root = _active_auto_root()
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.chmod(0o700)
+    except OSError:
+        pass
+    marker = root / ".initialized"
+    if marker.is_file():
+        return
+    for job in list_jobs():
+        if job.get("routing") and job.get("status") in {"pending", "running"}:
+            _register_active_auto_job(str(job["id"]))
+    atomic_private_write(marker, "1\n")
+
+
+def count_active_auto_jobs() -> int:
+    """Count routed pending/running jobs without rescanning completed history."""
+    _initialize_active_auto_index()
+    active = 0
+    for slot in _active_auto_root().iterdir():
+        if slot.name.startswith("."):
+            continue
+        try:
+            job_paths(slot.name)
+        except ValueError:
+            slot.unlink(missing_ok=True)
+            continue
+        meta = get_job(slot.name)
+        if meta is not None:
+            meta = reconcile_job(meta)
+        if meta and meta.get("routing") and meta.get("status") in {"pending", "running"}:
+            active += 1
+        else:
+            slot.unlink(missing_ok=True)
+    return active
 
 
 def job_paths(job_id: str) -> dict[str, Path]:
@@ -43,19 +95,7 @@ def utc_now() -> str:
 
 def _private_write(path: Path, text: str) -> None:
     """Atomically replace a private dispatch file in its existing directory."""
-    tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
-    try:
-        with open(tmp, "x", encoding="utf-8") as fh:
-            fh.write(text)
-            fh.flush()
-            os.fsync(fh.fileno())
-        try:
-            tmp.chmod(0o600)
-        except OSError:
-            pass
-        os.replace(tmp, path)
-    finally:
-        tmp.unlink(missing_ok=True)
+    atomic_private_write(path, text)
 
 
 def _write_meta(job_id: str, meta: dict[str, Any]) -> None:
@@ -126,6 +166,8 @@ def create_job(
             "publisherAgent": publisher_agent,
             "routing": routing,
         }
+        if routing:
+            _register_active_auto_job(job_id)
         _write_meta(job_id, meta)
         _private_write(paths["prompt"], prompt)
         return meta

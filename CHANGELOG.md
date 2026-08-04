@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Legacy SSH write errors now pass through the same path/key/host sanitizer as native batch writes.
 - Dispatch job directories and artifacts now request private `0700`/`0600` permissions where supported.
 - Event publishing uses a persistent sequence checkpoint instead of rescanning the entire JSONL log for every event.
+- Automatic delegation now reserves capacity under one cross-process lock, so concurrent requests cannot exceed `maxParallel`; an active-job index avoids rescanning completed job history on every admission.
+- Sensitive state, policy, dispatch, log, audit, queue, and Cursor onboarding files are created with private permissions before content is written; Cursor backups are private as well.
+- Lock owner metadata is written only after acquisition, legacy `stale_after` use emits a deprecation warning, and client-name aliases prefer the most specific match.
 
 ## [1.2.0] - 2026-07-28
 
