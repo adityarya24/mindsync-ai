@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import secrets
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from mindsync.config import settings
-from mindsync.storage import file_lock
+from mindsync.storage import atomic_private_write, file_lock
 
 
 class OrchestrationPolicy(BaseModel):
@@ -47,23 +46,7 @@ def save_policy(policy: OrchestrationPolicy, path: Path | None = None) -> Path:
     target = path or policy_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     with file_lock("orchestration"):
-        temp = target.with_name(f".{target.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
-        try:
-            temp.write_text(
-                json.dumps(policy.model_dump(), indent=2) + "\n",
-                encoding="utf-8",
-            )
-            try:
-                temp.chmod(0o600)
-            except OSError:
-                pass
-            os.replace(temp, target)
-        finally:
-            temp.unlink(missing_ok=True)
-    try:
-        target.chmod(0o600)
-    except OSError:
-        pass
+        atomic_private_write(target, json.dumps(policy.model_dump(), indent=2) + "\n")
     return target
 
 
@@ -121,7 +104,7 @@ def normalize_client_name(name: str | None) -> str | None:
         "antigravity": "agy",
         "agy": "agy",
     }
-    for token, cli in aliases.items():
+    for token, cli in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
         if token in value:
             return cli
     return None

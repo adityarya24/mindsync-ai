@@ -6,7 +6,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -18,6 +17,7 @@ from mindsync import __version__
 from mindsync.dispatch.adapters import load_adapters
 from mindsync.dispatch.proc import resolve_bin, spawn_spec
 from mindsync.orchestration import OrchestrationPolicy, load_policy, policy_path, save_policy
+from mindsync.storage import atomic_private_write
 
 
 @dataclass(frozen=True)
@@ -222,9 +222,11 @@ def _write_cursor_config(
 ) -> dict[str, Any]:
     path = cursor_config_path(user_home)
     data: dict[str, Any] = {}
+    original_text: str | None = None
     if path.is_file():
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            original_text = path.read_text(encoding="utf-8")
+            data = json.loads(original_text)
         except json.JSONDecodeError as exc:
             return {"cli": "cursor", "action": "error", "detail": f"Invalid JSON at {path}: {exc}"}
     servers = data.setdefault("mcpServers", {})
@@ -240,19 +242,14 @@ def _write_cursor_config(
     if path.is_file():
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         backup_path = path.with_name(f"mcp.{stamp}.{secrets.token_hex(3)}.json.bak")
-        shutil.copy2(path, backup_path)
+        atomic_private_write(backup_path, original_text or "")
         backup = str(backup_path)
     servers["mindsync"] = {
         "command": python_exe,
         "args": ["-m", "mindsync.server"],
         "env": _server_env("cursor"),
     }
-    temp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(3)}.tmp")
-    try:
-        temp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.replace(temp, path)
-    finally:
-        temp.unlink(missing_ok=True)
+    atomic_private_write(path, json.dumps(data, indent=2) + "\n")
     return {"cli": "cursor", "action": "configured", "path": str(path), "backup": backup}
 
 

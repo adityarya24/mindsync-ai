@@ -14,6 +14,15 @@ from typing import Any
 IS_WIN = sys.platform == "win32"
 
 
+def _open_private_append(path: Path):
+    fd = os.open(str(path), os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except (AttributeError, OSError):
+        pass
+    return os.fdopen(fd, "a", encoding="utf-8", errors="replace")
+
+
 def resolve_bin(bin_name: str) -> str | None:
     """Resolve an executable on PATH. Windows prefers .exe > .cmd > .bat."""
     if os.path.isabs(bin_name):
@@ -178,17 +187,12 @@ def spawn_background(
         except OSError:
             pass
 
-    out_f = open(stdout_path, "a", encoding="utf-8", errors="replace")
+    out_f = _open_private_append(stdout_path)
     err_f = (
         out_f
         if Path(stdout_path).resolve() == Path(stderr_path).resolve()
-        else open(stderr_path, "a", encoding="utf-8", errors="replace")
+        else _open_private_append(stderr_path)
     )
-    for path in {stdout_path, stderr_path}:
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
     in_f = open(stdin_path, "r", encoding="utf-8", errors="replace") if stdin_path else subprocess.DEVNULL
 
     creationflags = 0

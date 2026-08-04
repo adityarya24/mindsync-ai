@@ -21,6 +21,7 @@ from mindsync.dispatch.adapters import (
     user_config_path,
 )
 from mindsync.dispatch.proc import names_match, resolve_bin, spawn_foreground
+from mindsync.dispatch import proc
 from mindsync.dispatch.runner import (
     assert_arg_mode_spawn_safe,
     cancel_job,
@@ -147,6 +148,15 @@ def test_dispatch_job_files_are_private(tmp_path, monkeypatch):
     assert stat.S_IMODE(paths["dir"].stat().st_mode) == 0o700
     assert stat.S_IMODE(paths["meta"].stat().st_mode) == 0o600
     assert stat.S_IMODE(paths["prompt"].stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+def test_background_log_is_created_private_before_use(tmp_path):
+    path = tmp_path / "supervisor.log"
+    with proc._open_private_append(path) as fh:
+        fh.write("secret")
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 @pytest.mark.asyncio

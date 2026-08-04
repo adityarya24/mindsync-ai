@@ -6,12 +6,39 @@ import json
 import os
 import time
 import uuid
+import warnings
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator
 
 from mindsync.config import chmod_tree_0600, settings
+
+
+def atomic_private_write(path: Path, text: str, *, mode: int = 0o600) -> None:
+    """Atomically replace ``path`` without ever creating a loose-permission temp file."""
+    temp = path.with_name(f".{path.name}.{os.getpid()}-{uuid.uuid4().hex}.tmp")
+    fd: int | None = None
+    try:
+        fd = os.open(str(temp), os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
+        try:
+            os.fchmod(fd, mode)
+        except (AttributeError, OSError):
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fd = None
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp, path)
+        try:
+            path.chmod(mode)
+        except OSError:
+            pass
+    finally:
+        if fd is not None:
+            os.close(fd)
+        temp.unlink(missing_ok=True)
 
 
 def _try_os_lock(fd: int) -> bool:
@@ -59,12 +86,17 @@ def file_lock(
     rename. That removes the check-then-replace race where a stale-lock
     contender could delete a newly acquired live lock.
 
-    ``stale_after`` remains accepted for API compatibility but is no longer
-    needed: abandoned OS locks are released immediately by the kernel.
+    ``stale_after`` remains accepted for API compatibility but is deprecated
+    and ignored: abandoned OS locks are released immediately by the kernel.
     """
     settings.ensure_dirs()
     timeout = settings.lock_timeout_seconds if timeout is None else timeout
-    del stale_after
+    if stale_after is not None:
+        warnings.warn(
+            "file_lock(stale_after=...) is deprecated and ignored; OS locks recover on exit",
+            DeprecationWarning,
+            stacklevel=2,
+        )
     lock_path = settings.lock_dir / f"{name}.lock"
     token = f"{os.getpid()}-{uuid.uuid4().hex}"
     deadline = time.monotonic() + timeout
@@ -73,8 +105,6 @@ def file_lock(
     while True:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
-            if os.fstat(fd).st_size == 0:
-                os.write(fd, b"\0")
             if _try_os_lock(fd):
                 os.lseek(fd, 0, os.SEEK_SET)
                 os.write(fd, f"{token}\n".encode("ascii"))
@@ -140,14 +170,8 @@ def load_state() -> dict[str, Any]:
 def save_state(state: dict[str, Any]) -> None:
     settings.ensure_dirs()
     path = settings.state_file
-    tmp = path.with_suffix(".json.tmp")
     payload = json.dumps(state, indent=2, ensure_ascii=False) + "\n"
-    tmp.write_text(payload, encoding="utf-8")
-    try:
-        tmp.chmod(0o600)
-    except OSError:
-        pass
-    os.replace(tmp, path)
+    atomic_private_write(path, payload)
 
 
 @contextmanager
@@ -162,16 +186,15 @@ def locked_state() -> Generator[dict[str, Any], None, None]:
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
     settings.ensure_dirs()
     line = json.dumps(record, ensure_ascii=False) + "\n"
-    existed = path.exists()
-    with open(path, "a", encoding="utf-8") as fh:
+    fd = os.open(str(path), os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    except (AttributeError, OSError):
+        pass
+    with os.fdopen(fd, "a", encoding="utf-8") as fh:
         fh.write(line)
         fh.flush()
         os.fsync(fh.fileno())
-    if not existed:
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
 
 
 def log_audit(agent_name: str, action: str, details: str) -> None:

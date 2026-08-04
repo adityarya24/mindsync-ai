@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from mindsync.dispatch.adapters import user_config_path
 from mindsync.dispatch.runner import (
     AutoDelegationDisabled,
     AutoDelegationSuggestion,
+    _create_job_with_auto_limit,
     run_task,
 )
 from mindsync.server import delegate_task
@@ -90,6 +92,56 @@ def test_client_info_identifies_human_facing_cli_without_registration_env():
 def test_gemini_and_antigravity_are_excluded_as_one_human_facing_family():
     assert orchestration.effective_exclusions([], caller_cli="gemini") == ["gemini", "agy"]
     assert orchestration.effective_exclusions([], caller_cli="agy") == ["agy", "gemini"]
+    assert orchestration.normalize_client_name("Antigravity (Gemini)") == "agy"
+
+
+def test_auto_admission_check_and_reservation_are_atomic(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    barrier = threading.Barrier(2)
+    outcomes: list[str] = []
+
+    def admit() -> None:
+        barrier.wait()
+        try:
+            _create_job_with_auto_limit(
+                max_parallel=1,
+                agent="builder",
+                prompt="bounded work",
+                cwd=str(tmp_path),
+                routing={"agent": "builder"},
+            )
+            outcomes.append("admitted")
+        except RuntimeError as exc:
+            assert "limit reached" in str(exc)
+            outcomes.append("rejected")
+
+    threads = [threading.Thread(target=admit) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert sorted(outcomes) == ["admitted", "rejected"]
+    assert store.count_active_auto_jobs() == 1
+
+
+def test_active_auto_index_avoids_rescanning_completed_history(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    completed = store.create_job(agent="builder", prompt="old", cwd=str(tmp_path))
+    store.update_job(completed["id"], {"status": "done"})
+    assert store.count_active_auto_jobs() == 0  # one-time legacy-index initialization
+
+    active = store.create_job(
+        agent="builder",
+        prompt="active",
+        cwd=str(tmp_path),
+        routing={"agent": "builder"},
+    )
+    monkeypatch.setattr(store, "list_jobs", lambda: (_ for _ in ()).throw(AssertionError("history scan")))
+
+    assert store.count_active_auto_jobs() == 1
+    store.update_job(active["id"], {"status": "done"})
+    assert store.count_active_auto_jobs() == 0
 
 
 def test_worker_process_receives_non_recursive_instructions(monkeypatch):
