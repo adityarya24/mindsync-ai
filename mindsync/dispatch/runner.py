@@ -176,6 +176,7 @@ def _publish_job_event(event_type: str, meta: dict[str, Any], agent_name: str = 
             "job.started": EventType.JOB_STARTED,
             "job.completed": EventType.JOB_COMPLETED,
             "job.failed": EventType.JOB_FAILED,
+            "job.cancelled": EventType.JOB_CANCELLED,
         }.get(event_type, event_type)
         publish_event(
             Event(
@@ -469,7 +470,7 @@ def cancel_job(job_id: str) -> dict[str, Any]:
     if pid is not None:
         kill_tree(int(pid))
     _cleanup_worktree(job_id)
-    return store.update_job(
+    cancelled = store.update_job(
         job_id,
         {
             "status": "cancelled",
@@ -477,6 +478,13 @@ def cancel_job(job_id: str) -> dict[str, Any]:
         },
         expected_status={"pending", "running"},
     )
+    if cancelled.get("status") == "cancelled":
+        _publish_job_event(
+            "job.cancelled",
+            cancelled,
+            agent_name=cancelled.get("publisherAgent") or "dispatch",
+        )
+    return cancelled
 
 
 def job_result(job_id: str) -> dict[str, Any]:

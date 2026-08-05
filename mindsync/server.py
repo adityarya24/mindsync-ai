@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -708,7 +709,8 @@ async def delegate_task(
         wt_info = f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})" if job.get("worktreePath") else ""
         return (
             f"{route_line}Started background job {job['id']} (agent: {job['agent']}).{wt_info} "
-            f"Check: job_status('{job['id']}')"
+            f"Wait for completion now: job_wait('{job['id']}'). Do not end the turn "
+            "while delegated work is still running."
         )
     wt_info = f"worktree: {job['worktreePath']}  (branch: {job['branch']})\n" if job.get("worktreePath") else ""
     return f"{route_line}{wt_info}{res.get('result') or '(no output)'}"
@@ -785,6 +787,51 @@ def job_status(job_id: str, agent_name: str = "default_agent") -> str:
     reconciled = dispatch_store.reconcile_job(job)
     log_audit(agent_name, "job_status", f"job={job_id} status={reconciled.get('status')}")
     return _fmt_dispatch_job(reconciled)
+
+
+@mcp.tool()
+async def job_wait(
+    job_id: str,
+    timeout_seconds: float = 900.0,
+    poll_interval_seconds: float = 0.5,
+    agent_name: str = "default_agent",
+) -> str:
+    """Wait for a background job to finish and return its review as a completion ping.
+
+    Call this immediately after delegate_task(background=True) instead of repeatedly
+    polling job_status or ending the turn. The pending MCP call resumes when the job
+    completes, fails, or is cancelled, so the orchestrator can review and report the
+    outcome without the human babysitting it.
+    """
+    settings.ensure_dirs()
+    if timeout_seconds <= 0 or timeout_seconds > 3600:
+        return "timeout_seconds must be greater than 0 and at most 3600."
+    if poll_interval_seconds < 0.1 or poll_interval_seconds > 5:
+        return "poll_interval_seconds must be between 0.1 and 5."
+
+    deadline = time.monotonic() + timeout_seconds
+    terminal = {"done", "failed", "cancelled"}
+    while True:
+        job = dispatch_store.get_job(job_id)
+        if not job:
+            return f"No such job: {job_id}"
+        reconciled = dispatch_store.reconcile_job(job)
+        status = reconciled.get("status")
+        if status in terminal:
+            log_audit(agent_name, "job_wait", f"job={job_id} status={status}")
+            return (
+                f"Completion ping: job {job_id} reached terminal status '{status}'.\n"
+                f"{dispatch_format_review(reconciled)}"
+            )
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            log_audit(agent_name, "job_wait", f"job={job_id} status={status} timeout")
+            return (
+                f"Job {job_id} is still {status} after {timeout_seconds:g} seconds. "
+                "Call job_wait again to keep the completion watch active."
+            )
+        await asyncio.sleep(min(poll_interval_seconds, remaining))
 
 
 @mcp.tool()

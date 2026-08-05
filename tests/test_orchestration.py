@@ -151,6 +151,20 @@ def test_worker_process_receives_non_recursive_instructions(monkeypatch):
     assert "Do not call delegate_task" in instructions
 
 
+def test_orchestrator_instructions_require_completion_wait(monkeypatch):
+    monkeypatch.delenv("MINDSYNC_WORKER", raising=False)
+    instructions = orchestration.server_instructions(
+        orchestration.OrchestrationPolicy(mode="auto")
+    )
+    # Assert the intent, not the wording: the orchestrator must be told to wait
+    # for delegated work, and must not be told to wait in a way that serialises
+    # jobs the very next sentence says to run concurrently.
+    assert "job_wait" in instructions
+    assert "Do not end the turn while delegated work is still running" in instructions
+    assert "concurrently" in instructions
+    assert "immediately call job_wait" not in instructions
+
+
 def test_invalid_policy_snapshot_fails_closed(tmp_path, monkeypatch):
     path = _isolate(tmp_path, monkeypatch)
     path.write_text('{"mode":"broken"}', encoding="utf-8")

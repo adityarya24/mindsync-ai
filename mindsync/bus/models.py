@@ -14,6 +14,7 @@ class EventType(str, Enum):
     JOB_STARTED = "job.started"
     JOB_COMPLETED = "job.completed"
     JOB_FAILED = "job.failed"
+    JOB_CANCELLED = "job.cancelled"
     FOCUS_CHANGED = "focus.changed"
     MEMORY_UPDATED = "memory.updated"
     CONFLICT_DETECTED = "conflict.detected"

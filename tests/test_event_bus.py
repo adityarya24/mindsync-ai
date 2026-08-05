@@ -34,6 +34,7 @@ def test_event_bus_models():
     assert EventType.JOB_STARTED == "job.started"
     assert EventType.JOB_COMPLETED == "job.completed"
     assert EventType.JOB_FAILED == "job.failed"
+    assert EventType.JOB_CANCELLED == "job.cancelled"
     assert EventType.FOCUS_CHANGED == "focus.changed"
     assert EventType.MEMORY_UPDATED == "memory.updated"
     assert EventType.CONFLICT_DETECTED == "conflict.detected"

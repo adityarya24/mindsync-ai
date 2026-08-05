@@ -35,6 +35,7 @@ EXPECTED_TOOLS = {
     "list_agents",
     "get_orchestration_policy",
     "job_status",
+    "job_wait",
     "job_result",
     "job_review",
     "job_cancel",

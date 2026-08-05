@@ -91,6 +91,10 @@ def test_pending_job_can_be_cancelled(tmp_path, monkeypatch):
 
     assert cancelled["status"] == "cancelled"
     assert cancelled["endedAt"] is not None
+    events = poll_events(since_seq=0, limit=50)
+    assert [event.event_type for event in events] == ["job.cancelled"]
+    assert events[0].agent_name == "dispatch"
+    assert events[0].payload["job_id"] == meta["id"]
 
 
 @pytest.mark.asyncio

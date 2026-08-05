@@ -199,7 +199,7 @@ A typical session uses:
 
 ## MCP tools
 
-MindSync exposes 19 tools.
+MindSync exposes 20 tools.
 
 ### Memory and focus
 
@@ -231,9 +231,22 @@ MindSync exposes 19 tools.
 | `list_models` | Discover models exposed by worker CLIs |
 | `list_roles` | Inspect configured static roles |
 | `job_status` | Reconcile and report job state |
+| `job_wait` | Hold the orchestration turn open until a background job finishes, then return its review |
 | `job_result` | Read captured worker output |
 | `job_review` | Read checks and Git-diff review results |
 | `job_cancel` | Cancel a job and terminate its process tree |
+
+### Background completion ping
+
+After `delegate_task(..., background=True)` returns a job ID, call
+`job_wait(job_id)` immediately. The MCP call remains pending while the worker runs
+and returns a completion ping with the mechanical review when the job reaches
+`done`, `failed`, or `cancelled`. This keeps the orchestrator's turn alive and removes
+the need for the user to ask for repeated status checks. If a job exceeds the wait
+timeout, call `job_wait` again to continue watching it.
+
+MCP servers cannot reopen a chat turn after the client has closed it, so the
+orchestrator must start `job_wait` before ending its response.
 
 ## Dispatch CLI
 
