@@ -146,9 +146,11 @@ def server_instructions(policy: OrchestrationPolicy | None = None) -> str:
         "local. In suggest mode, preview a route and offer it without launching. In off mode, work "
         "locally unless the human explicitly requests delegation. Use list_agents and route_task "
         "when useful; delegate_task automatically selects an installed capable worker and avoids "
-        "the human-facing CLI when identified. After every background delegation, immediately call "
-        "job_wait and keep the turn open until it returns; this is the completion ping and avoids "
-        f"making the human poll for status. Never broaden the human's permissions. {announce} "
+        "the human-facing CLI when identified. Do not end the turn while delegated work is still "
+        "running: launch everything you intend to run, then call job_wait on each job until it "
+        "returns. That is the completion ping and it saves the human polling for status. Waiting "
+        f"on one job before launching the next would serialise work you meant to run in parallel. "
+        f"Never broaden the human's permissions. {announce} "
         f"Run at most {cfg.maxParallel} automatically delegated jobs concurrently.{invalid_note}"
     )
 
