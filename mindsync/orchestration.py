@@ -146,7 +146,9 @@ def server_instructions(policy: OrchestrationPolicy | None = None) -> str:
         "local. In suggest mode, preview a route and offer it without launching. In off mode, work "
         "locally unless the human explicitly requests delegation. Use list_agents and route_task "
         "when useful; delegate_task automatically selects an installed capable worker and avoids "
-        f"the human-facing CLI when identified. Never broaden the human's permissions. {announce} "
+        "the human-facing CLI when identified. After every background delegation, immediately call "
+        "job_wait and keep the turn open until it returns; this is the completion ping and avoids "
+        f"making the human poll for status. Never broaden the human's permissions. {announce} "
         f"Run at most {cfg.maxParallel} automatically delegated jobs concurrently.{invalid_note}"
     )
 

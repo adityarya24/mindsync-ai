@@ -151,6 +151,15 @@ def test_worker_process_receives_non_recursive_instructions(monkeypatch):
     assert "Do not call delegate_task" in instructions
 
 
+def test_orchestrator_instructions_require_completion_wait(monkeypatch):
+    monkeypatch.delenv("MINDSYNC_WORKER", raising=False)
+    instructions = orchestration.server_instructions(
+        orchestration.OrchestrationPolicy(mode="auto")
+    )
+    assert "immediately call job_wait" in instructions
+    assert "keep the turn open" in instructions
+
+
 def test_invalid_policy_snapshot_fails_closed(tmp_path, monkeypatch):
     path = _isolate(tmp_path, monkeypatch)
     path.write_text('{"mode":"broken"}', encoding="utf-8")

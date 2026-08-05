@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Background job completion pings through the new `job_wait` MCP tool. The orchestrator now keeps its turn open after delegation and resumes automatically when a job completes, fails, or is cancelled; cancellation also emits a typed `job.cancelled` event.
 - One-time `mindsync setup`, `mindsync doctor`, and `mindsync config` onboarding commands. Setup detects supported local CLIs, idempotently registers the MCP server, identifies the human-facing caller, and supports non-mutating dry runs.
 - Antigravity (`agy`) and Gemini CLI are modeled as two backends in one `gemini-antigravity` worker family; family-wide caller exclusion prevents self-delegation and doctor groups their inventory.
 - Persistent `auto` / `suggest` / `off` orchestration policy with announcement control, automatic caller exclusion, and a configurable parallel-job limit.
