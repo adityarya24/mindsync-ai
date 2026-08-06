@@ -307,6 +307,42 @@ For a VPS + laptop setup:
 2. point the laptop at that host with the two variables above;
 3. leave remote variables empty on the VPS itself—it is the durable store.
 
+### Remote Dispatch Queue & Worker
+
+MindSync enables a remote orchestrator (e.g., running on a VPS) to submit work into a queue on the remote store, which a worker running on the local machine claims and executes within its own interactive session.
+
+#### Submitting a job (remote side)
+
+```bash
+mindsync submit --repo /path/to/repo --prompt "implement feature" --agent codex
+mindsync status <job-id>
+```
+
+#### Running the worker (local side)
+
+> [!IMPORTANT]
+> The worker **must** run in the user's interactive desktop session (e.g., standard terminal window). Do NOT run the worker as a Windows service or systemd daemon in session 0, because tool sandboxes (such as Codex's runner pipe) require an interactive session.
+
+Configure worker environment:
+
+```bash
+export MINDSYNC_SSH_HOST=vps.example.com
+export MINDSYNC_REMOTE_ROOT=/opt/mindsync
+export MINDSYNC_ALLOWED_REPOS="C:\Users\ADITYA\project1,C:\Users\ADITYA\project2"
+```
+
+Start the worker loop:
+
+```bash
+mindsync worker
+```
+
+Or process at most one job and exit:
+
+```bash
+mindsync worker --once
+```
+
 ### Configuration
 
 | Variable | Default | Purpose |
@@ -318,10 +354,14 @@ For a VPS + laptop setup:
 | `MINDSYNC_REMOTE_WRITE_SCRIPT` | `tools/mindsync_fact.py` | Remote fact writer |
 | `MINDSYNC_REMOTE_CONSOLIDATE_SCRIPT` | `tools/mindsync_consolidate.py` | Remote consolidation command |
 | `MINDSYNC_REMOTE_TRUTH_SUBDIR` | `compiled-truth` | Compiled truth directory |
-| `MINDSYNC_SSH_TIMEOUT` | `3` | SSH connection timeout in seconds |
+| `MINDSYNC_SSH_TIMEOUT` | `10` | SSH connection timeout in seconds |
 | `MINDSYNC_FOCUS_STALE_SECS` | `7200` | Age after which focus is ignored |
 | `MINDSYNC_REMOTE_CACHE_TTL` | `30` | Remote probe cache lifetime |
 | `MINDSYNC_LOCK_TIMEOUT` | `5` | Local lock wait in seconds |
+| `MINDSYNC_WORKER_ID` | `laptop-worker` | Worker identifier string |
+| `MINDSYNC_WORKER_POLL_SECS` | `30` | Worker poll interval in seconds |
+| `MINDSYNC_WORKER_CLAIM_STALE_SECS` | `300` | Stale claim threshold in seconds |
+| `MINDSYNC_ALLOWED_REPOS` / `MINDSYNC_WORKER_ALLOWED_REPOS` | empty | Allow-list of repository paths allowed for worker execution |
 
 ## Local data
 
