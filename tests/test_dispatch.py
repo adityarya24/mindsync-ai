@@ -504,3 +504,9 @@ def test_gemini_preset_runs_headless():
     """Gemini CLI aborts in an untrusted directory unless trust is waived."""
     gemini = load_adapters()["gemini"]
     assert "--skip-trust" in gemini.runArgs
+
+
+def test_cursor_preset_runs_headless_in_new_workspaces():
+    """Cursor otherwise exits before launch with a Workspace Trust prompt."""
+    cursor = load_adapters()["cursor"]
+    assert "--trust" in cursor.runArgs

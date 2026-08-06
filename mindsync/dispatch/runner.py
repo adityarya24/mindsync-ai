@@ -10,6 +10,7 @@ from typing import Any
 
 from mindsync.dispatch.adapters import (
     build_invocation,
+    resolve_effort,
     resolve_adapter,
     resolve_role,
     user_config_path,
@@ -272,6 +273,7 @@ async def run_task(
     if not bin_path:
         raise AgentNotInstalledError(adapter)
     assert_arg_mode_spawn_safe(adapter, bin_path)
+    effective_effort, effort_warning = resolve_effort(adapter, eff_effort)
 
     meta = _create_job_with_auto_limit(
         max_parallel=auto_max_parallel,
@@ -282,6 +284,8 @@ async def run_task(
         cwd=workdir,
         model=eff_model,
         effort=eff_effort,
+        effective_effort=effective_effort,
+        warnings=[effort_warning] if effort_warning else [],
         write=write,
         checks=checks,
         publisher_agent=publisher_agent,
@@ -386,9 +390,22 @@ async def supervise_job(
         adapter,
         prompt=meta["prompt"],
         model=meta.get("model"),
-        effort=meta.get("effort"),
+        effort=(
+            meta.get("effectiveEffort")
+            if "effectiveEffort" in meta
+            else meta.get("effort")
+        ),
         write=bool(meta.get("write")),
     )
+    if inv["warnings"]:
+        existing_warnings = list(meta.get("warnings") or [])
+        meta = store.update_job(
+            job_id,
+            {
+                "effectiveEffort": inv["effectiveEffort"],
+                "warnings": list(dict.fromkeys([*existing_warnings, *inv["warnings"]])),
+            },
+        )
     result = await spawn_foreground(
         bin_path,
         inv["args"],
