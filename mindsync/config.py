@@ -7,6 +7,7 @@ The default install is local-only; remote sync is opt-in.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 
@@ -102,6 +103,24 @@ class Settings:
         self.lock_stale_seconds: float = float(
             _env("MINDSYNC_LOCK_STALE_SECS", "60") or "60"
         )
+
+        self.worker_id: str = _env("MINDSYNC_WORKER_ID") or os.environ.get(
+            "COMPUTERNAME", os.environ.get("HOSTNAME", "laptop-worker")
+        )
+        self.worker_poll_seconds: int = int(_env("MINDSYNC_WORKER_POLL_SECS", "30") or "30")
+        self.worker_claim_stale_seconds: int = int(
+            _env("MINDSYNC_WORKER_CLAIM_STALE_SECS", "300") or "300"
+        )
+        if self.worker_poll_seconds < 1 or self.worker_claim_stale_seconds < 1:
+            raise ValueError("Worker poll and stale intervals must be at least 1 second.")
+        allowed_str = (
+            _env("MINDSYNC_WORKER_ALLOWED_ROOTS")
+            or _env("MINDSYNC_WORKER_ALLOWED_REPOS")
+            or _env("MINDSYNC_ALLOWED_REPOS")
+        )
+        self.allowed_repos: list[str] = [
+            p.strip() for p in re.split(r"[,;]", allowed_str) if p.strip()
+        ]
 
     @property
     def remote_enabled(self) -> bool:
