@@ -11,6 +11,13 @@ from mindsync.onboarding import CLI_SPECS, doctor, setup
 from mindsync.orchestration import load_policy, policy_path, update_policy
 
 
+def _positive_int(raw: str) -> int:
+    value = int(raw)
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
 def _parse_value(key: str, raw: str) -> Any:
     leaf = key.rsplit(".", 1)[-1]
     if leaf in {"announce", "avoidHumanFacingAgent"}:
@@ -100,8 +107,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     worker_parser = sub.add_parser("worker", help="Poll or process remote queue jobs")
     worker_parser.add_argument("--once", action="store_true", help="Process at most one job and exit")
-    worker_parser.add_argument("--poll-secs", type=int, help="Poll interval in seconds")
-    worker_parser.add_argument("--stale-secs", type=int, help="Stale claim threshold in seconds")
+    worker_parser.add_argument("--poll-secs", type=_positive_int, help="Poll interval in seconds")
+    worker_parser.add_argument(
+        "--stale-secs", type=_positive_int, help="Stale claim threshold in seconds"
+    )
     worker_parser.add_argument("--worker-id", type=str, help="Worker identifier")
 
     submit_parser = sub.add_parser("submit", help="Submit a job to the remote queue")
@@ -110,7 +119,6 @@ def build_parser() -> argparse.ArgumentParser:
     submit_parser.add_argument("--prompt", help="Prompt text for the job")
     submit_parser.add_argument("--agent", help="Preferred agent")
     submit_parser.add_argument("--branch", help="Target git branch")
-    submit_parser.add_argument("--role", help="Target role")
 
     status_parser = sub.add_parser("status", help="Get status of a remote job or list remote jobs")
     status_parser.add_argument("job_id", nargs="?", help="Job ID to query")
@@ -181,9 +189,23 @@ def main(argv: list[str] | None = None) -> int:
 
         queue = RemoteQueue()
         worker_id = args.worker_id or settings.worker_id
-        poll_secs = args.poll_secs or settings.worker_poll_seconds
-        stale_secs = args.stale_secs or settings.worker_claim_stale_seconds
+        poll_secs = (
+            args.poll_secs if args.poll_secs is not None else settings.worker_poll_seconds
+        )
+        stale_secs = (
+            args.stale_secs if args.stale_secs is not None else settings.worker_claim_stale_seconds
+        )
         allowed_repos = settings.allowed_repos
+
+        if not queue.remote_root:
+            print("Worker requires MINDSYNC_REMOTE_ROOT.", file=sys.stderr)
+            return 2
+        if not allowed_repos:
+            print(
+                "Worker requires a non-empty MINDSYNC_WORKER_ALLOWED_REPOS allow-list.",
+                file=sys.stderr,
+            )
+            return 2
 
         if args.once:
             res = run_worker_once(
@@ -237,12 +259,13 @@ def main(argv: list[str] | None = None) -> int:
                 task_file=args.task_file,
                 agent=args.agent,
                 branch=args.branch,
-                role=args.role,
             )
             print(job_id)
             return 0
         except Exception as exc:
-            print(f"Submit failed: {exc}", file=sys.stderr)
+            from mindsync.bridge import _sanitize_error
+
+            print(f"Submit failed: {_sanitize_error(str(exc))}", file=sys.stderr)
             return 1
 
     if args.command == "status":
@@ -250,7 +273,13 @@ def main(argv: list[str] | None = None) -> int:
 
         queue = RemoteQueue()
         if args.job_id:
-            info = queue.get_status(args.job_id)
+            try:
+                info = queue.get_status(args.job_id)
+            except Exception as exc:
+                from mindsync.bridge import _sanitize_error
+
+                print(f"Status failed: {_sanitize_error(str(exc))}", file=sys.stderr)
+                return 1
             if not info:
                 print(f"No such remote job: {args.job_id}", file=sys.stderr)
                 return 1

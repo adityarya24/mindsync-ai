@@ -5,10 +5,16 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import pytest
 
+import mindsync.config as config_mod
+import mindsync.storage as storage
+from mindsync.dispatch.adapters import user_config_path
 from mindsync.remote_queue import (
     RemoteQueue,
     run_worker_once,
@@ -78,9 +84,14 @@ def test_claim_atomicity(local_remote_root):
         agent="auto",
     )
 
-    # Attempt to claim concurrently/sequentially by Worker 1 and Worker 2
-    claim1 = queue.claim_job(job_id, worker_id="worker-1")
-    claim2 = queue.claim_job(job_id, worker_id="worker-2")
+    barrier = threading.Barrier(2)
+
+    def claim(worker_id):
+        barrier.wait()
+        return queue.claim_job(job_id, worker_id=worker_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claim1, claim2 = list(pool.map(claim, ("worker-1", "worker-2")))
 
     # Exactly one worker wins
     assert (claim1 is not None and claim2 is None) or (claim1 is None and claim2 is not None)
@@ -116,11 +127,13 @@ def test_stale_claim_requeue(local_remote_root):
     claimed_data = queue.claim_job(job_id, worker_id="worker-dead")
     assert claimed_data is not None
 
-    # Manually set claimed_at timestamp to 10 minutes ago
-    stale_time = (datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat()
+    # Simulate a worker dying after the atomic move but before claim metadata was written.
     claimed_file = Path(local_remote_root) / "queue" / "claimed" / f"{job_id}.json"
-    claimed_data["claimed_at"] = stale_time
+    claimed_data.pop("claimed_at")
+    claimed_data.pop("worker_id")
     claimed_file.write_text(json.dumps(claimed_data, indent=2), encoding="utf-8")
+    stale_time = (datetime.now(timezone.utc) - timedelta(seconds=600)).timestamp()
+    os.utime(claimed_file, (stale_time, stale_time))
 
     # Requeue stale claims (stale window = 300s)
     requeued = queue.requeue_stale_claims(stale_seconds=300)
@@ -165,17 +178,85 @@ def test_allow_list_rejection(local_remote_root, tmp_path):
     assert status_info is not None
     assert status_info["state"] == "failed"
     assert "allow-list" in status_info["job"]["result"]
+    assert str(forbidden_dir) not in status_info["job"]["result"]
+
+
+def test_requested_branch_must_match_worker_checkout(local_remote_root, local_repo):
+    queue = RemoteQueue(remote_root=local_remote_root, ssh_host="")
+    job_id = queue.submit_job(
+        repo_path=local_repo,
+        prompt="Do not run on the wrong branch",
+        branch="definitely-not-current",
+    )
+
+    result = run_worker_once(queue, "worker-branch", [local_repo])
+
+    assert result["status"] == "failed"
+    assert "Branch mismatch" in result["error"]
+    assert queue.get_status(job_id)["state"] == "failed"
+
+
+def test_ssh_transport_quotes_configured_root_and_keeps_files_private(monkeypatch):
+    import mindsync.remote_queue as remote_queue
+
+    scripts = []
+
+    def fake_ssh(script, *, timeout):
+        scripts.append(script)
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(remote_queue.settings, "ssh_host", "vps-alias")
+    monkeypatch.setattr(remote_queue, "_ssh_script", fake_ssh)
+    queue = RemoteQueue(remote_root="/srv/mind sync", ssh_host="vps-alias")
+
+    queue.ensure_remote_dirs()
+    queue.submit_job(repo_path="C:/work/repo", prompt="safe payload")
+
+    combined = "\n".join(scripts)
+    assert "'/srv/mind sync/queue/pending'" in combined
+    assert "chmod 600" in combined
+    assert "TMP_FILE" in combined
 
 
 def test_full_round_trip(local_remote_root, local_repo, monkeypatch):
-    monkeypatch.delenv("MINDSYNC_WORKER", raising=False)
+    dispatch_home = Path(local_repo).parent / "dispatch-home"
+    mindsync_home = Path(local_repo).parent / "mindsync-home"
+    monkeypatch.setenv("AGENT_DISPATCH_HOME", str(dispatch_home))
+    monkeypatch.setenv("MINDSYNC_HOME", str(mindsync_home))
+    config_mod.settings = config_mod.Settings()
+    storage.settings = config_mod.settings
+    config_mod.settings.ensure_dirs()
+    config_path = user_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "agents": [
+                    {"name": "fake", "bin": sys.executable, "input": "stdin", "runArgs": []}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import mindsync.dispatch.runner as runner
+
+    async def sandbox_enabled_spawn(*args, **kwargs):
+        return {
+            "stdout": "sandbox-enabled-ok",
+            "stderr": "",
+            "exitCode": 0,
+            "timedOut": False,
+        }
+
+    monkeypatch.setattr(runner, "spawn_foreground", sandbox_enabled_spawn)
     queue = RemoteQueue(remote_root=local_remote_root, ssh_host="")
     queue.ensure_remote_dirs()
 
     job_id = queue.submit_job(
         repo_path=local_repo,
         prompt="Check repository state",
-        agent="auto",
+        agent="fake",
     )
 
     status_initial = queue.get_status(job_id)
@@ -189,11 +270,19 @@ def test_full_round_trip(local_remote_root, local_repo, monkeypatch):
 
     assert res is not None
     assert res["job_id"] == job_id
-    assert res["status"] in ("done", "failed")
+    assert res["status"] == "done"
+    assert "sandbox-enabled-ok" in res["result"]
 
     status_final = queue.get_status(job_id)
-    assert status_final["state"] in ("done", "failed")
+    assert status_final["state"] == "done"
     assert status_final["job"]["worker_id"] == "worker-local"
+    assert status_final["job"]["stdout"] == "sandbox-enabled-ok"
+
+    local_jobs = list((dispatch_home / "jobs").glob("*/meta.json"))
+    assert len(local_jobs) == 1
+    local_meta = json.loads(local_jobs[0].read_text(encoding="utf-8"))
+    assert local_meta["cwd"] == local_repo
+    assert local_meta["status"] == "done"
 
     done_file = Path(local_remote_root) / "queue" / "done" / f"{job_id}.json"
     assert done_file.exists()

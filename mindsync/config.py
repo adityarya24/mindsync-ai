@@ -111,8 +111,12 @@ class Settings:
         self.worker_claim_stale_seconds: int = int(
             _env("MINDSYNC_WORKER_CLAIM_STALE_SECS", "300") or "300"
         )
-        allowed_str = _env("MINDSYNC_ALLOWED_REPOS") or os.environ.get(
-            "MINDSYNC_WORKER_ALLOWED_REPOS", ""
+        if self.worker_poll_seconds < 1 or self.worker_claim_stale_seconds < 1:
+            raise ValueError("Worker poll and stale intervals must be at least 1 second.")
+        allowed_str = (
+            _env("MINDSYNC_WORKER_ALLOWED_ROOTS")
+            or _env("MINDSYNC_WORKER_ALLOWED_REPOS")
+            or _env("MINDSYNC_ALLOWED_REPOS")
         )
         self.allowed_repos: list[str] = [
             p.strip() for p in re.split(r"[,;]", allowed_str) if p.strip()

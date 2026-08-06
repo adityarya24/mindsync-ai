@@ -11,6 +11,8 @@ import json
 import os
 import re
 import secrets
+import shlex
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from mindsync.bridge import _sanitize_error, _ssh_script
 from mindsync.config import settings
+from mindsync.storage import atomic_private_write, file_lock
 
 _JOB_ID_RE = re.compile(r"^[0-9a-z]+-[0-9a-f]+$", re.I)
 
@@ -49,6 +52,19 @@ def validate_repo_path(repo_path: str, allowed_roots: List[str]) -> bool:
         return False
 
 
+def _redact(text: str) -> str:
+    return _sanitize_error(text) if text else ""
+
+
+def _excerpt(text: str, limit: int = 4000) -> str:
+    redacted = _redact(text)
+    return redacted if len(redacted) <= limit else "…(truncated)…\n" + redacted[-limit:]
+
+
+def _write_local_json(path: Path, data: Dict[str, Any]) -> None:
+    atomic_private_write(path, json.dumps(data, indent=2))
+
+
 class RemoteQueue:
     def __init__(
         self,
@@ -62,9 +78,18 @@ class RemoteQueue:
             self.remote_root = settings.remote_root
             self.ssh_host = ssh_host if ssh_host is not None else settings.ssh_host
 
+        if self.ssh_host and self.ssh_host != settings.ssh_host:
+            raise ValueError("RemoteQueue must use the SSH host configured for the bridge.")
+
     @property
     def is_ssh(self) -> bool:
         return bool(self.ssh_host and self.remote_root)
+
+    def _remote_path(self, *parts: str) -> str:
+        root = (self.remote_root or "").strip().rstrip("/")
+        if not root or root in {"/", "~"} or "\n" in root or "\x00" in root:
+            raise RuntimeError("A safe MINDSYNC_REMOTE_ROOT is required.")
+        return "/".join((root, *parts))
 
     def _ensure_dirs_local(self) -> None:
         if not self.remote_root:
@@ -84,9 +109,13 @@ class RemoteQueue:
                 self._ensure_dirs_local()
             return
 
+        queue_dir = self._remote_path("queue")
+        pending_dir = self._remote_path("queue", "pending")
+        claimed_dir = self._remote_path("queue", "claimed")
+        done_dir = self._remote_path("queue", "done")
         script = f"""set -euo pipefail
-mkdir -p "{self.remote_root}/queue/pending" "{self.remote_root}/queue/claimed" "{self.remote_root}/queue/done"
-chmod 700 "{self.remote_root}/queue" "{self.remote_root}/queue/pending" "{self.remote_root}/queue/claimed" "{self.remote_root}/queue/done"
+mkdir -p {shlex.quote(pending_dir)} {shlex.quote(claimed_dir)} {shlex.quote(done_dir)}
+chmod 700 {shlex.quote(queue_dir)} {shlex.quote(pending_dir)} {shlex.quote(claimed_dir)} {shlex.quote(done_dir)}
 """
         res = _ssh_script(script, timeout=30)
         if res.returncode != 0:
@@ -103,6 +132,10 @@ chmod 700 "{self.remote_root}/queue" "{self.remote_root}/queue/pending" "{self.r
         role: Optional[str] = None,
         submitter: Optional[str] = None,
     ) -> str:
+        if not repo_path or not str(repo_path).strip():
+            raise ValueError("repo_path cannot be empty")
+        if not prompt or not prompt.strip():
+            raise ValueError("prompt cannot be empty")
         job_id = generate_job_id()
         created_at = datetime.now(timezone.utc).isoformat()
         job_data = {
@@ -123,20 +156,23 @@ chmod 700 "{self.remote_root}/queue" "{self.remote_root}/queue/pending" "{self.r
                 raise RuntimeError("Remote root is not configured.")
             self._ensure_dirs_local()
             target = Path(self.remote_root) / "queue" / "pending" / f"{job_id}.json"
-            target.write_text(content, encoding="utf-8")
-            try:
-                target.chmod(0o600)
-            except OSError:
-                pass
+            _write_local_json(target, job_data)
             return job_id
 
         # SSH mode
         b64_content = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        pending_dir = self._remote_path("queue", "pending")
+        pending_file = self._remote_path("queue", "pending", f"{job_id}.json")
         script = f"""set -euo pipefail
-mkdir -p "{self.remote_root}/queue/pending"
-PENDING_FILE="{self.remote_root}/queue/pending/{job_id}.json"
-printf '%s' "{b64_content}" | base64 -d > "$PENDING_FILE"
-chmod 600 "$PENDING_FILE"
+umask 077
+mkdir -p {shlex.quote(pending_dir)}
+PENDING_FILE={shlex.quote(pending_file)}
+TMP_FILE="$PENDING_FILE.tmp.$$"
+trap 'rm -f "$TMP_FILE"' EXIT
+printf '%s' {shlex.quote(b64_content)} | base64 -d > "$TMP_FILE"
+chmod 600 "$TMP_FILE"
+mv "$TMP_FILE" "$PENDING_FILE"
+trap - EXIT
 """
         res = _ssh_script(script, timeout=30)
         if res.returncode != 0:
@@ -161,9 +197,10 @@ chmod 600 "$PENDING_FILE"
                     continue
             return ids
 
+        pending_dir = self._remote_path("queue", "pending")
         script = f"""set -euo pipefail
-if [ -d "{self.remote_root}/queue/pending" ]; then
-  ls -1t "{self.remote_root}/queue/pending"/*.json 2>/dev/null || true
+if [ -d {shlex.quote(pending_dir)} ]; then
+  ls -1tr {shlex.quote(pending_dir)}/*.json 2>/dev/null || true
 fi
 """
         res = _ssh_script(script, timeout=30)
@@ -171,7 +208,7 @@ fi
             return []
         lines = [line.strip() for line in res.stdout.splitlines() if line.strip()]
         ids = []
-        for line in reversed(lines):  # oldest first
+        for line in lines:
             name = Path(line).stem
             try:
                 validate_job_id(name)
@@ -189,31 +226,26 @@ fi
                 return None
             pending_file = Path(self.remote_root) / "queue" / "pending" / f"{job_id}.json"
             claimed_file = Path(self.remote_root) / "queue" / "claimed" / f"{job_id}.json"
-            if not pending_file.is_file():
-                return None
-            try:
-                data = json.loads(pending_file.read_text(encoding="utf-8"))
-            except Exception:
-                return None
+            with file_lock(f"remote-queue-claim-{job_id}"):
+                if not pending_file.is_file():
+                    return None
+                try:
+                    data = json.loads(pending_file.read_text(encoding="utf-8"))
+                    pending_file.rename(claimed_file)
+                except (FileNotFoundError, OSError, json.JSONDecodeError):
+                    return None
 
-            try:
-                pending_file.rename(claimed_file)
-            except (FileNotFoundError, OSError):
-                return None
-
-            data["worker_id"] = worker_id
-            data["claimed_at"] = now_str
-            claimed_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            try:
-                claimed_file.chmod(0o600)
-            except OSError:
-                pass
-            return data
+                data["worker_id"] = worker_id
+                data["claimed_at"] = now_str
+                _write_local_json(claimed_file, data)
+                return data
 
         # SSH mode: atomic move
+        pending_file = self._remote_path("queue", "pending", f"{job_id}.json")
+        claimed_file = self._remote_path("queue", "claimed", f"{job_id}.json")
         script = f"""set -euo pipefail
-PENDING="{self.remote_root}/queue/pending/{job_id}.json"
-CLAIMED="{self.remote_root}/queue/claimed/{job_id}.json"
+PENDING={shlex.quote(pending_file)}
+CLAIMED={shlex.quote(claimed_file)}
 if mv "$PENDING" "$CLAIMED" 2>/dev/null; then
   chmod 600 "$CLAIMED"
   cat "$CLAIMED"
@@ -234,11 +266,18 @@ fi
         data["claimed_at"] = now_str
         b64_content = base64.b64encode(json.dumps(data, indent=2).encode("utf-8")).decode("ascii")
         update_script = f"""set -euo pipefail
-CLAIMED="{self.remote_root}/queue/claimed/{job_id}.json"
-printf '%s' "{b64_content}" | base64 -d > "$CLAIMED"
-chmod 600 "$CLAIMED"
+umask 077
+CLAIMED={shlex.quote(claimed_file)}
+TMP_FILE="$CLAIMED.tmp.$$"
+trap 'rm -f "$TMP_FILE"' EXIT
+printf '%s' {shlex.quote(b64_content)} | base64 -d > "$TMP_FILE"
+chmod 600 "$TMP_FILE"
+mv "$TMP_FILE" "$CLAIMED"
+trap - EXIT
 """
-        _ssh_script(update_script, timeout=30)
+        update_res = _ssh_script(update_script, timeout=30)
+        if update_res.returncode != 0:
+            return None
         return data
 
     def requeue_stale_claims(self, stale_seconds: int = 300) -> int:
@@ -260,8 +299,6 @@ chmod 600 "$CLAIMED"
                     continue
 
                 claimed_at_str = data.get("claimed_at")
-                if not claimed_at_str:
-                    continue
                 try:
                     claimed_dt = datetime.fromisoformat(claimed_at_str)
                     claimed_ts = claimed_dt.timestamp()
@@ -272,22 +309,20 @@ chmod 600 "$CLAIMED"
                     pending_file = Path(self.remote_root) / "queue" / "pending" / f"{job_id}.json"
                     data.pop("claimed_at", None)
                     data.pop("worker_id", None)
-                    try:
-                        claimed_file.rename(pending_file)
-                        pending_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                    with file_lock(f"remote-queue-claim-{job_id}"):
                         try:
-                            pending_file.chmod(0o600)
-                        except OSError:
+                            claimed_file.rename(pending_file)
+                            _write_local_json(pending_file, data)
+                            requeued_count += 1
+                        except (FileNotFoundError, OSError):
                             pass
-                        requeued_count += 1
-                    except (FileNotFoundError, OSError):
-                        pass
             return requeued_count
 
         # SSH mode stale scan
+        claimed_dir = self._remote_path("queue", "claimed")
         script = f"""set -euo pipefail
-if [ -d "{self.remote_root}/queue/claimed" ]; then
-  ls -1 "{self.remote_root}/queue/claimed"/*.json 2>/dev/null || true
+if [ -d {shlex.quote(claimed_dir)} ]; then
+  ls -1 {shlex.quote(claimed_dir)}/*.json 2>/dev/null || true
 fi
 """
         res = _ssh_script(script, timeout=30)
@@ -300,7 +335,8 @@ fi
                 validate_job_id(job_id)
             except ValueError:
                 continue
-            cat_res = _ssh_script(f"cat {cpath}", timeout=30)
+            claimed_file = self._remote_path("queue", "claimed", f"{job_id}.json")
+            cat_res = _ssh_script(f"cat -- {shlex.quote(claimed_file)}", timeout=30)
             if cat_res.returncode != 0:
                 continue
             try:
@@ -309,24 +345,34 @@ fi
                 continue
 
             claimed_at_str = data.get("claimed_at")
-            if not claimed_at_str:
-                continue
             try:
                 claimed_dt = datetime.fromisoformat(claimed_at_str)
                 claimed_ts = claimed_dt.timestamp()
             except Exception:
-                continue
+                stat_res = _ssh_script(
+                    f"stat -c %Y -- {shlex.quote(claimed_file)}", timeout=30
+                )
+                try:
+                    claimed_ts = float(stat_res.stdout.strip())
+                except (TypeError, ValueError):
+                    continue
 
             if (now - claimed_ts) > stale_seconds:
                 data.pop("claimed_at", None)
                 data.pop("worker_id", None)
                 b64_content = base64.b64encode(json.dumps(data, indent=2).encode("utf-8")).decode("ascii")
+                pending_file = self._remote_path("queue", "pending", f"{job_id}.json")
                 requeue_script = f"""set -euo pipefail
-CLAIMED="{self.remote_root}/queue/claimed/{job_id}.json"
-PENDING="{self.remote_root}/queue/pending/{job_id}.json"
+umask 077
+CLAIMED={shlex.quote(claimed_file)}
+PENDING={shlex.quote(pending_file)}
 if mv "$CLAIMED" "$PENDING" 2>/dev/null; then
-  printf '%s' "{b64_content}" | base64 -d > "$PENDING"
-  chmod 600 "$PENDING"
+  TMP_FILE="$PENDING.tmp.$$"
+  trap 'rm -f "$TMP_FILE"' EXIT
+  printf '%s' {shlex.quote(b64_content)} | base64 -d > "$TMP_FILE"
+  chmod 600 "$TMP_FILE"
+  mv "$TMP_FILE" "$PENDING"
+  trap - EXIT
   echo "REQUEUED"
 fi
 """
@@ -372,25 +418,33 @@ fi
             claimed_file = Path(self.remote_root) / "queue" / "claimed" / f"{job_id}.json"
             pending_file = Path(self.remote_root) / "queue" / "pending" / f"{job_id}.json"
 
-            done_file.write_text(content, encoding="utf-8")
-            try:
-                done_file.chmod(0o600)
-            except OSError:
-                pass
-            claimed_file.unlink(missing_ok=True)
-            pending_file.unlink(missing_ok=True)
+            with file_lock(f"remote-queue-claim-{job_id}"):
+                _write_local_json(done_file, completed_data)
+                claimed_file.unlink(missing_ok=True)
+                pending_file.unlink(missing_ok=True)
             return
 
         # SSH mode
         b64_content = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        done_dir = self._remote_path("queue", "done")
+        done_file = self._remote_path("queue", "done", f"{job_id}.json")
+        claimed_file = self._remote_path("queue", "claimed", f"{job_id}.json")
+        pending_file = self._remote_path("queue", "pending", f"{job_id}.json")
         script = f"""set -euo pipefail
-mkdir -p "{self.remote_root}/queue/done"
-DONE_FILE="{self.remote_root}/queue/done/{job_id}.json"
-printf '%s' "{b64_content}" | base64 -d > "$DONE_FILE"
-chmod 600 "$DONE_FILE"
-rm -f "{self.remote_root}/queue/claimed/{job_id}.json" "{self.remote_root}/queue/pending/{job_id}.json"
+umask 077
+mkdir -p {shlex.quote(done_dir)}
+DONE_FILE={shlex.quote(done_file)}
+TMP_FILE="$DONE_FILE.tmp.$$"
+trap 'rm -f "$TMP_FILE"' EXIT
+printf '%s' {shlex.quote(b64_content)} | base64 -d > "$TMP_FILE"
+chmod 600 "$TMP_FILE"
+mv "$TMP_FILE" "$DONE_FILE"
+trap - EXIT
+rm -f -- {shlex.quote(claimed_file)} {shlex.quote(pending_file)}
 """
-        _ssh_script(script, timeout=30)
+        res = _ssh_script(script, timeout=30)
+        if res.returncode != 0:
+            raise RuntimeError(f"Failed to complete remote job: {_sanitize_error(res.stderr)}")
 
     def _read_job_raw(self, job_id: str) -> Optional[Dict[str, Any]]:
         for sub in ("claimed", "pending", "done"):
@@ -404,8 +458,8 @@ rm -f "{self.remote_root}/queue/claimed/{job_id}.json" "{self.remote_root}/queue
                     except Exception:
                         return None
             else:
-                p_str = f"{self.remote_root}/queue/{sub}/{job_id}.json"
-                res = _ssh_script(f"cat {p_str}", timeout=30)
+                p_str = self._remote_path("queue", sub, f"{job_id}.json")
+                res = _ssh_script(f"cat -- {shlex.quote(p_str)}", timeout=30)
                 if res.returncode == 0:
                     try:
                         return json.loads(res.stdout)
@@ -428,8 +482,8 @@ rm -f "{self.remote_root}/queue/claimed/{job_id}.json" "{self.remote_root}/queue
                     except Exception:
                         return None
             else:
-                p_str = f"{self.remote_root}/queue/{sub}/{job_id}.json"
-                res = _ssh_script(f"cat {p_str}", timeout=30)
+                p_str = self._remote_path("queue", sub, f"{job_id}.json")
+                res = _ssh_script(f"cat -- {shlex.quote(p_str)}", timeout=30)
                 if res.returncode == 0:
                     try:
                         data = json.loads(res.stdout)
@@ -455,13 +509,21 @@ rm -f "{self.remote_root}/queue/claimed/{job_id}.json" "{self.remote_root}/queue
                     except Exception:
                         continue
             else:
-                script = f"ls -1 {self.remote_root}/queue/{sub}/*.json 2>/dev/null || true"
+                remote_dir = self._remote_path("queue", sub)
+                script = f"ls -1 {shlex.quote(remote_dir)}/*.json 2>/dev/null || true"
                 res = _ssh_script(script, timeout=30)
                 if res.returncode == 0:
                     lines = [item.strip() for item in res.stdout.splitlines() if item.strip()]
                     for line in lines:
                         stem = Path(line).stem
-                        cat_res = _ssh_script(f"cat {line}", timeout=30)
+                        try:
+                            validate_job_id(stem)
+                        except ValueError:
+                            continue
+                        remote_file = self._remote_path("queue", sub, f"{stem}.json")
+                        cat_res = _ssh_script(
+                            f"cat -- {shlex.quote(remote_file)}", timeout=30
+                        )
                         if cat_res.returncode == 0:
                             try:
                                 data = json.loads(cat_res.stdout)
@@ -489,7 +551,7 @@ def run_worker_once(
 
         repo_path = job.get("repo_path", "")
         if not validate_repo_path(repo_path, allowed_roots=allowed_repos):
-            err_msg = (
+            err_msg = _redact(
                 f"Security error: repo_path {repo_path!r} is not in worker allow-list "
                 f"{allowed_repos}."
             )
@@ -504,8 +566,11 @@ def run_worker_once(
             )
             return {"job_id": job_id, "status": "failed", "error": err_msg}
 
+        repo_path = str(Path(repo_path).resolve())
         if not Path(repo_path).exists():
-            err_msg = f"Error: repo_path {repo_path!r} does not exist on worker machine."
+            err_msg = _redact(
+                f"Error: repo_path {repo_path!r} does not exist on worker machine."
+            )
             queue.complete_job(
                 job_id,
                 status="failed",
@@ -517,13 +582,42 @@ def run_worker_once(
             )
             return {"job_id": job_id, "status": "failed", "error": err_msg}
 
+        branch = job.get("branch")
+        if branch:
+            branch_check = subprocess.run(
+                ["git", "-C", repo_path, "branch", "--show-current"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            current_branch = branch_check.stdout.strip()
+            if branch_check.returncode != 0 or current_branch != branch:
+                err_msg = (
+                    f"Branch mismatch: requested {branch!r}, but the worker checkout is on "
+                    f"{current_branch or 'an unknown branch'!r}."
+                )
+                queue.complete_job(
+                    job_id,
+                    status="failed",
+                    worker_id=worker_id,
+                    exit_code=-1,
+                    result=err_msg,
+                    stderr=err_msg,
+                )
+                return {"job_id": job_id, "status": "failed", "error": err_msg}
+
         prompt = job.get("prompt") or ""
-        if not prompt and job.get("task_file"):
-            tf = Path(job["task_file"])
-            if tf.is_file():
-                prompt = tf.read_text(encoding="utf-8")
-            else:
-                prompt = f"Execute task file: {job['task_file']}"
+        if not isinstance(prompt, str) or not prompt.strip():
+            err_msg = "Invalid remote job: prompt is empty."
+            queue.complete_job(
+                job_id,
+                status="failed",
+                worker_id=worker_id,
+                exit_code=-1,
+                result=err_msg,
+                stderr=err_msg,
+            )
+            return {"job_id": job_id, "status": "failed", "error": err_msg}
 
         agent = job.get("agent")
         role = job.get("role")
@@ -532,6 +626,7 @@ def run_worker_once(
 
         try:
             import asyncio
+            from mindsync.dispatch import store
             from mindsync.dispatch.runner import run_task, job_result as get_job_result
 
             run_kwargs: Dict[str, Any] = {
@@ -548,11 +643,23 @@ def run_worker_once(
             res = asyncio.run(run_task(**run_kwargs))
             local_job = res["job"]
             job_res = get_job_result(local_job["id"])
+            local_job = job_res["meta"]
+            local_paths = store.job_paths(local_job["id"])
 
             status = local_job.get("status", "done")
             exit_code = local_job.get("exitCode", 0)
             timed_out = local_job.get("timedOut", False)
-            result_text = job_res.get("result") or ""
+            result_text = _excerpt(job_res.get("result") or "", limit=8000)
+            stdout_text = (
+                local_paths["stdout"].read_text(encoding="utf-8", errors="replace")
+                if local_paths["stdout"].is_file()
+                else ""
+            )
+            stderr_text = (
+                local_paths["stderr"].read_text(encoding="utf-8", errors="replace")
+                if local_paths["stderr"].is_file()
+                else ""
+            )
 
             queue.complete_job(
                 job_id,
@@ -561,8 +668,8 @@ def run_worker_once(
                 exit_code=exit_code,
                 timed_out=timed_out,
                 result=result_text,
-                stdout=result_text,
-                stderr="",
+                stdout=_excerpt(stdout_text),
+                stderr=_excerpt(stderr_text),
             )
             return {"job_id": job_id, "status": status, "result": result_text}
 

@@ -305,7 +305,8 @@ For a VPS + laptop setup:
 
 1. deploy the scripts from [`examples/remote/`](examples/remote/) on the VPS;
 2. point the laptop at that host with the two variables above;
-3. leave remote variables empty on the VPS itself—it is the durable store.
+3. for sync-only use, leave remote variables empty on the VPS itself; remote dispatch submitters
+   set only `MINDSYNC_REMOTE_ROOT` so they write into that local durable store.
 
 ### Remote Dispatch Queue & Worker
 
@@ -313,7 +314,11 @@ MindSync enables a remote orchestrator (e.g., running on a VPS) to submit work i
 
 #### Submitting a job (remote side)
 
+On the VPS, point only `MINDSYNC_REMOTE_ROOT` at the existing local durable-store root; no SSH
+host is needed because the queue is local there.
+
 ```bash
+export MINDSYNC_REMOTE_ROOT=/opt/mindsync
 mindsync submit --repo /path/to/repo --prompt "implement feature" --agent codex
 mindsync status <job-id>
 ```
@@ -321,15 +326,20 @@ mindsync status <job-id>
 #### Running the worker (local side)
 
 > [!IMPORTANT]
-> The worker **must** run in the user's interactive desktop session (e.g., standard terminal window). Do NOT run the worker as a Windows service or systemd daemon in session 0, because tool sandboxes (such as Codex's runner pipe) require an interactive session.
+> The worker **must** run in the user's interactive desktop session (for example, a normal
+> PowerShell window). Do not launch it through SSH or as a Windows service in session 0, because
+> tool sandboxes such as Codex's runner pipe require that interactive session.
 
 Configure worker environment:
 
-```bash
-export MINDSYNC_SSH_HOST=vps.example.com
-export MINDSYNC_REMOTE_ROOT=/opt/mindsync
-export MINDSYNC_ALLOWED_REPOS="C:\Users\ADITYA\project1,C:\Users\ADITYA\project2"
+```powershell
+$env:MINDSYNC_SSH_HOST = "mindsync-vps"
+$env:MINDSYNC_REMOTE_ROOT = "/opt/mindsync"
+$env:MINDSYNC_WORKER_ALLOWED_ROOTS = "C:\work\project1;C:\work\project2"
 ```
+
+Keep a non-default SSH port in the selected host's `~/.ssh/config` entry (this setup uses port
+2422); MindSync intentionally has no separate port setting.
 
 Start the worker loop:
 
@@ -354,14 +364,14 @@ mindsync worker --once
 | `MINDSYNC_REMOTE_WRITE_SCRIPT` | `tools/mindsync_fact.py` | Remote fact writer |
 | `MINDSYNC_REMOTE_CONSOLIDATE_SCRIPT` | `tools/mindsync_consolidate.py` | Remote consolidation command |
 | `MINDSYNC_REMOTE_TRUTH_SUBDIR` | `compiled-truth` | Compiled truth directory |
-| `MINDSYNC_SSH_TIMEOUT` | `10` | SSH connection timeout in seconds |
+| `MINDSYNC_SSH_TIMEOUT` | `3` | SSH connection timeout in seconds |
 | `MINDSYNC_FOCUS_STALE_SECS` | `7200` | Age after which focus is ignored |
 | `MINDSYNC_REMOTE_CACHE_TTL` | `30` | Remote probe cache lifetime |
 | `MINDSYNC_LOCK_TIMEOUT` | `5` | Local lock wait in seconds |
 | `MINDSYNC_WORKER_ID` | `laptop-worker` | Worker identifier string |
 | `MINDSYNC_WORKER_POLL_SECS` | `30` | Worker poll interval in seconds |
 | `MINDSYNC_WORKER_CLAIM_STALE_SECS` | `300` | Stale claim threshold in seconds |
-| `MINDSYNC_ALLOWED_REPOS` / `MINDSYNC_WORKER_ALLOWED_REPOS` | empty | Allow-list of repository paths allowed for worker execution |
+| `MINDSYNC_WORKER_ALLOWED_ROOTS` | empty | Semicolon- or comma-separated allow-list of repository roots the worker may execute in |
 
 ## Local data
 
