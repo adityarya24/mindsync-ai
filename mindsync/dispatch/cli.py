@@ -125,6 +125,8 @@ def fmt_job(m: dict) -> str:
         lines.append(f"  worktree kept: {m['worktreePath']} (branch {m['branch']})")
     if m.get("routing"):
         lines.append(f"  route: {m['routing']['reason']}")
+    for warning in m.get("warnings", []):
+        lines.append(f"  warning: {warning}")
     return "\n".join(lines)
 
 
@@ -144,6 +146,8 @@ async def _async_main(argv: list[str]) -> int:
         route_info = job.get("routing")
         if route_info and load_policy().announce:
             print(f"AUTO ROUTE: {route_info['reason']}")
+        for warning in job.get("warnings", []):
+            print(f"WARNING: {warning}", file=sys.stderr)
         if opts["background"]:
             wt_info = (
                 f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})"

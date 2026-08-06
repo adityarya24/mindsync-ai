@@ -116,11 +116,13 @@ def create_job(
     cwd: str,
     model: str | None = None,
     effort: str | None = None,
+    effective_effort: str | None = None,
     role: str | None = None,
     write: bool = False,
     checks: list[str] | None = None,
     publisher_agent: str = "dispatch",
     routing: dict[str, Any] | None = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     root = jobs_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -147,6 +149,8 @@ def create_job(
             "cwd": cwd,
             "model": model,
             "effort": effort,
+            "effectiveEffort": effective_effort,
+            "warnings": warnings or [],
             "write": write,
             "checks": checks or [],
             "checkResults": [],

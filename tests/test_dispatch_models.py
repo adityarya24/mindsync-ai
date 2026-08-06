@@ -75,7 +75,7 @@ def test_passing_model_with_empty_args_raises(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="a1"):
         build_invocation(resolve_adapter("a1"), prompt="hi", model="caller-model")
 
-def test_passing_effort_no_support_raises(tmp_path, monkeypatch):
+def test_passing_effort_without_support_falls_back_with_warning(tmp_path, monkeypatch):
     _isolate_dispatch(tmp_path, monkeypatch)
     cfg = user_config_path()
     cfg.parent.mkdir(parents=True, exist_ok=True)
@@ -84,10 +84,12 @@ def test_passing_effort_no_support_raises(tmp_path, monkeypatch):
             "name": "a1", "bin": "b"
         }]
     }))
-    with pytest.raises(ValueError, match="a1"):
-        build_invocation(resolve_adapter("a1"), prompt="hi", effort="high")
+    inv = build_invocation(resolve_adapter("a1"), prompt="hi", effort="high")
+    assert inv["effectiveEffort"] is None
+    assert inv["requestedEffort"] == "high"
+    assert "does not support reasoning effort" in inv["warnings"][0]
 
-def test_effort_outside_efforts_raises(tmp_path, monkeypatch):
+def test_effort_outside_supported_values_falls_back_with_warning(tmp_path, monkeypatch):
     _isolate_dispatch(tmp_path, monkeypatch)
     cfg = user_config_path()
     cfg.parent.mkdir(parents=True, exist_ok=True)
@@ -98,8 +100,20 @@ def test_effort_outside_efforts_raises(tmp_path, monkeypatch):
             "effortArgs": ["-e", "{effort}"]
         }]
     }))
-    with pytest.raises(ValueError, match="low, high"):
-        build_invocation(resolve_adapter("a1"), prompt="hi", effort="medium")
+    inv = build_invocation(resolve_adapter("a1"), prompt="hi", effort="medium")
+    assert inv["effectiveEffort"] is None
+    assert "supports only: low, high" in inv["warnings"][0]
+    assert "-e" not in inv["args"]
+
+
+def test_malformed_effort_is_still_rejected(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    cfg = user_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({"agents": [{"name": "a1", "bin": "b"}]}))
+
+    with pytest.raises(ValueError, match="Invalid effort"):
+        build_invocation(resolve_adapter("a1"), prompt="hi", effort="high;unsafe")
 
 def test_effort_substitution_both_styles(tmp_path, monkeypatch):
     _isolate_dispatch(tmp_path, monkeypatch)
@@ -208,4 +222,27 @@ async def test_run_task_stores_effort_in_meta(tmp_path, monkeypatch):
     res = await run_task(agent="a1", prompt="x", effort="high")
     job = res["job"]
     assert job["effort"] == "high"
+    assert job["effectiveEffort"] == "high"
+    assert job["warnings"] == []
     assert "ok" in res["result"]
+
+
+@pytest.mark.asyncio
+async def test_run_task_completes_when_agent_does_not_support_effort(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    cfg = user_config_path()
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({
+        "agents": [{
+            "name": "cursor-like", "bin": sys.executable,
+            "runArgs": ["-c", "print('ok without effort')"]
+        }]
+    }))
+
+    res = await run_task(agent="cursor-like", prompt="x", effort="high")
+    job = res["job"]
+    assert job["status"] == "done"
+    assert job["effort"] == "high"
+    assert job["effectiveEffort"] is None
+    assert "does not support reasoning effort" in job["warnings"][0]
+    assert "ok without effort" in res["result"]

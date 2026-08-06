@@ -237,16 +237,15 @@ def load_roles() -> dict[str, RoleConfig]:
 
         adapter = adapters[cfg.agent]
         if cfg.effort:
-            if not adapter.efforts or cfg.effort.lower() not in [e.lower() for e in adapter.efforts]:
-                supported = ", ".join(adapter.efforts) if adapter.efforts else "none"
+            if not SAFE_MODEL.match(cfg.effort):
                 raise ValueError(
-                    f"Role '{name}' specifies effort '{cfg.effort}' which agent '{cfg.agent}' "
-                    f"does not support (supported: {supported}). Configured in {user_path}"
+                    f"Role '{name}' has an invalid effort '{cfg.effort}': use letters, digits, "
+                    f"and . _ / : - only. Configured in {user_path}"
                 )
 
-        # Validate the model here for the same reason as effort: a role bakes it into
-        # config, so left to run time it would surface from inside a job that is already
-        # marked running, instead of the moment the config is read.
+        # Models remain strict because passing an unknown model is not portable and can
+        # silently select the wrong backend. Effort is different: unsupported adapters
+        # can safely omit it and use their CLI default with a visible warning.
         if cfg.model:
             if not adapter.modelArgs:
                 raise ValueError(
@@ -328,23 +327,15 @@ def build_invocation(
                 f"Invalid model '{eff_model}': use letters, digits, and . _ / : - only"
             )
 
-    if effort:
-        if not adapter.effortArgs or not adapter.efforts:
-            raise ValueError(f"Adapter '{adapter.name}' does not support reasoning effort but effort '{effort}' was requested.")
-        if effort.lower() not in [e.lower() for e in adapter.efforts]:
-            raise ValueError(f"Invalid effort '{effort}' for adapter '{adapter.name}'. Allowed values: {', '.join(adapter.efforts)}")
-        if not SAFE_MODEL.match(effort):
-            raise ValueError(f"Invalid effort '{effort}': use letters, digits, and . _ / : - only")
+    effective_effort, effort_warning = resolve_effort(adapter, effort)
 
     args = list(adapter.runArgs)
     if write:
         args.extend(adapter.writeArgs)
     if eff_model:
         args.extend(t.replace("{model}", eff_model) for t in adapter.modelArgs)
-    if effort:
-        # keep case for substitution
-        actual_effort = next(e for e in adapter.efforts if e.lower() == effort.lower())
-        args.extend(t.replace("{effort}", actual_effort) for t in adapter.effortArgs)
+    if effective_effort:
+        args.extend(t.replace("{effort}", effective_effort) for t in adapter.effortArgs)
         
     input_text: str | None = None
     if adapter.input == "stdin":
@@ -356,4 +347,36 @@ def build_invocation(
         "args": args,
         "input": input_text,
         "timeoutMs": adapter.timeoutMs,
+        "requestedEffort": effort,
+        "effectiveEffort": effective_effort,
+        "warnings": [effort_warning] if effort_warning else [],
     }
+
+
+def resolve_effort(
+    adapter: AdapterConfig, requested: str | None
+) -> tuple[str | None, str | None]:
+    """Resolve a portable effort request without breaking incompatible CLIs."""
+    if not requested:
+        return None, None
+    if not SAFE_MODEL.match(requested):
+        raise ValueError(
+            f"Invalid effort '{requested}': use letters, digits, and . _ / : - only"
+        )
+
+    actual = next(
+        (value for value in adapter.efforts if value.lower() == requested.lower()),
+        None,
+    )
+    if adapter.effortArgs and actual:
+        return actual, None
+
+    if not adapter.effortArgs or not adapter.efforts:
+        detail = "does not support reasoning effort"
+    else:
+        detail = f"supports only: {', '.join(adapter.efforts)}"
+    warning = (
+        f"Requested effort '{requested}' was not passed to adapter '{adapter.name}' because it "
+        f"{detail}; using the CLI's default effort."
+    )
+    return None, warning

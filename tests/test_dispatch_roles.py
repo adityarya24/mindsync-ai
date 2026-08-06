@@ -257,7 +257,7 @@ def test_role_naming_unknown_agent_fails_at_config_load(tmp_path, monkeypatch):
         load_roles()
 
 
-def test_role_unsupported_effort_fails_at_config_load(tmp_path, monkeypatch):
+def test_role_unsupported_effort_loads_for_runtime_fallback(tmp_path, monkeypatch):
     _isolate_dispatch(tmp_path, monkeypatch)
     cfg = user_config_path()
     cfg.parent.mkdir(parents=True, exist_ok=True)
@@ -283,8 +283,8 @@ def test_role_unsupported_effort_fails_at_config_load(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="bad-effort-role"):
-        load_roles()
+    roles = load_roles()
+    assert roles["bad-effort-role"].effort == "high"
 
 
 @pytest.mark.asyncio
@@ -418,6 +418,11 @@ async def test_mcp_delegate_task_and_list_roles(tmp_path, monkeypatch):
 
     res = await delegate_task(role="mcp-role", prompt="mcp work")
     assert "mcp ok" in res
+
+    fallback_res = await delegate_task(role="mcp-role", prompt="mcp work", effort="high")
+    assert "Warning:" in fallback_res
+    assert "using the CLI's default effort" in fallback_res
+    assert "mcp ok" in fallback_res
 
     err_res = await delegate_task(agent="mcp-agent", role="mcp-role", prompt="mcp work")
     assert "Error:" in err_res

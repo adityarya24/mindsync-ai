@@ -700,6 +700,7 @@ async def delegate_task(
         if route_info and policy.announce
         else ""
     )
+    warning_line = "".join(f"Warning: {warning}\n" for warning in job.get("warnings", []))
     log_audit(
         agent_name,
         "delegate_task",
@@ -708,12 +709,12 @@ async def delegate_task(
     if background:
         wt_info = f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})" if job.get("worktreePath") else ""
         return (
-            f"{route_line}Started background job {job['id']} (agent: {job['agent']}).{wt_info} "
+            f"{route_line}{warning_line}Started background job {job['id']} (agent: {job['agent']}).{wt_info} "
             f"Wait for completion now: job_wait('{job['id']}'). Do not end the turn "
             "while delegated work is still running."
         )
     wt_info = f"worktree: {job['worktreePath']}  (branch: {job['branch']})\n" if job.get("worktreePath") else ""
-    return f"{route_line}{wt_info}{res.get('result') or '(no output)'}"
+    return f"{route_line}{warning_line}{wt_info}{res.get('result') or '(no output)'}"
 
 
 @mcp.tool()
