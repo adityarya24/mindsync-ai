@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from typing import Any
 
@@ -15,6 +16,16 @@ def _positive_int(raw: str) -> int:
     value = int(raw)
     if value < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
+def _job_timeout_seconds(raw: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(value) or value <= 0 or value > 3600:
+        raise argparse.ArgumentTypeError("must be greater than 0 and at most 3600")
     return value
 
 
@@ -129,6 +140,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--role", help="Configured role (required for orchestrator mode unless --agent is used)"
     )
     submit_parser.add_argument("--branch", help="Target git branch")
+    submit_parser.add_argument(
+        "--timeout-seconds",
+        type=_job_timeout_seconds,
+        default=900.0,
+        help="Agent execution timeout in seconds (greater than 0, at most 3600; default: 900)",
+    )
+    submit_parser.add_argument(
+        "--commit",
+        action="store_true",
+        help="After a successful run, stage and commit the worker checkout (never push)",
+    )
     submit_parser.add_argument(
         "--execution-mode",
         "--mode",
@@ -280,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
                 agent=args.agent,
                 role=args.role,
                 branch=args.branch,
+                timeout_seconds=args.timeout_seconds,
+                commit=args.commit,
                 execution_mode=args.execution_mode,
             )
             print(job_id)
@@ -310,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{data.get('job_id')}] status: {state}")
             print(f"  created_at: {data.get('created_at')}")
             print(f"  repo_path: {data.get('repo_path')}")
+            print(f"  timeout_seconds: {data.get('timeout_seconds', 900)}")
             print(
                 "  execution_mode: "
                 f"{data.get('execution_mode', 'worker')} "
@@ -319,6 +344,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  claimed_at: {data.get('claimed_at')} by {data.get('worker_id')}")
             if data.get("ended_at"):
                 print(f"  ended_at: {data.get('ended_at')} (exit code: {data.get('exit_code')})")
+            if data.get("branch"):
+                print(f"  branch: {data.get('branch')}")
+            if data.get("commit_sha"):
+                print(f"  commit_sha: {data.get('commit_sha')}")
             if data.get("result"):
                 print(f"\nResult:\n{data.get('result')}")
             return 0

@@ -314,3 +314,59 @@ def test_submit_and_status_cli_expose_execution_mode(
     output = capsys.readouterr().out
     assert "execution_mode: orchestrator" in output
     assert "delegation_depth: 0" in output
+
+
+@pytest.mark.parametrize("timeout", ["0", "3600.01", "nan", "inf"])
+def test_submit_cli_rejects_invalid_timeout(timeout: str) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(
+            ["submit", "--repo", "repo", "--prompt", "task", "--timeout-seconds", timeout]
+        )
+    assert exc_info.value.code == 2
+
+
+@pytest.mark.parametrize("timeout", ["0.001", "3600"])
+def test_submit_cli_accepts_timeout_bounds(timeout: str) -> None:
+    parsed = build_parser().parse_args(
+        ["submit", "--repo", "repo", "--prompt", "task", "--timeout-seconds", timeout]
+    )
+    assert parsed.timeout_seconds == float(timeout)
+
+
+def test_submit_and_status_cli_expose_timeout_and_commit_metadata(
+    queue_root: str,
+    local_repo: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(remote_queue.settings, "remote_root", queue_root)
+    monkeypatch.setattr(remote_queue.settings, "ssh_host", "")
+
+    assert (
+        manage_main(
+            [
+                "submit",
+                "--repo",
+                local_repo,
+                "--prompt",
+                "handoff",
+                "--agent",
+                "fake",
+                "--branch",
+                "feat/handoff",
+                "--timeout-seconds",
+                "1200",
+                "--commit",
+            ]
+        )
+        == 0
+    )
+    job_id = capsys.readouterr().out.strip()
+    payload = _queue(queue_root).get_status(job_id)["job"]
+    assert payload["timeout_seconds"] == 1200
+    assert payload["commit"] is True
+
+    assert manage_main(["status", job_id]) == 0
+    output = capsys.readouterr().out
+    assert "timeout_seconds: 1200.0" in output
+    assert "branch: feat/handoff" in output
