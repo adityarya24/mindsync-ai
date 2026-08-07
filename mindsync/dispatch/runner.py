@@ -25,7 +25,11 @@ from mindsync.dispatch.proc import (
 from mindsync.dispatch import store
 from mindsync.dispatch.review import diff_summary, run_checks
 from mindsync.dispatch.routing import select_agent
-from mindsync.orchestration import effective_exclusions, load_policy
+from mindsync.orchestration import (
+    effective_exclusions,
+    load_policy,
+    validate_execution_mode,
+)
 from mindsync.storage import file_lock
 
 
@@ -187,6 +191,8 @@ def _publish_job_event(event_type: str, meta: dict[str, Any], agent_name: str = 
                     "job_id": meta.get("id"),
                     "agent": meta.get("agent"),
                     "status": meta.get("status"),
+                    "execution_mode": meta.get("executionMode", "worker"),
+                    "delegation_depth": meta.get("delegationDepth", 1),
                     "exit_code": meta.get("exitCode"),
                     "timed_out": meta.get("timedOut"),
                     "model": meta.get("model"),
@@ -219,7 +225,10 @@ async def run_task(
     publisher_agent: str = "dispatch",
     required_capabilities: list[str] | None = None,
     exclude_agents: list[str] | None = None,
+    execution_mode: str = "worker",
 ) -> dict[str, Any]:
+    execution_mode = validate_execution_mode(execution_mode)
+    delegation_depth = 0 if execution_mode == "orchestrator" else 1
     if (agent is None and role is None) or (agent is not None and role is not None):
         raise ValueError("Exactly one of 'agent' or 'role' must be provided.")
     # The CLI rejects this, but callers that build arguments programmatically — the MCP
@@ -290,6 +299,8 @@ async def run_task(
         checks=checks,
         publisher_agent=publisher_agent,
         routing=routing,
+        execution_mode=execution_mode,
+        delegation_depth=delegation_depth,
     )
 
     if worktree:
@@ -370,6 +381,28 @@ async def supervise_job(
         return running
     _publish_job_event("job.started", running, agent_name=publisher_agent)
 
+    try:
+        execution_mode = validate_execution_mode(running.get("executionMode", "worker"))
+        expected_depth = 0 if execution_mode == "orchestrator" else 1
+        delegation_depth = running.get("delegationDepth", expected_depth)
+        if type(delegation_depth) is not int or delegation_depth != expected_depth:
+            raise ValueError(
+                f"delegationDepth must be {expected_depth} for executionMode={execution_mode!r}"
+            )
+    except ValueError as exc:
+        failed = store.update_job(
+            job_id,
+            {
+                "status": "failed",
+                "exitCode": -1,
+                "endedAt": store.utc_now(),
+                "timedOut": False,
+            },
+            expected_status="running",
+        )
+        _publish_job_event("job.failed", failed, agent_name=publisher_agent)
+        raise ValueError(f"Invalid dispatch execution metadata: {exc}") from exc
+
     adapter = resolve_adapter(meta["agent"])
     bin_path = resolve_bin(adapter.bin)
     if not bin_path:
@@ -406,13 +439,24 @@ async def supervise_job(
                 "warnings": list(dict.fromkeys([*existing_warnings, *inv["warnings"]])),
             },
         )
+    child_env = dict(os.environ)
+    if execution_mode == "worker":
+        # Every delegated child is explicitly non-recursive. This is set here,
+        # at the process boundary, so a worker cannot opt itself back into MCP
+        # delegation by changing task text.
+        child_env["MINDSYNC_WORKER"] = "1"
+    else:
+        # The local orchestrator is the trusted parent and must never inherit a
+        # worker marker from the process that launched the remote queue loop.
+        child_env.pop("MINDSYNC_WORKER", None)
+
     result = await spawn_foreground(
         bin_path,
         inv["args"],
         cwd=meta.get("cwd") or os.getcwd(),
         timeout_ms=int(inv["timeoutMs"]),
         input_text=inv["input"],
-        env={**os.environ, "MINDSYNC_WORKER": "1"},
+        env=child_env,
     )
     store.write_job_file(job_id, "stdout", result["stdout"])
     store.write_job_file(job_id, "stderr", result["stderr"])

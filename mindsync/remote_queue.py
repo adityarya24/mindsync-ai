@@ -20,9 +20,31 @@ from typing import Any, Dict, List, Optional
 
 from mindsync.bridge import _sanitize_error, _ssh_script
 from mindsync.config import settings
+from mindsync.orchestration import validate_execution_mode
 from mindsync.storage import atomic_private_write, file_lock
 
 _JOB_ID_RE = re.compile(r"^[0-9a-z]+-[0-9a-f]+$", re.I)
+_REMOTE_DISPATCH_DEPTH = 0
+
+
+def _validate_remote_dispatch_depth(value: Any) -> int:
+    if type(value) is not int or value != _REMOTE_DISPATCH_DEPTH:
+        raise ValueError("delegation_depth must be 0 for a remote root job")
+    return value
+
+
+def _validate_remote_job_metadata(job: Dict[str, Any]) -> tuple[str, int]:
+    if not isinstance(job, dict):
+        raise ValueError("payload must be a JSON object")
+    if job.get("__invalid_payload__"):
+        raise ValueError("payload must be a JSON object")
+    # Missing fields are legacy worker jobs. Explicit null/other shapes fail
+    # closed instead of being silently treated as a trusted orchestrator.
+    execution_mode = validate_execution_mode(job.get("execution_mode", "worker"))
+    delegation_depth = _validate_remote_dispatch_depth(
+        job.get("delegation_depth", _REMOTE_DISPATCH_DEPTH)
+    )
+    return execution_mode, delegation_depth
 
 
 def validate_job_id(job_id: str) -> str:
@@ -131,11 +153,15 @@ chmod 700 {shlex.quote(queue_dir)} {shlex.quote(pending_dir)} {shlex.quote(claim
         branch: Optional[str] = None,
         role: Optional[str] = None,
         submitter: Optional[str] = None,
+        execution_mode: str = "worker",
+        delegation_depth: int = _REMOTE_DISPATCH_DEPTH,
     ) -> str:
         if not repo_path or not str(repo_path).strip():
             raise ValueError("repo_path cannot be empty")
         if not prompt or not prompt.strip():
             raise ValueError("prompt cannot be empty")
+        execution_mode = validate_execution_mode(execution_mode)
+        _validate_remote_dispatch_depth(delegation_depth)
         job_id = generate_job_id()
         created_at = datetime.now(timezone.utc).isoformat()
         job_data = {
@@ -148,6 +174,8 @@ chmod 700 {shlex.quote(queue_dir)} {shlex.quote(pending_dir)} {shlex.quote(claim
             "branch": branch,
             "role": role,
             "submitter": submitter or os.environ.get("USER", os.environ.get("USERNAME", "remote")),
+            "execution_mode": execution_mode,
+            "delegation_depth": delegation_depth,
         }
         content = json.dumps(job_data, indent=2)
 
@@ -230,9 +258,18 @@ fi
                 if not pending_file.is_file():
                     return None
                 try:
-                    data = json.loads(pending_file.read_text(encoding="utf-8"))
+                    raw = pending_file.read_text(encoding="utf-8")
+                except (FileNotFoundError, OSError):
+                    return None
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    data = {"job_id": job_id, "__invalid_payload__": True}
+                if not isinstance(data, dict):
+                    data = {"job_id": job_id, "__invalid_payload__": True}
+                try:
                     pending_file.rename(claimed_file)
-                except (FileNotFoundError, OSError, json.JSONDecodeError):
+                except (FileNotFoundError, OSError):
                     return None
 
                 data["worker_id"] = worker_id
@@ -260,7 +297,9 @@ fi
         try:
             data = json.loads(res.stdout)
         except Exception:
-            return None
+            data = {"job_id": job_id, "__invalid_payload__": True}
+        if not isinstance(data, dict):
+            data = {"job_id": job_id, "__invalid_payload__": True}
 
         data["worker_id"] = worker_id
         data["claimed_at"] = now_str
@@ -538,6 +577,7 @@ def run_worker_once(
     worker_id: str,
     allowed_repos: List[str],
     stale_seconds: int = 300,
+    allow_orchestrator: bool | None = None,
 ) -> Optional[Dict[str, Any]]:
     # 1. Requeue stale claims
     queue.requeue_stale_claims(stale_seconds=stale_seconds)
@@ -548,6 +588,39 @@ def run_worker_once(
         job = queue.claim_job(job_id, worker_id=worker_id)
         if job is None:
             continue
+
+        try:
+            execution_mode, _delegation_depth = _validate_remote_job_metadata(job)
+        except (TypeError, ValueError) as exc:
+            err_msg = f"Invalid remote job: {_sanitize_error(str(exc))}"
+            queue.complete_job(
+                job_id,
+                status="failed",
+                worker_id=worker_id,
+                exit_code=-1,
+                timed_out=False,
+                result=err_msg,
+                stderr=err_msg,
+            )
+            return {"job_id": job_id, "status": "failed", "error": err_msg}
+
+        local_orchestrator_enabled = (
+            getattr(settings, "worker_allow_orchestrator", False)
+            if allow_orchestrator is None
+            else allow_orchestrator
+        )
+        if type(local_orchestrator_enabled) is not bool:
+            err_msg = "Invalid worker setting: allow_orchestrator must be a boolean."
+            queue.complete_job(
+                job_id,
+                status="failed",
+                worker_id=worker_id,
+                exit_code=-1,
+                timed_out=False,
+                result=err_msg,
+                stderr=err_msg,
+            )
+            return {"job_id": job_id, "status": "failed", "error": err_msg}
 
         repo_path = job.get("repo_path", "")
         if not validate_repo_path(repo_path, allowed_roots=allowed_repos):
@@ -582,7 +655,36 @@ def run_worker_once(
             )
             return {"job_id": job_id, "status": "failed", "error": err_msg}
 
+        if execution_mode == "orchestrator" and not local_orchestrator_enabled:
+            err_msg = (
+                "Security error: orchestrator execution is disabled on this worker. "
+                "Set MINDSYNC_WORKER_ALLOW_ORCHESTRATOR=true or pass "
+                "--allow-orchestrator to enable it."
+            )
+            queue.complete_job(
+                job_id,
+                status="failed",
+                worker_id=worker_id,
+                exit_code=-1,
+                timed_out=False,
+                result=err_msg,
+                stderr=err_msg,
+            )
+            return {"job_id": job_id, "status": "failed", "error": err_msg}
+
         branch = job.get("branch")
+        if branch is not None and not isinstance(branch, str):
+            err_msg = "Invalid remote job: branch must be a string or null."
+            queue.complete_job(
+                job_id,
+                status="failed",
+                worker_id=worker_id,
+                exit_code=-1,
+                timed_out=False,
+                result=err_msg,
+                stderr=err_msg,
+            )
+            return {"job_id": job_id, "status": "failed", "error": err_msg}
         if branch:
             branch_check = subprocess.run(
                 ["git", "-C", repo_path, "branch", "--show-current"],
@@ -621,8 +723,25 @@ def run_worker_once(
 
         agent = job.get("agent")
         role = job.get("role")
+        if (agent is not None and not isinstance(agent, str)) or (
+            role is not None and not isinstance(role, str)
+        ):
+            err_msg = "Invalid remote job: agent and role must be strings or null."
+            queue.complete_job(
+                job_id,
+                status="failed",
+                worker_id=worker_id,
+                exit_code=-1,
+                timed_out=False,
+                result=err_msg,
+                stderr=err_msg,
+            )
+            return {"job_id": job_id, "status": "failed", "error": err_msg}
         if not agent and not role:
-            agent = "auto"
+            # An orchestrator is the local human-facing parent. Defaulting it to
+            # automatic worker routing would silently remove its delegation
+            # permission, so Codex is the generic human-facing default.
+            agent = "codex" if execution_mode == "orchestrator" else "auto"
 
         try:
             import asyncio
@@ -634,6 +753,7 @@ def run_worker_once(
                 "cwd": repo_path,
                 "write": True,
                 "background": False,
+                "execution_mode": execution_mode,
             }
             if role:
                 run_kwargs["role"] = role
@@ -695,6 +815,7 @@ def run_worker_loop(
     allowed_repos: List[str],
     poll_seconds: int = 30,
     stale_seconds: int = 300,
+    allow_orchestrator: bool | None = None,
 ) -> None:
     queue.ensure_remote_dirs()
     while True:
@@ -704,6 +825,7 @@ def run_worker_loop(
                 worker_id=worker_id,
                 allowed_repos=allowed_repos,
                 stale_seconds=stale_seconds,
+                allow_orchestrator=allow_orchestrator,
             )
         except Exception as exc:
             print(f"Worker iteration error: {_sanitize_error(str(exc))}")

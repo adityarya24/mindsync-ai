@@ -323,6 +323,23 @@ mindsync submit --repo /path/to/repo --prompt "implement feature" --agent codex
 mindsync status <job-id>
 ```
 
+Remote jobs default to the safe `worker` execution mode. To run the local
+human-facing Codex as an orchestrator, opt in explicitly in the payload:
+
+```bash
+mindsync submit --repo /path/to/repo --prompt "plan and implement feature" \
+  --execution-mode orchestrator --agent codex
+```
+
+An orchestrator job is accepted only when the local worker owner also enables
+the boundary with `MINDSYNC_WORKER_ALLOW_ORCHESTRATOR=true` (or the one-shot
+`mindsync worker --once --allow-orchestrator` / loop `--allow-orchestrator`
+flag). The remote repository allow-list, branch check, write sandbox, and
+result lifecycle apply in both modes. The orchestrator process is allowed to
+use MindSync delegation; every child dispatch remains a depth-1 worker with
+`MINDSYNC_WORKER=1` and cannot delegate recursively. Legacy payloads without
+the mode/depth fields remain worker jobs.
+
 #### Running the worker (local side)
 
 > [!IMPORTANT]
@@ -336,6 +353,8 @@ Configure worker environment:
 $env:MINDSYNC_SSH_HOST = "mindsync-vps"
 $env:MINDSYNC_REMOTE_ROOT = "/opt/mindsync"
 $env:MINDSYNC_WORKER_ALLOWED_ROOTS = "C:\work\project1;C:\work\project2"
+# Optional, privileged local opt-in for explicit orchestrator payloads:
+$env:MINDSYNC_WORKER_ALLOW_ORCHESTRATOR = "true"
 ```
 
 Keep a non-default SSH port in the selected host's `~/.ssh/config` entry (this setup uses port
@@ -372,6 +391,7 @@ mindsync worker --once
 | `MINDSYNC_WORKER_POLL_SECS` | `30` | Worker poll interval in seconds |
 | `MINDSYNC_WORKER_CLAIM_STALE_SECS` | `300` | Stale claim threshold in seconds |
 | `MINDSYNC_WORKER_ALLOWED_ROOTS` | empty | Semicolon- or comma-separated allow-list of repository roots the worker may execute in |
+| `MINDSYNC_WORKER_ALLOW_ORCHESTRATOR` | `false` | Local opt-in required before an explicit remote orchestrator job can run |
 
 ## Local data
 

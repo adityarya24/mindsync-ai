@@ -13,6 +13,20 @@ from mindsync.config import settings
 from mindsync.storage import atomic_private_write, file_lock
 
 
+ExecutionMode = Literal["worker", "orchestrator"]
+
+
+def validate_execution_mode(value: Any) -> ExecutionMode:
+    """Validate the execution boundary used by local and remote dispatch.
+
+    The defaulting for legacy payloads happens at the call site so an explicit
+    JSON ``null`` is still rejected as an untrusted shape.
+    """
+    if type(value) is not str or value not in {"worker", "orchestrator"}:
+        raise ValueError("execution_mode must be exactly 'worker' or 'orchestrator'")
+    return value
+
+
 class OrchestrationPolicy(BaseModel):
     mode: Literal["auto", "suggest", "off"] = "auto"
     announce: bool = True

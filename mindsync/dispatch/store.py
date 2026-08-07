@@ -123,7 +123,16 @@ def create_job(
     publisher_agent: str = "dispatch",
     routing: dict[str, Any] | None = None,
     warnings: list[str] | None = None,
+    execution_mode: str = "worker",
+    delegation_depth: int = 1,
 ) -> dict[str, Any]:
+    if execution_mode not in {"worker", "orchestrator"}:
+        raise ValueError("execution_mode must be exactly 'worker' or 'orchestrator'")
+    expected_depth = 0 if execution_mode == "orchestrator" else 1
+    if type(delegation_depth) is not int or delegation_depth != expected_depth:
+        raise ValueError(
+            f"delegation_depth must be {expected_depth} for execution_mode={execution_mode!r}"
+        )
     root = jobs_root()
     root.mkdir(parents=True, exist_ok=True)
     meta: dict[str, Any] | None = None
@@ -169,6 +178,8 @@ def create_job(
             "worktreeKept": None,
             "publisherAgent": publisher_agent,
             "routing": routing,
+            "executionMode": execution_mode,
+            "delegationDepth": delegation_depth,
         }
         if routing:
             _register_active_auto_job(job_id)

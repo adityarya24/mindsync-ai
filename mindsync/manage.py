@@ -112,6 +112,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--stale-secs", type=_positive_int, help="Stale claim threshold in seconds"
     )
     worker_parser.add_argument("--worker-id", type=str, help="Worker identifier")
+    worker_parser.add_argument(
+        "--allow-orchestrator",
+        action="store_true",
+        help="Allow explicitly submitted orchestrator jobs for this worker process",
+    )
 
     submit_parser = sub.add_parser("submit", help="Submit a job to the remote queue")
     submit_parser.add_argument("--repo", required=True, help="Path to target repository")
@@ -119,6 +124,14 @@ def build_parser() -> argparse.ArgumentParser:
     submit_parser.add_argument("--prompt", help="Prompt text for the job")
     submit_parser.add_argument("--agent", help="Preferred agent")
     submit_parser.add_argument("--branch", help="Target git branch")
+    submit_parser.add_argument(
+        "--execution-mode",
+        "--mode",
+        dest="execution_mode",
+        choices=["worker", "orchestrator"],
+        default="worker",
+        help="Execution boundary (default: worker)",
+    )
 
     status_parser = sub.add_parser("status", help="Get status of a remote job or list remote jobs")
     status_parser.add_argument("job_id", nargs="?", help="Job ID to query")
@@ -213,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
                 worker_id=worker_id,
                 allowed_repos=allowed_repos,
                 stale_seconds=stale_secs,
+                allow_orchestrator=True if args.allow_orchestrator else None,
             )
             if res:
                 print(f"Processed job {res['job_id']}: status={res['status']}")
@@ -230,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
                     allowed_repos=allowed_repos,
                     poll_seconds=poll_secs,
                     stale_seconds=stale_secs,
+                    allow_orchestrator=True if args.allow_orchestrator else None,
                 )
             except KeyboardInterrupt:
                 print("\nWorker stopped.")
@@ -259,6 +274,7 @@ def main(argv: list[str] | None = None) -> int:
                 task_file=args.task_file,
                 agent=args.agent,
                 branch=args.branch,
+                execution_mode=args.execution_mode,
             )
             print(job_id)
             return 0
@@ -288,6 +304,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{data.get('job_id')}] status: {state}")
             print(f"  created_at: {data.get('created_at')}")
             print(f"  repo_path: {data.get('repo_path')}")
+            print(
+                "  execution_mode: "
+                f"{data.get('execution_mode', 'worker')} "
+                f"(delegation_depth: {data.get('delegation_depth', 0)})"
+            )
             if data.get("claimed_at"):
                 print(f"  claimed_at: {data.get('claimed_at')} by {data.get('worker_id')}")
             if data.get("ended_at"):
@@ -303,7 +324,8 @@ def main(argv: list[str] | None = None) -> int:
             for item in jobs:
                 print(
                     f"[{item['job_id']}] {item['state']} - repo: {item.get('repo_path')} "
-                    f"agent: {item.get('agent') or 'auto'}"
+                    f"agent: {item.get('agent') or 'auto'} "
+                    f"mode: {item.get('execution_mode', 'worker')}"
                 )
             return 0
 
