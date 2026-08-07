@@ -18,6 +18,18 @@ def _env(name: str, default: str = "") -> str:
     return value.strip()
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = _env(name)
+    if not value:
+        return default
+    normalized = value.lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true or false")
+
+
 def _default_home() -> Path:
     override = _env("MINDSYNC_HOME")
     if override:
@@ -110,6 +122,11 @@ class Settings:
         self.worker_poll_seconds: int = int(_env("MINDSYNC_WORKER_POLL_SECS", "30") or "30")
         self.worker_claim_stale_seconds: int = int(
             _env("MINDSYNC_WORKER_CLAIM_STALE_SECS", "300") or "300"
+        )
+        # Remote orchestrator execution is a privileged local opt-in. A remote
+        # payload can request it, but the laptop owner must enable the mode too.
+        self.worker_allow_orchestrator: bool = _env_bool(
+            "MINDSYNC_WORKER_ALLOW_ORCHESTRATOR", False
         )
         if self.worker_poll_seconds < 1 or self.worker_claim_stale_seconds < 1:
             raise ValueError("Worker poll and stale intervals must be at least 1 second.")
