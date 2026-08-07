@@ -323,13 +323,17 @@ mindsync submit --repo /path/to/repo --prompt "implement feature" --agent codex
 mindsync status <job-id>
 ```
 
-Remote jobs default to the safe `worker` execution mode. To run the local
-human-facing Codex as an orchestrator, opt in explicitly in the payload:
+Remote jobs default to the safe `worker` execution mode. To run a configured
+human-facing CLI as an orchestrator, opt in explicitly and name the agent (or
+role) in the payload:
 
 ```bash
 mindsync submit --repo /path/to/repo --prompt "plan and implement feature" \
-  --execution-mode orchestrator --agent codex
+  --execution-mode orchestrator --agent <configured-orchestrator-agent>
 ```
+
+Or use a configured role instead: `--execution-mode orchestrator --role <configured-role>`.
+Orchestrator submissions without an explicit `--agent` or `--role` are rejected.
 
 An orchestrator job is accepted only when the local worker owner also enables
 the boundary with `MINDSYNC_WORKER_ALLOW_ORCHESTRATOR=true` (or the one-shot

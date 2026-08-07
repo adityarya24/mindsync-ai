@@ -104,6 +104,12 @@ def test_submit_execution_mode_defaults_and_validates(queue_root: str, local_rep
         queue.submit_job(repo_path=local_repo, prompt="bad", execution_mode="nested")
     with pytest.raises(ValueError, match="delegation_depth"):
         queue.submit_job(repo_path=local_repo, prompt="bad", delegation_depth=1)
+    with pytest.raises(ValueError, match="explicit agent or role"):
+        queue.submit_job(
+            repo_path=local_repo,
+            prompt="missing orchestrator target",
+            execution_mode="orchestrator",
+        )
 
 
 def test_legacy_payload_defaults_to_non_recursive_worker(
@@ -156,6 +162,26 @@ def test_orchestrator_requires_local_opt_in(
     assert result and result["status"] == "failed"
     status = queue.get_status(job_id)
     assert status and "orchestrator execution is disabled" in status["job"]["result"]
+
+
+def test_untrusted_orchestrator_without_agent_fails_closed(
+    queue_root: str,
+    local_repo: str,
+    configured_dispatch: None,
+) -> None:
+    queue = _queue(queue_root)
+    job_id = queue.submit_job(repo_path=local_repo, prompt="missing target", agent="fake")
+    pending = Path(queue_root) / "queue" / "pending" / f"{job_id}.json"
+    payload = json.loads(pending.read_text())
+    payload["execution_mode"] = "orchestrator"
+    payload["agent"] = None
+    payload["role"] = None
+    pending.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = run_worker_once(queue, "worker", [local_repo], allow_orchestrator=True)
+    assert result and result["status"] == "failed"
+    status = queue.get_status(job_id)
+    assert status and "explicit agent or role" in status["job"]["result"]
 
 
 def test_orchestrator_parent_is_not_marked_worker(
@@ -260,10 +286,27 @@ def test_submit_and_status_cli_expose_execution_mode(
         ]
     )
     assert parsed.execution_mode == "orchestrator"
+    parsed_role = build_parser().parse_args(
+        [
+            "submit",
+            "--repo",
+            local_repo,
+            "--prompt",
+            "orchestrate",
+            "--execution-mode",
+            "orchestrator",
+            "--role",
+            "configured-role",
+        ]
+    )
+    assert parsed_role.role == "configured-role"
 
     queue = _queue(queue_root)
     job_id = queue.submit_job(
-        repo_path=local_repo, prompt="orchestrate", execution_mode="orchestrator"
+        repo_path=local_repo,
+        prompt="orchestrate",
+        agent="fake",
+        execution_mode="orchestrator",
     )
     monkeypatch.setattr(remote_queue.settings, "remote_root", queue_root)
     monkeypatch.setattr(remote_queue.settings, "ssh_host", "")

@@ -162,6 +162,8 @@ chmod 700 {shlex.quote(queue_dir)} {shlex.quote(pending_dir)} {shlex.quote(claim
             raise ValueError("prompt cannot be empty")
         execution_mode = validate_execution_mode(execution_mode)
         _validate_remote_dispatch_depth(delegation_depth)
+        if execution_mode == "orchestrator" and not agent and not role:
+            raise ValueError("orchestrator execution requires an explicit agent or role")
         job_id = generate_job_id()
         created_at = datetime.now(timezone.utc).isoformat()
         job_data = {
@@ -738,10 +740,19 @@ def run_worker_once(
             )
             return {"job_id": job_id, "status": "failed", "error": err_msg}
         if not agent and not role:
-            # An orchestrator is the local human-facing parent. Defaulting it to
-            # automatic worker routing would silently remove its delegation
-            # permission, so Codex is the generic human-facing default.
-            agent = "codex" if execution_mode == "orchestrator" else "auto"
+            if execution_mode == "orchestrator":
+                err_msg = "Invalid remote job: orchestrator execution requires an explicit agent or role."
+                queue.complete_job(
+                    job_id,
+                    status="failed",
+                    worker_id=worker_id,
+                    exit_code=-1,
+                    timed_out=False,
+                    result=err_msg,
+                    stderr=err_msg,
+                )
+                return {"job_id": job_id, "status": "failed", "error": err_msg}
+            agent = "auto"
 
         try:
             import asyncio

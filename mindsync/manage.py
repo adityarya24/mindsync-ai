@@ -122,7 +122,12 @@ def build_parser() -> argparse.ArgumentParser:
     submit_parser.add_argument("--repo", required=True, help="Path to target repository")
     submit_parser.add_argument("--task-file", help="Path to task file containing prompt")
     submit_parser.add_argument("--prompt", help="Prompt text for the job")
-    submit_parser.add_argument("--agent", help="Preferred agent")
+    submit_parser.add_argument(
+        "--agent", help="Configured agent (required for orchestrator mode unless --role is used)"
+    )
+    submit_parser.add_argument(
+        "--role", help="Configured role (required for orchestrator mode unless --agent is used)"
+    )
     submit_parser.add_argument("--branch", help="Target git branch")
     submit_parser.add_argument(
         "--execution-mode",
@@ -130,7 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="execution_mode",
         choices=["worker", "orchestrator"],
         default="worker",
-        help="Execution boundary (default: worker)",
+        help="Execution boundary; orchestrator requires --agent or --role (default: worker)",
     )
 
     status_parser = sub.add_parser("status", help="Get status of a remote job or list remote jobs")
@@ -273,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
                 prompt=prompt,
                 task_file=args.task_file,
                 agent=args.agent,
+                role=args.role,
                 branch=args.branch,
                 execution_mode=args.execution_mode,
             )
