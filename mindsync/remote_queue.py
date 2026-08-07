@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
 import re
 import secrets
@@ -25,6 +26,8 @@ from mindsync.storage import atomic_private_write, file_lock
 
 _JOB_ID_RE = re.compile(r"^[0-9a-z]+-[0-9a-f]+$", re.I)
 _REMOTE_DISPATCH_DEPTH = 0
+_DEFAULT_JOB_TIMEOUT_SECONDS = 900.0
+_MAX_JOB_TIMEOUT_SECONDS = 3600.0
 
 
 def _validate_remote_dispatch_depth(value: Any) -> int:
@@ -33,7 +36,25 @@ def _validate_remote_dispatch_depth(value: Any) -> int:
     return value
 
 
-def _validate_remote_job_metadata(job: Dict[str, Any]) -> tuple[str, int]:
+def _validate_timeout_seconds(value: Any) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+        or value > _MAX_JOB_TIMEOUT_SECONDS
+    ):
+        raise ValueError("timeout_seconds must be greater than 0 and at most 3600")
+    return float(value)
+
+
+def _validate_commit_requested(value: Any) -> bool:
+    if type(value) is not bool:
+        raise ValueError("commit must be a boolean")
+    return value
+
+
+def _validate_remote_job_metadata(job: Dict[str, Any]) -> tuple[str, int, float, bool]:
     if not isinstance(job, dict):
         raise ValueError("payload must be a JSON object")
     if job.get("__invalid_payload__"):
@@ -44,7 +65,11 @@ def _validate_remote_job_metadata(job: Dict[str, Any]) -> tuple[str, int]:
     delegation_depth = _validate_remote_dispatch_depth(
         job.get("delegation_depth", _REMOTE_DISPATCH_DEPTH)
     )
-    return execution_mode, delegation_depth
+    timeout_seconds = _validate_timeout_seconds(
+        job.get("timeout_seconds", _DEFAULT_JOB_TIMEOUT_SECONDS)
+    )
+    commit_requested = _validate_commit_requested(job.get("commit", False))
+    return execution_mode, delegation_depth, timeout_seconds, commit_requested
 
 
 def validate_job_id(job_id: str) -> str:
@@ -81,6 +106,80 @@ def _redact(text: str) -> str:
 def _excerpt(text: str, limit: int = 4000) -> str:
     redacted = _redact(text)
     return redacted if len(redacted) <= limit else "…(truncated)…\n" + redacted[-limit:]
+
+
+def _git(repo_path: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", repo_path, *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+
+def _git_error(action: str, result: subprocess.CompletedProcess[str]) -> RuntimeError:
+    detail = _redact((result.stderr or result.stdout).strip())
+    suffix = f": {detail}" if detail else ""
+    return RuntimeError(f"Git handoff failed while {action}{suffix}")
+
+
+def _prepare_git_handoff(repo_path: str, branch: Optional[str]) -> str:
+    status = _git(repo_path, "status", "--porcelain")
+    if status.returncode != 0:
+        raise _git_error("checking the working tree", status)
+    if status.stdout.strip():
+        raise RuntimeError(
+            "Git handoff refused: working tree must be clean before an agent run with --commit."
+        )
+
+    current = _git(repo_path, "branch", "--show-current")
+    if current.returncode != 0:
+        raise _git_error("reading the current branch", current)
+    current_branch = current.stdout.strip()
+
+    if branch:
+        valid = _git(repo_path, "check-ref-format", "--branch", branch)
+        if valid.returncode != 0:
+            raise RuntimeError(f"Git handoff refused: invalid branch name {branch!r}.")
+        if current_branch != branch:
+            exists = _git(repo_path, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
+            if exists.returncode not in {0, 1}:
+                raise _git_error("checking the requested branch", exists)
+            switch_args = ("switch", branch) if exists.returncode == 0 else ("switch", "-c", branch)
+            switched = _git(repo_path, *switch_args)
+            if switched.returncode != 0:
+                raise _git_error(f"switching to branch {branch!r}", switched)
+            current_branch = branch
+
+    if not current_branch:
+        raise RuntimeError(
+            "Git handoff refused: checkout is detached; supply --branch to create a target branch."
+        )
+    return current_branch
+
+
+def _commit_git_handoff(repo_path: str, job_id: str) -> tuple[str, str]:
+    staged = _git(repo_path, "add", "--all")
+    if staged.returncode != 0:
+        raise _git_error("staging changes", staged)
+
+    has_changes = _git(repo_path, "diff", "--cached", "--quiet")
+    if has_changes.returncode == 0:
+        raise RuntimeError("Git handoff failed: the successful agent run produced no changes to commit.")
+    if has_changes.returncode != 1:
+        raise _git_error("checking staged changes", has_changes)
+
+    committed = _git(repo_path, "commit", "-m", f"MindSync remote job {job_id}")
+    if committed.returncode != 0:
+        raise _git_error("committing changes", committed)
+    sha = _git(repo_path, "rev-parse", "HEAD")
+    if sha.returncode != 0:
+        raise _git_error("reading the commit SHA", sha)
+    branch = _git(repo_path, "branch", "--show-current")
+    if branch.returncode != 0 or not branch.stdout.strip():
+        raise _git_error("reading the committed branch", branch)
+    return sha.stdout.strip(), branch.stdout.strip()
 
 
 def _write_local_json(path: Path, data: Dict[str, Any]) -> None:
@@ -155,6 +254,8 @@ chmod 700 {shlex.quote(queue_dir)} {shlex.quote(pending_dir)} {shlex.quote(claim
         submitter: Optional[str] = None,
         execution_mode: str = "worker",
         delegation_depth: int = _REMOTE_DISPATCH_DEPTH,
+        timeout_seconds: float = _DEFAULT_JOB_TIMEOUT_SECONDS,
+        commit: bool = False,
     ) -> str:
         if not repo_path or not str(repo_path).strip():
             raise ValueError("repo_path cannot be empty")
@@ -162,6 +263,8 @@ chmod 700 {shlex.quote(queue_dir)} {shlex.quote(pending_dir)} {shlex.quote(claim
             raise ValueError("prompt cannot be empty")
         execution_mode = validate_execution_mode(execution_mode)
         _validate_remote_dispatch_depth(delegation_depth)
+        timeout_seconds = _validate_timeout_seconds(timeout_seconds)
+        commit = _validate_commit_requested(commit)
         if execution_mode == "orchestrator" and not agent and not role:
             raise ValueError("orchestrator execution requires an explicit agent or role")
         job_id = generate_job_id()
@@ -178,6 +281,8 @@ chmod 700 {shlex.quote(queue_dir)} {shlex.quote(pending_dir)} {shlex.quote(claim
             "submitter": submitter or os.environ.get("USER", os.environ.get("USERNAME", "remote")),
             "execution_mode": execution_mode,
             "delegation_depth": delegation_depth,
+            "timeout_seconds": timeout_seconds,
+            "commit": commit,
         }
         content = json.dumps(job_data, indent=2)
 
@@ -433,6 +538,8 @@ fi
         result: str = "",
         stdout: str = "",
         stderr: str = "",
+        commit_sha: Optional[str] = None,
+        branch: Optional[str] = None,
     ) -> None:
         validate_job_id(job_id)
         now_str = datetime.now(timezone.utc).isoformat()
@@ -450,6 +557,10 @@ fi
             "stdout": stdout,
             "stderr": stderr,
         }
+        if commit_sha is not None:
+            completed_data["commit_sha"] = commit_sha
+        if branch is not None:
+            completed_data["branch"] = branch
         content = json.dumps(completed_data, indent=2)
 
         if not self.is_ssh:
@@ -592,7 +703,9 @@ def run_worker_once(
             continue
 
         try:
-            execution_mode, _delegation_depth = _validate_remote_job_metadata(job)
+            execution_mode, _delegation_depth, timeout_seconds, commit_requested = (
+                _validate_remote_job_metadata(job)
+            )
         except (TypeError, ValueError) as exc:
             err_msg = f"Invalid remote job: {_sanitize_error(str(exc))}"
             queue.complete_job(
@@ -687,7 +800,7 @@ def run_worker_once(
                 stderr=err_msg,
             )
             return {"job_id": job_id, "status": "failed", "error": err_msg}
-        if branch:
+        if branch and not commit_requested:
             branch_check = subprocess.run(
                 ["git", "-C", repo_path, "branch", "--show-current"],
                 capture_output=True,
@@ -754,6 +867,23 @@ def run_worker_once(
                 return {"job_id": job_id, "status": "failed", "error": err_msg}
             agent = "auto"
 
+        handoff_branch: Optional[str] = None
+        if commit_requested:
+            try:
+                handoff_branch = _prepare_git_handoff(repo_path, branch)
+            except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+                err_msg = _redact(str(exc))
+                queue.complete_job(
+                    job_id,
+                    status="failed",
+                    worker_id=worker_id,
+                    exit_code=-1,
+                    timed_out=False,
+                    result=err_msg,
+                    stderr=err_msg,
+                )
+                return {"job_id": job_id, "status": "failed", "error": err_msg}
+
         try:
             import asyncio
             from mindsync.dispatch import store
@@ -765,6 +895,7 @@ def run_worker_once(
                 "write": True,
                 "background": False,
                 "execution_mode": execution_mode,
+                "timeout_seconds": timeout_seconds,
             }
             if role:
                 run_kwargs["role"] = role
@@ -792,6 +923,10 @@ def run_worker_once(
                 else ""
             )
 
+            commit_sha: Optional[str] = None
+            if commit_requested and status == "done" and exit_code == 0 and not timed_out:
+                commit_sha, handoff_branch = _commit_git_handoff(repo_path, job_id)
+
             queue.complete_job(
                 job_id,
                 status=status,
@@ -801,8 +936,14 @@ def run_worker_once(
                 result=result_text,
                 stdout=_excerpt(stdout_text),
                 stderr=_excerpt(stderr_text),
+                commit_sha=commit_sha,
+                branch=handoff_branch,
             )
-            return {"job_id": job_id, "status": status, "result": result_text}
+            completed = {"job_id": job_id, "status": status, "result": result_text}
+            if commit_sha is not None:
+                completed["commit_sha"] = commit_sha
+                completed["branch"] = handoff_branch
+            return completed
 
         except Exception as exc:
             err_msg = f"Execution error: {_sanitize_error(str(exc))}"

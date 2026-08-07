@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 import mindsync.config as config_mod
+import mindsync.remote_queue as remote_queue
 import mindsync.storage as storage
 from mindsync.dispatch.adapters import user_config_path
 from mindsync.remote_queue import (
@@ -53,6 +54,30 @@ def local_repo(tmp_path):
         check=True,
     )
     return str(repo)
+
+
+def _configure_fake_dispatch(local_repo: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    base = Path(local_repo).parent
+    monkeypatch.setenv("AGENT_DISPATCH_HOME", str(base / "dispatch-home"))
+    monkeypatch.setenv("MINDSYNC_HOME", str(base / "mindsync-home"))
+    configured = config_mod.Settings()
+    monkeypatch.setattr(config_mod, "settings", configured)
+    monkeypatch.setattr(storage, "settings", configured)
+    configured.ensure_dirs()
+    config_path = user_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        json.dumps(
+            {"agents": [{"name": "fake", "bin": sys.executable, "input": "stdin", "runArgs": []}]}
+        ),
+        encoding="utf-8",
+    )
+
+
+def _git_output(repo: str, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", repo, *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
 
 
 def test_validate_repo_path(tmp_path):
@@ -194,6 +219,188 @@ def test_requested_branch_must_match_worker_checkout(local_remote_root, local_re
     assert result["status"] == "failed"
     assert "Branch mismatch" in result["error"]
     assert queue.get_status(job_id)["state"] == "failed"
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, 3600.01, float("inf"), float("nan")])
+def test_submit_rejects_timeout_outside_bounds(
+    local_remote_root, local_repo, timeout_seconds
+):
+    queue = RemoteQueue(remote_root=local_remote_root, ssh_host="")
+    with pytest.raises(
+        ValueError, match="timeout_seconds must be greater than 0 and at most 3600"
+    ):
+        queue.submit_job(
+            repo_path=local_repo,
+            prompt="bounded",
+            timeout_seconds=timeout_seconds,
+        )
+
+
+@pytest.mark.parametrize("timeout_seconds", [0.001, 3600])
+def test_submit_accepts_timeout_at_valid_bounds(local_remote_root, local_repo, timeout_seconds):
+    queue = RemoteQueue(remote_root=local_remote_root, ssh_host="")
+    job_id = queue.submit_job(
+        repo_path=local_repo,
+        prompt="bounded",
+        timeout_seconds=timeout_seconds,
+    )
+    assert queue.get_status(job_id)["job"]["timeout_seconds"] == timeout_seconds
+
+
+def test_timeout_reaches_agent_process(local_remote_root, local_repo, monkeypatch):
+    _configure_fake_dispatch(local_repo, monkeypatch)
+    seen_timeout_ms = []
+
+    async def fake_spawn(*args, **kwargs):
+        seen_timeout_ms.append(kwargs["timeout_ms"])
+        return {"stdout": "ok", "stderr": "", "exitCode": 0, "timedOut": False}
+
+    import mindsync.dispatch.runner as runner
+
+    monkeypatch.setattr(runner, "spawn_foreground", fake_spawn)
+    queue = RemoteQueue(remote_root=local_remote_root, ssh_host="")
+    queue.submit_job(
+        repo_path=local_repo,
+        prompt="use custom timeout",
+        agent="fake",
+        timeout_seconds=123.5,
+    )
+
+    result = run_worker_once(queue, "worker-timeout", [local_repo])
+
+    assert result and result["status"] == "done"
+    assert seen_timeout_ms == [123500]
+
+
+def test_commit_absent_leaves_git_history_and_index_untouched(
+    local_remote_root, local_repo, monkeypatch
+):
+    _configure_fake_dispatch(local_repo, monkeypatch)
+
+    async def fake_spawn(*args, **kwargs):
+        (Path(kwargs["cwd"]) / "agent.txt").write_text("agent change\n", encoding="utf-8")
+        return {"stdout": "ok", "stderr": "", "exitCode": 0, "timedOut": False}
+
+    import mindsync.dispatch.runner as runner
+
+    monkeypatch.setattr(runner, "spawn_foreground", fake_spawn)
+    monkeypatch.setattr(
+        remote_queue,
+        "_commit_git_handoff",
+        lambda *args: pytest.fail("commit handoff ran without --commit"),
+    )
+    queue = RemoteQueue(remote_root=local_remote_root, ssh_host="")
+    queue.submit_job(repo_path=local_repo, prompt="edit only", agent="fake")
+
+    result = run_worker_once(queue, "worker-no-commit", [local_repo])
+
+    assert result and result["status"] == "done"
+    assert _git_output(local_repo, "rev-list", "--count", "HEAD") == "1"
+    assert subprocess.run(
+        ["git", "-C", local_repo, "diff", "--cached", "--quiet"], check=False
+    ).returncode == 0
+
+
+def test_commit_handoff_creates_branch_and_records_sha(
+    local_remote_root, local_repo, monkeypatch
+):
+    _configure_fake_dispatch(local_repo, monkeypatch)
+
+    async def fake_spawn(*args, **kwargs):
+        (Path(kwargs["cwd"]) / "agent.txt").write_text("agent change\n", encoding="utf-8")
+        return {"stdout": "ok", "stderr": "", "exitCode": 0, "timedOut": False}
+
+    import mindsync.dispatch.runner as runner
+
+    monkeypatch.setattr(runner, "spawn_foreground", fake_spawn)
+    queue = RemoteQueue(remote_root=local_remote_root, ssh_host="")
+    job_id = queue.submit_job(
+        repo_path=local_repo,
+        prompt="edit and commit",
+        agent="fake",
+        branch="feat/worker-handoff",
+        commit=True,
+    )
+
+    result = run_worker_once(queue, "worker-commit", [local_repo])
+    status = queue.get_status(job_id)
+
+    assert result and result["status"] == "done"
+    assert _git_output(local_repo, "rev-list", "--count", "HEAD") == "2"
+    assert _git_output(local_repo, "branch", "--show-current") == "feat/worker-handoff"
+    assert status["job"]["commit_sha"] == _git_output(local_repo, "rev-parse", "HEAD")
+    assert status["job"]["branch"] == "feat/worker-handoff"
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "timed_out"),
+    [(1, False), (-1, True)],
+)
+def test_failed_or_timed_out_agent_is_never_committed(
+    local_remote_root, local_repo, monkeypatch, exit_code, timed_out
+):
+    _configure_fake_dispatch(local_repo, monkeypatch)
+
+    async def fake_spawn(*args, **kwargs):
+        (Path(kwargs["cwd"]) / "partial.txt").write_text("partial\n", encoding="utf-8")
+        return {
+            "stdout": "partial",
+            "stderr": "failed",
+            "exitCode": exit_code,
+            "timedOut": timed_out,
+        }
+
+    import mindsync.dispatch.runner as runner
+
+    monkeypatch.setattr(runner, "spawn_foreground", fake_spawn)
+    queue = RemoteQueue(remote_root=local_remote_root, ssh_host="")
+    job_id = queue.submit_job(
+        repo_path=local_repo,
+        prompt="do not commit failure",
+        agent="fake",
+        commit=True,
+    )
+
+    result = run_worker_once(queue, "worker-failure", [local_repo])
+    status = queue.get_status(job_id)
+
+    assert result and result["status"] == "failed"
+    assert _git_output(local_repo, "rev-list", "--count", "HEAD") == "1"
+    assert "commit_sha" not in status["job"]
+
+
+def test_commit_handoff_refuses_dirty_tree_before_agent_run(
+    local_remote_root, local_repo, monkeypatch
+):
+    _configure_fake_dispatch(local_repo, monkeypatch)
+    (Path(local_repo) / "leftover.txt").write_text("previous run\n", encoding="utf-8")
+    agent_ran = False
+
+    async def fake_spawn(*args, **kwargs):
+        nonlocal agent_ran
+        agent_ran = True
+        return {"stdout": "", "stderr": "", "exitCode": 0, "timedOut": False}
+
+    import mindsync.dispatch.runner as runner
+
+    monkeypatch.setattr(runner, "spawn_foreground", fake_spawn)
+    queue = RemoteQueue(remote_root=local_remote_root, ssh_host="")
+    job_id = queue.submit_job(
+        repo_path=local_repo,
+        prompt="refuse leftovers",
+        agent="fake",
+        branch="feat/unsafe",
+        commit=True,
+    )
+
+    result = run_worker_once(queue, "worker-dirty", [local_repo])
+    status = queue.get_status(job_id)
+
+    assert result and result["status"] == "failed"
+    assert "working tree must be clean" in status["job"]["result"]
+    assert agent_ran is False
+    assert _git_output(local_repo, "branch", "--show-current") != "feat/unsafe"
+    assert _git_output(local_repo, "rev-list", "--count", "HEAD") == "1"
 
 
 def test_ssh_transport_quotes_configured_root_and_keeps_files_private(monkeypatch):

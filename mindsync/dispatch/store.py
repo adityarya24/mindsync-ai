@@ -125,6 +125,7 @@ def create_job(
     warnings: list[str] | None = None,
     execution_mode: str = "worker",
     delegation_depth: int = 1,
+    timeout_ms: int | None = None,
 ) -> dict[str, Any]:
     if execution_mode not in {"worker", "orchestrator"}:
         raise ValueError("execution_mode must be exactly 'worker' or 'orchestrator'")
@@ -180,6 +181,7 @@ def create_job(
             "routing": routing,
             "executionMode": execution_mode,
             "delegationDepth": delegation_depth,
+            "timeoutMs": timeout_ms,
         }
         if routing:
             _register_active_auto_job(job_id)

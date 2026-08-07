@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import sys
@@ -226,6 +227,7 @@ async def run_task(
     required_capabilities: list[str] | None = None,
     exclude_agents: list[str] | None = None,
     execution_mode: str = "worker",
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     execution_mode = validate_execution_mode(execution_mode)
     delegation_depth = 0 if execution_mode == "orchestrator" else 1
@@ -235,6 +237,15 @@ async def run_task(
     # tool most of all — otherwise spend a whole agent run on an empty prompt.
     if not prompt or not prompt.strip():
         raise ValueError("prompt must not be empty.")
+    if timeout_seconds is not None:
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+            or timeout_seconds > 3600
+        ):
+            raise ValueError("timeout_seconds must be greater than 0 and at most 3600.")
 
     routing = None
     auto_max_parallel = None
@@ -301,6 +312,7 @@ async def run_task(
         routing=routing,
         execution_mode=execution_mode,
         delegation_depth=delegation_depth,
+        timeout_ms=int(timeout_seconds * 1000) if timeout_seconds is not None else None,
     )
 
     if worktree:
@@ -454,7 +466,7 @@ async def supervise_job(
         bin_path,
         inv["args"],
         cwd=meta.get("cwd") or os.getcwd(),
-        timeout_ms=int(inv["timeoutMs"]),
+        timeout_ms=int(meta.get("timeoutMs") or inv["timeoutMs"]),
         input_text=inv["input"],
         env=child_env,
     )
