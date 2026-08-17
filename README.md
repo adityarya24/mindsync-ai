@@ -335,6 +335,25 @@ mindsync submit --repo /path/to/repo --prompt "plan and implement feature" \
 Or use a configured role instead: `--execution-mode orchestrator --role <configured-role>`.
 Orchestrator submissions without an explicit `--agent` or `--role` are rejected.
 
+Two further submit options control how long a job may run and what the worker
+does with the result:
+
+```bash
+mindsync submit --repo /path/to/repo --prompt "implement feature" --agent codex \
+  --timeout-seconds 1800 --commit
+```
+
+`--timeout-seconds` bounds a single agent run. It accepts `0 < t <= 3600` and
+defaults to `900`; the value is carried through to the worker, so a job that
+overruns is stopped on the machine that is executing it.
+
+`--commit` is opt-in. After a **successful** run only, the worker stages and
+commits its checkout and records the resulting SHA in the job result. It never
+pushes — the worker holds no non-interactive git credentials — it refuses a
+tree that was already dirty before the run, and it never commits a run that
+failed or timed out. Without the flag the worker leaves the checkout untouched
+for you to review.
+
 An orchestrator job is accepted only when the local worker owner also enables
 the boundary with `MINDSYNC_WORKER_ALLOW_ORCHESTRATOR=true` (or the one-shot
 `mindsync worker --once --allow-orchestrator` / loop `--allow-orchestrator`
