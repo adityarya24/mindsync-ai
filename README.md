@@ -216,7 +216,18 @@ MindSync exposes 24 tools.
 | `memory_bootstrap` | Retrieve bounded relevant context for a project (Phase 1) |
 | `session_end` | Mark a session completed or failed (Phase 1) |
 
-Note: Automatic per-CLI memory hooks/adapters are planned for Phase 2. Currently, agents must call the `session_*` and `memory_*` tools explicitly to persist and bootstrap context. Session data is scoped to the specified project key and stored locally. As a privacy limitation, checkpoint text is treated as untrusted and undergoes conservative secret redaction (for common tokens/passwords/private keys) before persistence, though perfection is not guaranteed.
+Note: Phase 2 adds optional automatic session memory on dispatch via
+`--memory-project <key>` (CLI) or `memory_project` (`delegate_task` / `run_task`).
+When omitted, dispatch behavior is unchanged. When enabled, MindSync bootstraps bounded
+project context before spawn, prepends a delimited compact prefix to the worker prompt,
+starts a local session, and finalizes once on every terminal job outcome. Raw user
+prompts, injected prompts, and full stdout/stderr are never written to session memory.
+Memory failures surface as job warnings and do not fail otherwise successful jobs.
+Job metadata includes `memorySessionId`, `memoryProject`, `memoryFinalized`, and
+`memoryFinalizeState`. Explicit `session_*` / `memory_*` MCP tools remain available.
+Session data is scoped to the specified project key and stored locally. Checkpoint text
+is treated as untrusted and undergoes conservative secret redaction (for common
+tokens/passwords/private keys) before persistence, though perfection is not guaranteed.
 
 ### Event bus
 
@@ -264,6 +275,8 @@ mindsync-dispatch run auto "implement and test the fix" \
   --capability coding --capability testing
 mindsync-dispatch run codex "summarize README" \
   --worktree --effort high --check "pytest -q"
+mindsync-dispatch run codex "continue the refactor" \
+  --memory-project my-repo-key
 mindsync-dispatch status
 mindsync-dispatch review <job-id>
 mindsync-dispatch result <job-id>
@@ -433,7 +446,13 @@ MindSync provides local, structured session memory via SQLite (`session_memory.d
   and private-key patterns. This is best-effort protection, not a substitute for keeping
   credentials out of checkpoints. Lists and objects remain structured after redaction.
 - **Lifecycle**: Phase 1 requires explicit `session_start`, `memory_checkpoint`,
-  `memory_bootstrap`, and `session_end` calls. Automatic per-CLI adapters are Phase 2.
+  `memory_bootstrap`, and `session_end` calls. Phase 2 adds optional automatic
+  dispatch lifecycle via `memory_project` / `--memory-project` on the shared runner
+  path (no per-vendor adapter hooks).
+- **Coverage limits**: Automatic dispatch memory records compact job status,
+  bounded changed-file paths, and check pass/fail summaries—not agent transcripts,
+  raw prompts, or check output tails. Use explicit `memory_checkpoint` when agents
+  need richer handoff detail.
 
 ## Local data
 

@@ -24,6 +24,11 @@ from mindsync.dispatch.proc import (
     spawn_foreground,
 )
 from mindsync.dispatch import store
+from mindsync.dispatch.memory_lifecycle import (
+    append_warnings,
+    finalize_dispatch_memory,
+    prepare_dispatch_memory,
+)
 from mindsync.dispatch.review import diff_summary, run_checks
 from mindsync.dispatch.routing import select_agent
 from mindsync.orchestration import (
@@ -211,6 +216,19 @@ def _publish_job_event(event_type: str, meta: dict[str, Any], agent_name: str = 
         pass
 
 
+def _update_job_prompt(job_id: str, prompt: str) -> None:
+    paths = store.job_paths(job_id)
+    from mindsync.storage import atomic_private_write
+
+    atomic_private_write(paths["prompt"], prompt)
+    store.update_job(job_id, {"prompt": prompt})
+
+
+def _finalize_memory_if_needed(job_id: str) -> None:
+    warnings = finalize_dispatch_memory(job_id)
+    append_warnings(job_id, warnings)
+
+
 async def run_task(
     *,
     agent: str | None = None,
@@ -228,6 +246,7 @@ async def run_task(
     exclude_agents: list[str] | None = None,
     execution_mode: str = "worker",
     timeout_seconds: float | None = None,
+    memory_project: str | None = None,
 ) -> dict[str, Any]:
     execution_mode = validate_execution_mode(execution_mode)
     delegation_depth = 0 if execution_mode == "orchestrator" else 1
@@ -295,12 +314,19 @@ async def run_task(
     assert_arg_mode_spawn_safe(adapter, bin_path)
     effective_effort, effort_warning = resolve_effort(adapter, eff_effort)
 
+    worktree_suffix = _WORKTREE_PROMPT_NOTE if worktree else ""
+    job_prompt = (
+        prompt
+        if memory_project is not None
+        else prompt + worktree_suffix
+    )
+
     meta = _create_job_with_auto_limit(
         max_parallel=auto_max_parallel,
         agent=eff_agent,
         role=job_role,
         # Stored as sent, so prompt.txt always shows what the agent actually received.
-        prompt=prompt + _WORKTREE_PROMPT_NOTE if worktree else prompt,
+        prompt=job_prompt,
         cwd=workdir,
         model=eff_model,
         effort=eff_effort,
@@ -326,6 +352,8 @@ async def run_task(
                 meta["id"],
                 {"status": "failed", "exitCode": -1, "endedAt": store.utc_now()},
             )
+            if memory_project is not None:
+                _finalize_memory_if_needed(meta["id"])
             raise
         meta = store.update_job(meta["id"], {
             "cwd": wt_info["path"],
@@ -343,6 +371,22 @@ async def run_task(
         base = head_commit(workdir)
         if base:
             meta = store.update_job(meta["id"], {"baseCommit": base})
+
+    if memory_project is not None:
+        prefix, memory_warnings = prepare_dispatch_memory(
+            meta["id"],
+            memory_project,
+            agent=eff_agent,
+            workspace=meta.get("cwd"),
+            branch=meta.get("branch"),
+        )
+        append_warnings(meta["id"], memory_warnings)
+        agent_prompt = prompt
+        if prefix:
+            agent_prompt = prefix + agent_prompt
+        agent_prompt += worktree_suffix
+        _update_job_prompt(meta["id"], agent_prompt)
+        meta = store.get_job(meta["id"]) or meta
 
     if background:
         paths = store.job_paths(meta["id"])
@@ -412,6 +456,7 @@ async def supervise_job(
             },
             expected_status="running",
         )
+        _finalize_memory_if_needed(job_id)
         _publish_job_event("job.failed", failed, agent_name=publisher_agent)
         raise ValueError(f"Invalid dispatch execution metadata: {exc}") from exc
 
@@ -427,6 +472,7 @@ async def supervise_job(
                 "timedOut": False,
             },
         )
+        _finalize_memory_if_needed(job_id)
         _publish_job_event("job.failed", failed, agent_name=publisher_agent)
         raise AgentNotInstalledError(adapter)
     assert_arg_mode_spawn_safe(adapter, bin_path)
@@ -523,6 +569,7 @@ async def supervise_job(
         except Exception:
             pass
 
+    _finalize_memory_if_needed(job_id)
     _cleanup_worktree(job_id)
     final = store.get_job(job_id)
     final_status = final.get("status") if final else None
@@ -552,6 +599,7 @@ def cancel_job(job_id: str) -> dict[str, Any]:
         expected_status={"pending", "running"},
     )
     if cancelled.get("status") == "cancelled":
+        _finalize_memory_if_needed(job_id)
         _publish_job_event(
             "job.cancelled",
             cancelled,
