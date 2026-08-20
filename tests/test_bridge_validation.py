@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 from pathlib import Path
 from unittest.mock import Mock
@@ -12,6 +14,22 @@ from mindsync.bridge import (
     write_fact_remote,
 )
 from mindsync.config import Settings
+
+
+def test_run_does_not_inherit_long_lived_mcp_stdin(monkeypatch):
+    import mindsync.bridge as bridge
+
+    seen = {}
+
+    def mock_run(args, **kwargs):
+        seen.update(kwargs)
+        return Mock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(bridge.subprocess, "run", mock_run)
+
+    bridge._run(["ssh", "example-host", "echo", "1"], check=False)
+
+    assert seen["stdin"] is subprocess.DEVNULL
 
 
 def test_validate_accepts_safe():
@@ -213,7 +231,7 @@ def test_pull_compiled_truth_mocked(monkeypatch, tmp_path):
     monkeypatch.setattr(bridge, "settings", s)
     
     called_args = []
-    def mock_run(args, timeout=None, check=False):
+    def mock_run(args, stdin=None, timeout=None, check=False):
         called_args.append(args)
         dest_dir = Path(args[-1])
         staged_file = dest_dir / "valid-entity.md"
