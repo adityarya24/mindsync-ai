@@ -164,6 +164,7 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=timeout,
