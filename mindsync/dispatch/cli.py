@@ -30,6 +30,7 @@ def parse_run_args(argv: list[str]) -> dict:
         "checks": [],
         "required_capabilities": [],
         "exclude_agents": [],
+        "memory_project": None,
     }
     rest: list[str] = []
     i = 0
@@ -38,7 +39,8 @@ def parse_run_args(argv: list[str]) -> dict:
         '   or: dispatch run --role <name> "task..." [options]   (no agent: the role picks one)\n'
         "options: [--background] [--write] [--model <m>] [--effort <level>] "
         "[--worktree] [--cwd <path>] [--check <command>]... "
-        "[--capability <name>]... [--exclude-agent <name>]..."
+        "[--capability <name>]... [--exclude-agent <name>]... "
+        "[--memory-project <key>]"
     )
     while i < len(argv):
         a = argv[i]
@@ -66,6 +68,9 @@ def parse_run_args(argv: list[str]) -> dict:
             i += 1
             if i < len(argv):
                 flags["exclude_agents"].append(argv[i])
+        elif a == "--memory-project":
+            i += 1
+            flags["memory_project"] = argv[i] if i < len(argv) else None
         elif a == "--write":
             flags["write"] = True
         elif a == "--background":
