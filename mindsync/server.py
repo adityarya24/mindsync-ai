@@ -47,15 +47,12 @@ from mindsync.dispatch.runner import (
     job_result as dispatch_job_result,
     run_task as dispatch_run_task,
 )
-from mindsync.storage import (
-    enqueue_fact,
-    locked_state,
-    log_audit,
-    read_compiled_truth,
-    read_queue,
-    claim_offline_queue,
-    requeue_failed_facts,
-    recover_orphan_spools,
+from mindsync.memory import (
+    memory_bootstrap as memory_memory_bootstrap,
+    memory_checkpoint as memory_memory_checkpoint,
+    redact_memory_text,
+    session_end as memory_session_end,
+    session_start as memory_session_start,
 )
 from mindsync.orchestration import (
     caller_cli_from_context,
@@ -64,6 +61,16 @@ from mindsync.orchestration import (
     is_worker_process,
     policy_snapshot,
     server_instructions,
+)
+from mindsync.storage import (
+    claim_offline_queue,
+    enqueue_fact,
+    locked_state,
+    log_audit,
+    read_compiled_truth,
+    read_queue,
+    recover_orphan_spools,
+    requeue_failed_facts,
 )
 
 mcp = FastMCP("MindSync", instructions=server_instructions())
@@ -955,6 +962,127 @@ def health(agent_name: str = "system") -> dict[str, Any]:
         "truth_files": list(read_compiled_truth().keys()),
         "orchestration": policy_snapshot(),
     }
+
+
+@mcp.tool()
+def session_start(
+    agent_name: str,
+    project_key: str,
+    workspace: Optional[str] = None,
+    branch: Optional[str] = None,
+    goal: Optional[str] = None,
+) -> dict[str, Any]:
+    """Start a tracked local-memory session and return its session ID."""
+    try:
+        validated_agent = validate_agent(agent_name)
+        session_id = memory_session_start(
+            project_key=project_key,
+            agent=validated_agent,
+            workspace=workspace,
+            branch=branch,
+            goal=goal,
+        )
+        log_audit(validated_agent, "session_start", f"project={project_key} session={session_id}")
+        return {"ok": True, "session_id": session_id}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+def memory_checkpoint(
+    agent_name: str,
+    session_id: str,
+    status: Optional[str] = None,
+    decisions: Optional[Any] = None,
+    files_changed: Optional[Any] = None,
+    tests: Optional[Any] = None,
+    pending: Optional[Any] = None,
+    blockers: Optional[Any] = None,
+    durable_facts: Optional[Any] = None,
+) -> dict[str, Any]:
+    """Save validated, best-effort-redacted structured session memory."""
+    try:
+        validated_agent = validate_agent(agent_name)
+        safe_status = redact_memory_text(status) if status is not None else None
+        checkpoint_id = memory_memory_checkpoint(
+            session_id=session_id,
+            status=safe_status,
+            decisions=decisions,
+            files_changed=files_changed,
+            tests=tests,
+            pending=pending,
+            blockers=blockers,
+            durable_facts=durable_facts,
+        )
+        log_audit(
+            validated_agent,
+            "memory_checkpoint",
+            f"session={session_id} checkpoint={checkpoint_id} status={safe_status}",
+        )
+        warnings: list[str] = []
+        try:
+            if durable_facts or safe_status:
+                bus_publish_event(
+                    Event(
+                        agent_name=validated_agent,
+                        event_type=EventType.MEMORY_UPDATED,
+                        payload={
+                            "session_id": session_id,
+                            "checkpoint_id": checkpoint_id,
+                            "status": safe_status,
+                            "has_durable_facts": bool(durable_facts),
+                        },
+                    )
+                )
+        except Exception as exc:
+            warning = f"memory.updated event was not published: {exc}"
+            warnings.append(warning)
+            log_audit(validated_agent, "memory_checkpoint", warning)
+
+        return {"ok": True, "checkpoint_id": checkpoint_id, "warnings": warnings}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+def session_end(
+    agent_name: str,
+    session_id: str,
+    status: str = "completed",
+) -> dict[str, Any]:
+    """Mark a memory session as completed or failed."""
+    try:
+        validated_agent = validate_agent(agent_name)
+        safe_status = redact_memory_text(status)
+        memory_session_end(session_id=session_id, status=safe_status)
+        log_audit(
+            validated_agent,
+            "session_end",
+            f"session={session_id} status={safe_status}",
+        )
+        return {"ok": True}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+def memory_bootstrap(
+    agent_name: str,
+    project_key: str,
+    budget_chars: int = 20_000,
+) -> dict[str, Any]:
+    """Retrieve bounded project context, prioritizing open and recent sessions."""
+    try:
+        validated_agent = validate_agent(agent_name)
+        data = memory_memory_bootstrap(project_key=project_key, budget_chars=budget_chars)
+        log_audit(
+            validated_agent,
+            "memory_bootstrap",
+            f"project={project_key} sessions={len(data.get('bootstraps', []))}",
+        )
+        return {"ok": True, "data": data}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
 
 
 def main() -> None:
