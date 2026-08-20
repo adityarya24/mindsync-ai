@@ -645,6 +645,7 @@ async def delegate_task(
     checks: list[str] | None = None,
     required_capabilities: list[str] | None = None,
     exclude_agents: list[str] | None = None,
+    memory_project: str | None = None,
     agent_name: str = "default_agent",
     ctx: Context | None = None,
 ) -> str:
@@ -657,6 +658,8 @@ async def delegate_task(
     If worktree is True, the agent runs in an isolated git worktree branching from cwd.
     checks are shell commands run after the agent finishes (for example a test command);
     read their outcome with job_review before spending anything on the job's output.
+    Optional memory_project enables automatic local session-memory bootstrap and
+    finalization for the given project key without storing raw prompts in memory.
     """
     settings.ensure_dirs()
     if is_worker_process():
@@ -690,6 +693,7 @@ async def delegate_task(
             publisher_agent=agent_name,
             required_capabilities=required_capabilities,
             exclude_agents=exclusions,
+            memory_project=memory_project,
         )
     except AutoDelegationSuggestion as exc:
         log_audit(agent_name, "delegate_task", f"suggested={exc.decision['agent']}")
