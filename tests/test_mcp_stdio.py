@@ -25,6 +25,10 @@ EXPECTED_TOOLS = {
     "sync_offline_facts",
     "pull_truth",
     "health",
+    "session_start",
+    "memory_checkpoint",
+    "memory_bootstrap",
+    "session_end",
     # Event bus
     "publish_event",
     "poll_events",

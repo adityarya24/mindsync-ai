@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import mindsync.config as config_mod
+import mindsync.memory as memory_mod
 import mindsync.server as server
 import mindsync.storage as storage
 from mindsync.bus import (
@@ -23,6 +24,7 @@ def _isolate(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("MINDSYNC_HOME", str(home))
     config_mod.settings = config_mod.Settings()
     storage.settings = config_mod.settings
+    memory_mod.settings = config_mod.settings
     server.settings = config_mod.settings
     config_mod.settings.ensure_dirs()
     return config_mod.settings
@@ -208,3 +210,30 @@ def test_server_auto_emit_memory_updated(tmp_path, monkeypatch):
     assert events[0].payload["entity"] == "entity_x"
     assert events[0].payload["attribute"] == "attr_y"
     assert events[0].payload["text"] == "some durable fact text"
+
+
+def test_session_memory_status_is_redacted_before_audit_and_event(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    audit_messages: list[str] = []
+    monkeypatch.setattr(
+        server,
+        "log_audit",
+        lambda _agent, _action, message: audit_messages.append(message),
+    )
+
+    started = server.session_start("planner", "project-a")
+    secret = "token=abcdefghijklmnopqrstuvwxyz012345"
+    result = server.memory_checkpoint(
+        "planner", started["session_id"], status=secret
+    )
+
+    assert result["ok"] is True
+    events = bus_poll_events(since_seq=0)
+    assert events[-1].payload["status"] == "token: [REDACTED]"
+    assert all("abcdefghijklmnopqrstuvwxyz012345" not in item for item in audit_messages)
+    bootstrap = server.memory_bootstrap("planner", "project-a")
+    assert bootstrap["data"]["bootstraps"][0]["session_status"] == "token: [REDACTED]"
+
+    ended = server.session_end("planner", started["session_id"], status=secret)
+    assert ended["ok"] is True
+    assert all("abcdefghijklmnopqrstuvwxyz012345" not in item for item in audit_messages)

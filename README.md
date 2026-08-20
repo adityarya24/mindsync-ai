@@ -199,7 +199,7 @@ A typical session uses:
 
 ## MCP tools
 
-MindSync exposes 20 tools.
+MindSync exposes 24 tools.
 
 ### Memory and focus
 
@@ -211,6 +211,12 @@ MindSync exposes 20 tools.
 | `sync_offline_facts` | Flush queued facts and refresh compiled truth |
 | `pull_truth` | Safely pull compiled-truth Markdown |
 | `health` | Inspect paths, queue depth, policy, and remote reachability |
+| `session_start` | Start a tracked local memory session (Phase 1) |
+| `memory_checkpoint` | Save structured session state locally (Phase 1) |
+| `memory_bootstrap` | Retrieve bounded relevant context for a project (Phase 1) |
+| `session_end` | Mark a session completed or failed (Phase 1) |
+
+Note: Automatic per-CLI memory hooks/adapters are planned for Phase 2. Currently, agents must call the `session_*` and `memory_*` tools explicitly to persist and bootstrap context. Session data is scoped to the specified project key and stored locally. As a privacy limitation, checkpoint text is treated as untrusted and undergoes conservative secret redaction (for common tokens/passwords/private keys) before persistence, though perfection is not guaranteed.
 
 ### Event bus
 
@@ -416,6 +422,19 @@ mindsync worker --once
 | `MINDSYNC_WORKER_ALLOWED_ROOTS` | empty | Semicolon- or comma-separated allow-list of repository roots the worker may execute in |
 | `MINDSYNC_WORKER_ALLOW_ORCHESTRATOR` | `false` | Local opt-in required before an explicit remote orchestrator job can run |
 
+## Session Memory (Phase 1)
+
+MindSync provides local, structured session memory via SQLite (`session_memory.db`).
+
+- **Budget semantics**: `memory_bootstrap` bounds its serialized data envelope to
+  `budget_chars`. It prioritizes open sessions and recent checkpoints, dropping records
+  that do not fit.
+- **Redaction**: Memory writes apply conservative masking for common token, password,
+  and private-key patterns. This is best-effort protection, not a substitute for keeping
+  credentials out of checkpoints. Lists and objects remain structured after redaction.
+- **Lifecycle**: Phase 1 requires explicit `session_start`, `memory_checkpoint`,
+  `memory_bootstrap`, and `session_end` calls. Automatic per-CLI adapters are Phase 2.
+
 ## Local data
 
 By default, state is stored under `~/.mindsync`:
@@ -429,6 +448,7 @@ By default, state is stored under `~/.mindsync`:
 ├── events.jsonl.seq       monotonic sequence checkpoint
 ├── subscriptions.json     event subscriptions
 ├── orchestration.json     automatic delegation policy
+├── session_memory.db      local SQLite session memory (Phase 1)
 ├── compiled-truth/        pulled durable summaries
 └── .locks/                kernel-managed lock files
 ```
