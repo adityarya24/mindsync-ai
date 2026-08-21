@@ -16,6 +16,10 @@ from mindsync.memory import (
     _get_db,
     memory_bootstrap,
     memory_checkpoint,
+    memory_list,
+    memory_prune,
+    memory_show,
+    memory_stats,
     session_end,
     session_start,
 )
@@ -289,3 +293,219 @@ def test_database_permissions_are_restrictive(isolated_memory: Path):
     session_start(project_key="permissions", agent="agent")
     db_path = isolated_memory / "session_memory.db"
     assert db_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_memory_stats_reports_totals(isolated_memory: Path):
+    session_start(project_key="stats-project", agent="agent-a")
+    ended = session_start(project_key="stats-project", agent="agent-b")
+    memory_checkpoint(ended, decisions=["done"])
+    session_end(ended)
+    other = session_start(project_key="stats-other", agent="agent-c")
+    memory_checkpoint(other, durable_facts=["fact"])
+    session_end(other)
+
+    report = memory_stats()
+    assert report["total_sessions"] == 3
+    assert report["active_sessions"] == 1
+    assert report["total_checkpoints"] == 2
+    projects = {item["project_key"]: item for item in report["projects"]}
+    assert projects["stats-project"]["sessions"] == 2
+    assert projects["stats-project"]["active_sessions"] == 1
+    assert projects["stats-other"]["sessions"] == 1
+    assert report["db_size_bytes"] > 0
+    assert report["db_file"].endswith("session_memory.db")
+
+
+def test_memory_list_filters_by_project_and_limit():
+    first = session_start(project_key="list-a", agent="agent")
+    second = session_start(project_key="list-b", agent="agent")
+    third = session_start(project_key="list-a", agent="agent")
+
+    all_entries = memory_list()
+    assert [entry["session_id"] for entry in all_entries] == [third, second, first]
+
+    filtered = memory_list(project_key="list-a")
+    assert [entry["session_id"] for entry in filtered] == [third, first]
+    assert filtered[0]["checkpoint_count"] == 0
+
+    limited = memory_list(limit=1)
+    assert [entry["session_id"] for entry in limited] == [third]
+
+
+def test_memory_list_rejects_bad_input():
+    with pytest.raises(ValueError, match="limit"):
+        memory_list(limit=0)
+    with pytest.raises(ValueError, match="limit"):
+        memory_list(limit=10_000)
+    with pytest.raises(ValueError, match="project_key"):
+        memory_list(project_key="")
+
+
+def test_memory_show_returns_all_checkpoints():
+    session_id = session_start(
+        project_key="show-project", agent="agent", branch="main"
+    )
+    memory_checkpoint(session_id, decisions=["first"], blockers=["blocked"])
+    memory_checkpoint(session_id, status="working", pending=["next"])
+    session_end(session_id, status="completed")
+
+    shown = memory_show(session_id)
+    assert shown["session_id"] == session_id
+    assert shown["project_key"] == "show-project"
+    assert shown["branch"] == "main"
+    assert shown["session_status"] == "completed"
+    assert len(shown["checkpoints"]) == 2
+    assert shown["checkpoints"][0]["decisions"] == ["first"]
+    assert shown["checkpoints"][0]["blockers"] == ["blocked"]
+    assert shown["checkpoints"][1]["pending"] == ["next"]
+    assert "decisions" not in shown["checkpoints"][1]
+
+
+def test_memory_show_unknown_session():
+    with pytest.raises(ValueError, match="Unknown session"):
+        memory_show("0" * 32)
+
+
+def test_bootstrap_prioritizes_durable_and_unresolved_sessions():
+    routine_old = session_start(project_key="prio", agent="agent")
+    memory_checkpoint(routine_old, decisions=["routine"])
+    session_end(routine_old)
+
+    important = session_start(project_key="prio", agent="agent")
+    memory_checkpoint(important, durable_facts=["must survive"])
+    session_end(important)
+
+    blocked = session_start(project_key="prio", agent="agent")
+    memory_checkpoint(blocked, blockers=["waiting on review"])
+
+    result = memory_bootstrap("prio", budget_chars=2000)
+    order = [entry["session_id"] for entry in result["bootstraps"]]
+    # Active blocked session first (active class), then the durable-fact
+    # session must beat the older routine one even though it is newer.
+    assert order[0] == blocked
+    assert order.index(important) < order.index(routine_old)
+
+
+def test_bootstrap_includes_earlier_important_checkpoints():
+    session_id = session_start(project_key="earlier", agent="agent")
+    failed_id = memory_checkpoint(session_id, status="failed", decisions=["try A"])
+    memory_checkpoint(session_id, status="done", decisions=["try B worked"])
+    session_end(session_id)
+
+    result = memory_bootstrap("earlier")
+    entry = result["bootstraps"][0]
+    assert entry["decisions"] == ["try B worked"]
+    earlier = entry["earlier_checkpoints"]
+    assert len(earlier) == 1
+    assert earlier[0]["status"] == "failed"
+    assert earlier[0]["decisions"] == ["try A"]
+    assert failed_id  # checkpoint was created
+
+
+def test_bootstrap_session_scan_is_bounded():
+    for _ in range(202):
+        session_id = session_start(project_key="bounded", agent="agent")
+        session_end(session_id)
+
+    result = memory_bootstrap("bounded", budget_chars=200_000)
+    assert len(result["bootstraps"]) == 200
+
+
+def test_prune_dry_run_does_not_delete():
+    keep = session_start(project_key="prune-dry", agent="agent")
+    memory_checkpoint(keep, decisions=["keep me"])
+    session_end(keep)
+
+    result = memory_prune(project_key="prune-dry", dry_run=True)
+    assert result["dry_run"] is True
+    assert result["candidates"] == 1
+    assert result["deleted"] is None
+    assert result["session_ids"] == [keep]
+    stats = memory_stats()
+    assert stats["total_sessions"] == 1
+
+
+def test_prune_deletes_ended_sessions_and_their_checkpoints():
+    target = session_start(project_key="prune-run", agent="agent")
+    memory_checkpoint(target, decisions=["old work"])
+    session_end(target)
+    active = session_start(project_key="prune-run", agent="agent")
+
+    result = memory_prune(project_key="prune-run", dry_run=False)
+    assert result["dry_run"] is False
+    assert result["candidates"] == 1
+    assert result["deleted"] == 1
+
+    db = _get_db()
+    remaining = db.execute(
+        "SELECT session_id FROM sessions WHERE project_key = 'prune-run'"
+    ).fetchall()
+    assert [row["session_id"] for row in remaining] == [active]
+    orphan_checkpoints = db.execute(
+        "SELECT COUNT(*) FROM checkpoints WHERE session_id = ?", (target,)
+    ).fetchone()[0]
+    assert orphan_checkpoints == 0
+
+
+def test_prune_protects_active_and_durable_fact_sessions():
+    durable = session_start(project_key="prune-safe", agent="agent")
+    memory_checkpoint(durable, durable_facts=["permanent fact"])
+    session_end(durable)
+    plain = session_start(project_key="prune-safe", agent="agent")
+    session_end(plain)
+    active = session_start(project_key="prune-safe", agent="agent")
+
+    result = memory_prune(project_key="prune-safe", dry_run=False)
+    assert result["protected_durable"] == 1
+    assert result["deleted"] == 1
+    db = _get_db()
+    remaining = {
+        row["session_id"]
+        for row in db.execute(
+            "SELECT session_id FROM sessions WHERE project_key = 'prune-safe'"
+        ).fetchall()
+    }
+    assert remaining == {durable, active}
+
+
+def test_prune_keep_last_preserves_recent_sessions_per_project():
+    old_one = session_start(project_key="prune-keep", agent="agent")
+    session_end(old_one)
+    old_two = session_start(project_key="prune-keep", agent="agent")
+    session_end(old_two)
+    recent = session_start(project_key="prune-keep", agent="agent")
+    session_end(recent)
+
+    result = memory_prune(project_key="prune-keep", keep_last=2, dry_run=False)
+    assert result["kept_by_keep_last"] == 2
+    assert result["deleted"] == 1
+    db = _get_db()
+    remaining = {
+        row["session_id"]
+        for row in db.execute(
+            "SELECT session_id FROM sessions WHERE project_key = 'prune-keep'"
+        ).fetchall()
+    }
+    assert remaining == {recent, old_two}
+
+
+def test_prune_older_than_days_only_touches_old_sessions():
+    fresh = session_start(project_key="prune-age", agent="agent")
+    session_end(fresh)
+    stale = session_start(project_key="prune-age", agent="agent")
+    session_end(stale)
+    _get_db().execute(
+        "UPDATE sessions SET ended_at = ? WHERE session_id = ?",
+        ("2026-01-01T00:00:00+00:00", stale),
+    )
+
+    result = memory_prune(project_key="prune-age", older_than_days=30, dry_run=True)
+    assert result["candidates"] == 1
+    assert result["session_ids"] == [stale]
+
+
+def test_prune_rejects_bad_input():
+    with pytest.raises(ValueError, match="older_than_days"):
+        memory_prune(older_than_days=0)
+    with pytest.raises(ValueError, match="keep_last"):
+        memory_prune(keep_last=-1)

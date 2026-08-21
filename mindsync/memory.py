@@ -8,7 +8,7 @@ import re
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,10 @@ _BRANCH_MAX = 1024
 _TEXT_MAX = 100_000
 _STATUS_MAX = 128
 _MAX_BOOTSTRAP_BUDGET = 200_000
+_MAX_BOOTSTRAP_SESSIONS = 200
+_MAX_IMPORTANT_CHECKPOINTS = 3
+_MAX_LIST_LIMIT = 500
+_MAX_PRUNE_SAMPLE = 100
 _SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
 _SENSITIVE_KEYS = {
     "apikey",
@@ -387,6 +391,15 @@ def session_end(session_id: str, status: str = "completed") -> None:
 
 
 def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, Any]:
+    """Return bounded cross-session context, most important first.
+
+    Priority order: sessions whose latest checkpoint carries durable facts or
+    unresolved blockers/pending items come before routine history; within each
+    class the most recent session wins. Candidate sessions are capped at
+    ``_MAX_BOOTSTRAP_SESSIONS`` so retrieval never scans unbounded history.
+    Each included session may also carry up to ``_MAX_IMPORTANT_CHECKPOINTS``
+    earlier failed/blocked checkpoints as ``earlier_checkpoints``.
+    """
     project_key = _validate_identifier(
         project_key, "project_key", _PROJECT_KEY_MAX
     )
@@ -401,27 +414,26 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
         raise ValueError("budget_chars is too small for the response envelope")
 
     rows = _get_db().execute(
-        """
+        f"""
         SELECT s.session_id, s.agent, s.workspace, s.branch, s.goal,
                s.status AS session_status, s.started_at, s.ended_at,
-               c.timestamp, c.decisions, c.files_changed, c.tests,
-               c.pending, c.blockers, c.durable_facts
+               c.checkpoint_id, c.timestamp, c.decisions, c.files_changed,
+               c.tests, c.pending, c.blockers, c.durable_facts
         FROM sessions AS s
-        LEFT JOIN checkpoints AS c ON c.rowid = (
-            SELECT c2.rowid
-            FROM checkpoints AS c2
-            WHERE c2.session_id = s.session_id
-            ORDER BY c2.timestamp DESC, c2.rowid DESC
-            LIMIT 1
-        )
+        {_latest_checkpoint_join()}
         WHERE s.project_key = ?
         ORDER BY
             CASE WHEN s.ended_at IS NULL THEN 0 ELSE 1 END,
             COALESCE(c.timestamp, s.started_at) DESC,
-            s.started_at DESC
+            s.started_at DESC,
+            s.rowid DESC
+        LIMIT ?
         """,
-        (project_key,),
+        (project_key, _MAX_BOOTSTRAP_SESSIONS),
     )
+    latest_checkpoint_ids: dict[str, str | None] = {}
+    important: list[dict[str, Any]] = []
+    routine: list[dict[str, Any]] = []
     for row in rows:
         entry = {
             "session_id": row["session_id"],
@@ -441,6 +453,22 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
             "durable_facts": _decode_structured(row["durable_facts"]),
         }
         entry = {key: value for key, value in entry.items() if value is not None}
+        latest_checkpoint_ids[row["session_id"]] = row["checkpoint_id"]
+        has_unresolved = bool(entry.get("blockers")) or bool(entry.get("pending"))
+        if entry.get("durable_facts") or has_unresolved:
+            important.append(entry)
+        else:
+            routine.append(entry)
+
+    db = _get_db()
+    for entry in (*important, *routine):
+        earlier = _earlier_important_checkpoints(
+            db,
+            entry["session_id"],
+            latest_checkpoint_ids.get(entry["session_id"]),
+        )
+        if earlier:
+            entry["earlier_checkpoints"] = earlier
         candidate = {
             "project_key": project_key,
             "bootstraps": [*result["bootstraps"], entry],
@@ -448,3 +476,284 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
         if len(json.dumps(candidate, ensure_ascii=False)) <= budget_chars:
             result = candidate
     return result
+
+
+def _earlier_important_checkpoints(
+    db: sqlite3.Connection,
+    session_id: str,
+    latest_checkpoint_id: str | None,
+) -> list[dict[str, Any]]:
+    """Fetch up to _MAX_IMPORTANT_CHECKPOINTS older failed/blocked checkpoints."""
+    rows = db.execute(
+        """
+        SELECT timestamp, status, decisions, files_changed, tests,
+               pending, blockers, durable_facts
+        FROM checkpoints
+        WHERE session_id = ?
+          AND (? IS NULL OR checkpoint_id != ?)
+          AND (
+              status IN ('failed', 'timed_out', 'cancelled')
+              OR (blockers IS NOT NULL AND blockers NOT IN ('', '[]', 'null'))
+          )
+        ORDER BY timestamp DESC, rowid DESC
+        LIMIT ?
+        """,
+        (
+            session_id,
+            latest_checkpoint_id,
+            latest_checkpoint_id,
+            _MAX_IMPORTANT_CHECKPOINTS,
+        ),
+    )
+    entries = []
+    for row in rows:
+        item = {
+            "checkpoint_time": row["timestamp"],
+            "status": row["status"],
+            "decisions": _decode_structured(row["decisions"]),
+            "files_changed": _decode_structured(row["files_changed"]),
+            "tests": _decode_structured(row["tests"]),
+            "pending": _decode_structured(row["pending"]),
+            "blockers": _decode_structured(row["blockers"]),
+            "durable_facts": _decode_structured(row["durable_facts"]),
+        }
+        entries.append(
+            {key: value for key, value in item.items() if value is not None}
+        )
+    return entries
+
+
+def _latest_checkpoint_join() -> str:
+    """SQL fragment joining each session to its most recent checkpoint."""
+    return """
+        LEFT JOIN checkpoints AS c ON c.rowid = (
+            SELECT c2.rowid
+            FROM checkpoints AS c2
+            WHERE c2.session_id = s.session_id
+            ORDER BY c2.timestamp DESC, c2.rowid DESC
+            LIMIT 1
+        )
+    """
+
+
+def memory_stats() -> dict[str, Any]:
+    """Return human-facing totals for the session-memory database."""
+    db = _get_db()
+    totals = db.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM sessions) AS total_sessions,
+            (SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL) AS active_sessions,
+            (SELECT COUNT(*) FROM checkpoints) AS total_checkpoints
+        """
+    ).fetchone()
+    projects = db.execute(
+        """
+        SELECT project_key, COUNT(*) AS sessions,
+               SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END) AS active_sessions
+        FROM sessions
+        GROUP BY project_key
+        ORDER BY project_key
+        """
+    ).fetchall()
+    try:
+        db_size_bytes = settings.memory_db_file.stat().st_size
+    except OSError:
+        db_size_bytes = 0
+    return {
+        "db_file": str(settings.memory_db_file),
+        "db_size_bytes": db_size_bytes,
+        "total_sessions": int(totals["total_sessions"]),
+        "active_sessions": int(totals["active_sessions"]),
+        "total_checkpoints": int(totals["total_checkpoints"]),
+        "projects": [
+            {
+                "project_key": row["project_key"],
+                "sessions": int(row["sessions"]),
+                "active_sessions": int(row["active_sessions"] or 0),
+            }
+            for row in projects
+        ],
+    }
+
+
+def memory_list(
+    project_key: str | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    """List sessions, most recently active first, with checkpoint counts."""
+    if project_key is not None:
+        project_key = _validate_identifier(
+            project_key, "project_key", _PROJECT_KEY_MAX
+        )
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ValueError("limit must be an integer")
+    if limit <= 0 or limit > _MAX_LIST_LIMIT:
+        raise ValueError(f"limit must be between 1 and {_MAX_LIST_LIMIT}")
+    rows = _get_db().execute(
+        """
+        SELECT s.session_id, s.project_key, s.agent, s.workspace, s.branch,
+               s.goal, s.status AS session_status, s.started_at, s.ended_at,
+               (SELECT COUNT(*) FROM checkpoints c
+                WHERE c.session_id = s.session_id) AS checkpoint_count,
+               (SELECT MAX(c2.timestamp) FROM checkpoints c2
+                WHERE c2.session_id = s.session_id) AS last_checkpoint_at
+        FROM sessions AS s
+        WHERE (? IS NULL OR s.project_key = ?)
+        ORDER BY COALESCE(s.ended_at, s.started_at) DESC, s.started_at DESC,
+                 s.rowid DESC
+        LIMIT ?
+        """,
+        (project_key, project_key, limit),
+    )
+    entries = []
+    for row in rows:
+        entry = {
+            "session_id": row["session_id"],
+            "project_key": row["project_key"],
+            "agent": row["agent"],
+            "workspace": row["workspace"],
+            "branch": row["branch"],
+            "goal": row["goal"],
+            "session_status": row["session_status"],
+            "started_at": row["started_at"],
+            "ended_at": row["ended_at"],
+            "checkpoint_count": int(row["checkpoint_count"]),
+            "last_checkpoint_at": row["last_checkpoint_at"],
+        }
+        entries.append(
+            {key: value for key, value in entry.items() if value is not None}
+        )
+    return entries
+
+
+def memory_show(session_id: str) -> dict[str, Any]:
+    """Return one session with every checkpoint, oldest first."""
+    session_id = _validate_session_id(session_id)
+    db = _get_db()
+    row = db.execute(
+        "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown session {session_id}")
+    session: dict[str, Any] = {
+        ("session_status" if key == "status" else key): row[key]
+        for key in row.keys()
+    }
+    checkpoints: list[dict[str, Any]] = []
+    for checkpoint in db.execute(
+        """
+        SELECT * FROM checkpoints WHERE session_id = ?
+        ORDER BY timestamp ASC, rowid ASC
+        """,
+        (session_id,),
+    ):
+        item = {
+            "checkpoint_id": checkpoint["checkpoint_id"],
+            "timestamp": checkpoint["timestamp"],
+            "status": checkpoint["status"],
+            "decisions": _decode_structured(checkpoint["decisions"]),
+            "files_changed": _decode_structured(checkpoint["files_changed"]),
+            "tests": _decode_structured(checkpoint["tests"]),
+            "pending": _decode_structured(checkpoint["pending"]),
+            "blockers": _decode_structured(checkpoint["blockers"]),
+            "durable_facts": _decode_structured(checkpoint["durable_facts"]),
+        }
+        checkpoints.append(
+            {key: value for key, value in item.items() if value is not None}
+        )
+    session["checkpoints"] = checkpoints
+    return session
+
+
+def memory_prune(
+    project_key: str | None = None,
+    older_than_days: int | None = None,
+    keep_last: int = 0,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Delete old ended sessions; never touch active or durable-fact sessions.
+
+    Only sessions that have ended are eligible. Sessions whose latest
+    checkpoint carries durable facts are always protected so long-term memory
+    survives pruning. ``keep_last`` preserves the most recent N ended sessions
+    per project regardless of age. Callers must pass ``dry_run=False``
+    explicitly; the default only reports what would be deleted.
+    """
+    if project_key is not None:
+        project_key = _validate_identifier(
+            project_key, "project_key", _PROJECT_KEY_MAX
+        )
+    if older_than_days is not None:
+        if (
+            isinstance(older_than_days, bool)
+            or not isinstance(older_than_days, int)
+            or older_than_days <= 0
+        ):
+            raise ValueError("older_than_days must be a positive integer")
+    if isinstance(keep_last, bool) or not isinstance(keep_last, int):
+        raise ValueError("keep_last must be an integer")
+    if keep_last < 0:
+        raise ValueError("keep_last must be at least 0")
+
+    cutoff: str | None = None
+    if older_than_days is not None:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        ).isoformat()
+
+    db = _get_db()
+    rows = db.execute(
+        f"""
+        SELECT s.session_id, s.project_key, c.durable_facts AS latest_durable_facts
+        FROM sessions AS s
+        {_latest_checkpoint_join()}
+        WHERE s.ended_at IS NOT NULL
+          AND (? IS NULL OR s.project_key = ?)
+          AND (? IS NULL OR COALESCE(s.ended_at, s.started_at) < ?)
+        ORDER BY s.project_key ASC, s.ended_at DESC, s.started_at DESC,
+                 s.rowid DESC
+        """,
+        (project_key, project_key, cutoff, cutoff),
+    ).fetchall()
+
+    kept_per_project: dict[str, int] = {}
+    targets: list[str] = []
+    protected_durable = 0
+    for row in rows:
+        if row["latest_durable_facts"]:
+            protected_durable += 1
+            continue
+        count = kept_per_project.get(row["project_key"], 0)
+        if count < keep_last:
+            kept_per_project[row["project_key"]] = count + 1
+            continue
+        targets.append(row["session_id"])
+
+    deleted = 0
+    if not dry_run and targets:
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            for session_id in targets:
+                db.execute(
+                    "DELETE FROM checkpoints WHERE session_id = ?",
+                    (session_id,),
+                )
+                cursor = db.execute(
+                    "DELETE FROM sessions WHERE session_id = ? "
+                    "AND ended_at IS NOT NULL",
+                    (session_id,),
+                )
+                deleted += int(cursor.rowcount)
+            db.execute("COMMIT")
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+
+    return {
+        "dry_run": dry_run,
+        "candidates": len(targets),
+        "deleted": deleted if not dry_run else None,
+        "protected_durable": protected_durable,
+        "kept_by_keep_last": sum(kept_per_project.values()),
+        "session_ids": targets[:_MAX_PRUNE_SAMPLE],
+    }
