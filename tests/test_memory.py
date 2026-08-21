@@ -12,7 +12,6 @@ import pytest
 import mindsync.config as config_mod
 import mindsync.memory as memory_mod
 from mindsync.memory import (
-    _plan_prune,
     _close_local_db,
     _get_db,
     memory_bootstrap,
@@ -687,82 +686,158 @@ def test_bootstrap_skips_oversized_entries_within_tight_budget():
     assert big not in ids
     assert len(json.dumps(result, ensure_ascii=False)) <= 1_000
 
-def test_prune_keep_last_includes_durable_sessions():
-    """Bug 2: Durable sessions must count in the recency slots even though independently protected."""
-    rows = [
-        {"session_id": "1", "project_key": "p1", "has_durable_facts": 1, "ended_at": "2026-08-02", "started_at": "2026-08-01"},
-        {"session_id": "2", "project_key": "p1", "has_durable_facts": 0, "ended_at": "2026-08-01", "started_at": "2026-08-01"},
-    ]
-    targets, protected, kept = _plan_prune(rows, keep_last=1, cutoff="2026-08-03")
-    # session 1 takes the keep_last slot (even though durable)
-    # session 2 should be deleted because it falls outside keep_last
-    assert targets == ["2"]
-    assert protected == 1
-    # session 1 is kept, but it's protected_durable, so kept_by_keep_last = 0 (or 1 depending on how we count, but target is 2)
+def test_prune_keep_last_counts_durable_sessions_per_project_in_dry_run():
+    expected_targets = set()
+    for project in ("prune-slots-a", "prune-slots-b"):
+        older_plain = session_start(project_key=project, agent="agent")
+        session_end(older_plain)
+        expected_targets.add(older_plain)
+
+        newer_durable = session_start(project_key=project, agent="agent")
+        memory_checkpoint(newer_durable, durable_facts=["protected"])
+        session_end(newer_durable)
+
+    result = memory_prune(keep_last=1, dry_run=True)
+
+    assert result["protected_durable"] == 2
+    assert result["kept_by_keep_last"] == 0
+    assert result["candidates"] == 2
+    assert set(result["session_ids"]) == expected_targets
+    assert memory_stats()["total_sessions"] == 4
 
 
-def test_bootstrap_exact_boundary_budget():
-    """Bug 1: packing must not reject any entry that fits exactly."""
+def test_bootstrap_accepts_exact_budget_and_rejects_boundary_minus_one():
     target = session_start(project_key="exact-bound", agent="agent")
     memory_checkpoint(target, decisions=["x" * 90_000])
     session_end(target)
-    
-    unbounded = memory_bootstrap("exact-bound", budget_chars=100_000)
-    exact_size = len(json.dumps(unbounded, ensure_ascii=False))
-    
-    exact_fit = memory_bootstrap("exact-bound", budget_chars=exact_size)
-    assert len(exact_fit["bootstraps"]) == 1
-    
-    short_fit = memory_bootstrap("exact-bound", budget_chars=exact_size - 1)
-    assert len(short_fit["bootstraps"]) == 0
 
-def test_bootstrap_activity_ordering():
-    """Bug 4: order by greatest actual activity timestamp."""
-    from datetime import datetime, timezone, timedelta
-    from mindsync.memory import _get_db
-    
-    sess1 = session_start(project_key="act-order", agent="agent")
-    memory_checkpoint(sess1, decisions=["old cp"])
-    session_end(sess1)
-    
-    sess2 = session_start(project_key="act-order", agent="agent")
-    memory_checkpoint(sess2, decisions=["newer cp"])
-    session_end(sess2)
-    
+    complete = memory_bootstrap("exact-bound", budget_chars=100_000)
+    exact_size = len(json.dumps(complete, ensure_ascii=False))
+
+    assert memory_bootstrap("exact-bound", exact_size) == complete
+    assert memory_bootstrap("exact-bound", exact_size - 1)["bootstraps"] == []
+
+
+def test_bootstrap_orders_by_greatest_activity_with_deterministic_ties():
+    checkpoint_wins = session_start(project_key="activity-order", agent="agent")
+    memory_checkpoint(checkpoint_wins, decisions=["checkpoint wins"])
+    session_end(checkpoint_wins)
+    ended_wins = session_start(project_key="activity-order", agent="agent")
+    memory_checkpoint(ended_wins, decisions=["end wins"])
+    session_end(ended_wins)
+    started_wins = session_start(project_key="activity-order", agent="agent")
+    tied_older = session_start(project_key="activity-order", agent="agent")
+    tied_newer = session_start(project_key="activity-order", agent="agent")
+
     db = _get_db()
-    now = datetime.now(timezone.utc)
-    
-    t1_old = (now - timedelta(days=10)).isoformat()
-    t1_new = now.isoformat()
-    db.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE session_id = ?", (t1_old, t1_new, sess1))
-    db.execute("UPDATE checkpoints SET timestamp = ? WHERE session_id = ?", (t1_old, sess1))
-    
-    t2 = (now - timedelta(days=5)).isoformat()
-    db.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE session_id = ?", (t2, t2, sess2))
-    db.execute("UPDATE checkpoints SET timestamp = ? WHERE session_id = ?", (t2, sess2))
+    db.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ? WHERE session_id = ?",
+        ("2026-01-01T00:00:00+00:00", "2026-02-01T00:00:00+00:00", checkpoint_wins),
+    )
+    db.execute(
+        "UPDATE checkpoints SET timestamp = ? WHERE session_id = ?",
+        ("2026-05-01T00:00:00+00:00", checkpoint_wins),
+    )
+    db.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ? WHERE session_id = ?",
+        ("2026-01-01T00:00:00+00:00", "2026-04-01T00:00:00+00:00", ended_wins),
+    )
+    db.execute(
+        "UPDATE checkpoints SET timestamp = ? WHERE session_id = ?",
+        ("2026-03-01T00:00:00+00:00", ended_wins),
+    )
+    db.execute(
+        "UPDATE sessions SET started_at = ? WHERE session_id = ?",
+        ("2026-03-15T00:00:00+00:00", started_wins),
+    )
+    for session_id in (tied_older, tied_newer):
+        db.execute(
+            "UPDATE sessions SET started_at = ? WHERE session_id = ?",
+            ("2026-02-15T00:00:00+00:00", session_id),
+        )
 
-    
-    result = memory_bootstrap("act-order")
-    ids = [entry["session_id"] for entry in result["bootstraps"]]
-    assert ids == [sess1, sess2]
+    result = memory_bootstrap("activity-order")
 
-def test_bootstrap_working_memory_avoids_unbounded_decoding(monkeypatch):
-    """Bug 3: avoid unbounded payload decode/materialization."""
-    huge = session_start(project_key="mem-bound", agent="agent")
-    memory_checkpoint(huge, decisions=["x" * 90_000])
+    assert [entry["session_id"] for entry in result["bootstraps"]] == [
+        checkpoint_wins,
+        ended_wins,
+        started_wins,
+        tied_newer,
+        tied_older,
+    ]
+
+
+def test_bootstrap_does_not_load_or_decode_oversized_base_payload(monkeypatch):
+    huge = session_start(project_key="base-decode", agent="agent")
+    memory_checkpoint(huge, decisions=["x\\" * 30_000])
     session_end(huge)
-    
-    called = False
-    import mindsync.memory
-    original_merged = mindsync.memory._merged_durable_facts
-    
-    def spy_merged(db, session_id):
-        nonlocal called
-        called = True
-        return original_merged(db, session_id)
-        
-    monkeypatch.setattr(mindsync.memory, "_merged_durable_facts", spy_merged)
-    
-    result = memory_bootstrap("mem-bound", budget_chars=10_000)
-    assert len(result["bootstraps"]) == 0
-    assert not called
+
+    db = _get_db()
+    oversized_json = db.execute(
+        "SELECT decisions FROM checkpoints WHERE session_id = ?", (huge,)
+    ).fetchone()["decisions"]
+    original_decode = memory_mod._decode_structured
+    original_load = memory_mod._bootstrap_payload_row
+
+    def guarded_decode(value):
+        assert value != oversized_json, "oversized base payload was decoded"
+        return original_decode(value)
+
+    def guarded_load(db, session_id, checkpoint_id):
+        assert session_id != huge, "oversized base payload was loaded"
+        return original_load(db, session_id, checkpoint_id)
+
+    monkeypatch.setattr(memory_mod, "_decode_structured", guarded_decode)
+    monkeypatch.setattr(memory_mod, "_bootstrap_payload_row", guarded_load)
+
+    assert memory_bootstrap("base-decode", budget_chars=10_000)["bootstraps"] == []
+
+
+def test_bootstrap_does_not_decode_oversized_historical_enrichment(monkeypatch):
+    session_id = session_start(project_key="history-decode", agent="agent")
+    old_checkpoint = memory_checkpoint(
+        session_id,
+        status="failed",
+        decisions=["x\\" * 30_000],
+    )
+    memory_checkpoint(session_id, status="done", decisions=["small latest payload"])
+    session_end(session_id)
+
+    oversized_json = _get_db().execute(
+        "SELECT decisions FROM checkpoints WHERE checkpoint_id = ?",
+        (old_checkpoint,),
+    ).fetchone()["decisions"]
+    original_decode = memory_mod._decode_structured
+
+    def guarded_decode(value):
+        assert value != oversized_json, "oversized historical payload was decoded"
+        return original_decode(value)
+
+    monkeypatch.setattr(memory_mod, "_decode_structured", guarded_decode)
+
+    result = memory_bootstrap("history-decode", budget_chars=10_000)
+    assert result["bootstraps"] == []
+
+
+def test_bootstrap_stops_durable_merge_after_first_oversized_fact(monkeypatch):
+    session_id = session_start(project_key="durable-history-bound", agent="agent")
+    for index in range(9):
+        memory_checkpoint(session_id, durable_facts=[f"{index}:" + "x" * 80_000])
+    memory_checkpoint(session_id, durable_facts=["small latest fact"])
+    session_end(session_id)
+
+    original_decode = memory_mod._decode_structured
+    durable_decode_count = 0
+
+    def counted_decode(value):
+        nonlocal durable_decode_count
+        if value and ("small latest fact" in value or len(value) > 70_000):
+            durable_decode_count += 1
+        return original_decode(value)
+
+    monkeypatch.setattr(memory_mod, "_decode_structured", counted_decode)
+
+    assert memory_bootstrap("durable-history-bound", budget_chars=10_000)[
+        "bootstraps"
+    ] == []
+    assert durable_decode_count == 2

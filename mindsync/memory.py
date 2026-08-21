@@ -8,6 +8,7 @@ import re
 import sqlite3
 import threading
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,10 @@ _TEXT_MAX = 100_000
 _STATUS_MAX = 128
 _MAX_BOOTSTRAP_BUDGET = 200_000
 _MAX_BOOTSTRAP_SESSIONS_PER_CLASS = 200
-_SIZE_PRECHECK_SLACK = 4096
+# A JSON escape can shrink when decoded and re-serialized (for example ``\/``
+# or ``\u0061``). The size probe accounts for that potential shrink instead of
+# treating stored JSON length as an unconditional lower bound.
+_MAX_UNICODE_ESCAPE_EXTRA_SHRINK = 5
 _MAX_FACT_CHECKPOINTS_PER_SESSION = 10
 _MAX_MERGED_DURABLE_FACTS = 20
 _MAX_IMPORTANT_CHECKPOINTS = 3
@@ -37,6 +41,51 @@ _DURABLE_EXISTS_SQL = """
           AND df.durable_facts IS NOT NULL
           AND df.durable_facts NOT IN ('', '[]', 'null')
     )
+"""
+_BOOTSTRAP_CLASS_FILTERS = (
+    # 1. Sessions carrying durable facts in any checkpoint.
+    f"AND {_DURABLE_EXISTS_SQL}",
+    # 2. Latest checkpoint still has unresolved blockers or pending work.
+    f"""
+    AND NOT {_DURABLE_EXISTS_SQL}
+    AND (
+        COALESCE(c.blockers, '') NOT IN ('', '[]', 'null')
+        OR COALESCE(c.pending, '') NOT IN ('', '[]', 'null')
+    )
+    """,
+    # 3. Routine history.
+    f"""
+    AND NOT {_DURABLE_EXISTS_SQL}
+    AND COALESCE(c.blockers, '') IN ('', '[]', 'null')
+    AND COALESCE(c.pending, '') IN ('', '[]', 'null')
+    """,
+)
+# Structured checkpoint columns, each capped at _TEXT_MAX on write.
+_CHECKPOINT_PAYLOAD_COLUMNS = (
+    "decisions",
+    "files_changed",
+    "tests",
+    "pending",
+    "blockers",
+    "durable_facts",
+)
+# durable_facts is excluded: the bootstrap entry replaces it with the deduped,
+# item-capped merge across checkpoints, which can be *shorter* than the stored
+# payload, so its stored length is not a lower bound on the entry.
+_BOOTSTRAP_SIZED_COLUMNS = tuple(
+    column for column in _CHECKPOINT_PAYLOAD_COLUMNS if column != "durable_facts"
+)
+# Shared by the size probe and the payload fetch so both see the same rows.
+_IMPORTANT_CHECKPOINT_FILTER_SQL = """
+    FROM checkpoints
+    WHERE session_id = ?
+      AND (? IS NULL OR checkpoint_id != ?)
+      AND (
+          status IN ('failed', 'timed_out', 'cancelled')
+          OR (blockers IS NOT NULL AND blockers NOT IN ('', '[]', 'null'))
+      )
+    ORDER BY timestamp DESC, rowid DESC
+    LIMIT ?
 """
 _SENSITIVE_KEYS = {
     "apikey",
@@ -171,6 +220,55 @@ def _decode_structured(value: str | None) -> Any:
     if value is None:
         return None
     return json.loads(value)
+
+
+def _size_probe_sql(columns: tuple[str, ...], prefix: str = "") -> str:
+    """Project metadata used to lower-bound decoded JSON output sizes.
+
+    ``length()`` and ``instr()`` are core SQLite scalars, so the engine answers
+    from the stored text without handing a multi-kilobyte payload to Python.
+    """
+    return ", ".join(
+        f"COALESCE(length({prefix}{column}), 0) AS {column}_len, "
+        f"COALESCE(length({prefix}{column}) - "
+        f"length(replace({prefix}{column}, '\\', '')), 0) AS {column}_slashes, "
+        f"COALESCE((length({prefix}{column}) - "
+        f"length(replace({prefix}{column}, '\\u', ''))) / 2, 0) "
+        f"AS {column}_unicode_escapes"
+        for column in columns
+    )
+
+
+def _min_serialized_len(
+    stored_len: int, slash_count: int, unicode_escape_count: int
+) -> int:
+    """Lower bound on what a stored payload costs once decoded and re-encoded.
+
+    ``_encode_structured`` writes with ``ensure_ascii=False`` and compact
+    separators, so re-serializing the decoded value with the default separators
+    cannot remove structure or whitespace produced by that encoder. Escaped
+    slashes can shrink by one character; a Unicode escape can shrink further,
+    including surrogate pairs. Subtracting one per backslash and five more per
+    ``\\u`` token deliberately under-estimates every supported case, which keeps
+    this gate from rejecting an entry that could fit.
+    """
+    possible_shrink = (
+        slash_count
+        + unicode_escape_count * _MAX_UNICODE_ESCAPE_EXTRA_SHRINK
+    )
+    return max(0, stored_len - possible_shrink)
+
+
+def _min_row_len(row: sqlite3.Row, columns: tuple[str, ...]) -> int:
+    """Sum the per-column lower bounds probed by ``_size_probe_sql``."""
+    return sum(
+        _min_serialized_len(
+            row[f"{column}_len"],
+            row[f"{column}_slashes"],
+            row[f"{column}_unicode_escapes"],
+        )
+        for column in columns
+    )
 
 
 def _harden_db_files(db_path: Path) -> None:
@@ -433,77 +531,75 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
         raise ValueError("budget_chars is too small for the response envelope")
 
     db = _get_db()
-
-    def _iter_candidates():
-        cursors = [
-            _bootstrap_class_rows(db, project_key, f"AND {_DURABLE_EXISTS_SQL}"),
-            _bootstrap_class_rows(
-                db,
-                project_key,
-                f"""
-                AND NOT {_DURABLE_EXISTS_SQL}
-                AND (
-                    COALESCE(c.blockers, '') NOT IN ('', '[]', 'null')
-                    OR COALESCE(c.pending, '') NOT IN ('', '[]', 'null')
-                )
-                """,
-            ),
-            _bootstrap_class_rows(
-                db,
-                project_key,
-                f"""
-                AND NOT {_DURABLE_EXISTS_SQL}
-                AND COALESCE(c.blockers, '') IN ('', '[]', 'null')
-                AND COALESCE(c.pending, '') IN ('', '[]', 'null')
-                """,
-            ),
-        ]
-        for cursor in cursors:
-            yield from cursor
-
     committed_len = len(json.dumps(result, ensure_ascii=False))
     bootstraps: list[dict[str, Any]] = result["bootstraps"]
-    for row in _iter_candidates():
+    for row in _iter_bootstrap_candidates(db, project_key):
+        # Default json.dumps separators join list items with ", " (two chars).
+        separator_len = 2 if bootstraps else 0
+        max_entry_len = budget_chars - committed_len - separator_len
+        # Stored lengths alone can prove an entry is too large. Gating here is
+        # what keeps working memory proportional to budget_chars instead of to
+        # the database: a payload that cannot fit is never selected, so it is
+        # never handed to Python and never decoded.
+        if _bootstrap_min_entry_len(row) > max_entry_len:
+            continue
+        payload = _bootstrap_payload_row(db, row["session_id"], row["checkpoint_id"])
+        if payload is None:  # session vanished between the two statements
+            continue
         entry = {
             "session_id": row["session_id"],
             "agent": row["agent"],
             "workspace": row["workspace"],
             "branch": row["branch"],
-            "goal": row["goal"],
+            "goal": payload["goal"],
             "session_status": row["session_status"],
             "started_at": row["started_at"],
             "ended_at": row["ended_at"],
             "checkpoint_time": row["timestamp"],
-            "decisions": _decode_structured(row["decisions"]),
-            "files_changed": _decode_structured(row["files_changed"]),
-            "tests": _decode_structured(row["tests"]),
-            "pending": _decode_structured(row["pending"]),
-            "blockers": _decode_structured(row["blockers"]),
-            "durable_facts": _decode_structured(row["durable_facts"]),
+            "decisions": _decode_structured(payload["decisions"]),
+            "files_changed": _decode_structured(payload["files_changed"]),
+            "tests": _decode_structured(payload["tests"]),
+            "pending": _decode_structured(payload["pending"]),
+            "blockers": _decode_structured(payload["blockers"]),
+            "durable_facts": _decode_structured(row["base_durable_facts"]),
         }
         entry = {key: value for key, value in entry.items() if value is not None}
-        base_serialized_len = len(json.dumps(entry, ensure_ascii=False))
-        if committed_len + base_serialized_len + (2 if bootstraps else 0) > budget_chars:
+        # Enrichment below only ever grows the entry, so an over-budget base
+        # entry can be dropped before any enrichment query runs.
+        if len(json.dumps(entry, ensure_ascii=False)) > max_entry_len:
             continue
 
-        merged_facts = _merged_durable_facts(db, row["session_id"])
+        merged_facts = _merged_durable_facts(db, row["session_id"], max_entry_len)
+        if merged_facts is None:
+            continue
         if merged_facts:
             entry["durable_facts"] = merged_facts
         earlier = _earlier_important_checkpoints(
             db,
             row["session_id"],
             row["checkpoint_id"],
+            max_entry_len - len(json.dumps(entry, ensure_ascii=False)),
         )
+        if earlier is None:
+            continue
         if earlier:
             entry["earlier_checkpoints"] = earlier
+        # The exact serialized length is the authority; every gate above only
+        # ever under-estimates it.
         serialized_len = len(json.dumps(entry, ensure_ascii=False))
-        # Default json.dumps separators join list items with ", " (two chars).
-        delta = serialized_len + (2 if bootstraps else 0)
-        if committed_len + delta > budget_chars:
+        if serialized_len > max_entry_len:
             continue
         bootstraps.append(entry)
-        committed_len += delta
+        committed_len += serialized_len + separator_len
     return {"project_key": project_key, "bootstraps": bootstraps}
+
+
+def _iter_bootstrap_candidates(
+    db: sqlite3.Connection, project_key: str
+) -> Iterator[sqlite3.Row]:
+    """Stream candidate metadata one row at a time, in priority-class order."""
+    for extra_where in _BOOTSTRAP_CLASS_FILTERS:
+        yield from _bootstrap_class_rows(db, project_key, extra_where)
 
 
 def _bootstrap_class_rows(
@@ -511,13 +607,24 @@ def _bootstrap_class_rows(
     project_key: str,
     extra_where: str,
 ) -> sqlite3.Cursor:
-    """Fetch one priority class of bootstrap candidates, capped per class."""
+    """Probe one priority class of bootstrap candidates, capped per class.
+
+    Selects identifiers plus size metadata only. ``goal`` is raw text rather
+    than JSON, and escaping a raw string never shortens it, so its stored
+    length is a lower bound with no escape probe needed. ``durable_facts`` is
+    carried verbatim only for the sentinel values that make
+    ``_merged_durable_facts`` come back empty -- every other value is replaced
+    by the merge, so loading it here would be wasted work.
+    """
     return db.execute(
         f"""
-        SELECT s.session_id, s.agent, s.workspace, s.branch, s.goal,
+        SELECT s.session_id, s.agent, s.workspace, s.branch,
                s.status AS session_status, s.started_at, s.ended_at,
-               c.checkpoint_id, c.timestamp, c.decisions, c.files_changed,
-               c.tests, c.pending, c.blockers, c.durable_facts
+               c.checkpoint_id, c.timestamp,
+               COALESCE(length(s.goal), 0) AS goal_len,
+               CASE WHEN c.durable_facts IN ('', '[]', 'null')
+                    THEN c.durable_facts END AS base_durable_facts,
+               {_size_probe_sql(_BOOTSTRAP_SIZED_COLUMNS, prefix="c.")}
         FROM sessions AS s
         {_latest_checkpoint_join()}
         WHERE s.project_key = ?
@@ -531,11 +638,43 @@ def _bootstrap_class_rows(
     )
 
 
-def _merged_durable_facts(db: sqlite3.Connection, session_id: str) -> list[Any]:
+def _bootstrap_min_entry_len(row: sqlite3.Row) -> int:
+    """Lower bound on a candidate's serialized entry, from metadata only."""
+    return row["goal_len"] + _min_row_len(row, _BOOTSTRAP_SIZED_COLUMNS)
+
+
+def _bootstrap_payload_row(
+    db: sqlite3.Connection,
+    session_id: str,
+    checkpoint_id: str | None,
+) -> sqlite3.Row | None:
+    """Load the large fields for one candidate that cleared the size gate."""
+    return db.execute(
+        """
+        SELECT s.goal, c.decisions, c.files_changed, c.tests, c.pending,
+               c.blockers
+        FROM sessions AS s
+        LEFT JOIN checkpoints AS c
+          ON c.session_id = s.session_id AND c.checkpoint_id = ?
+        WHERE s.session_id = ?
+        """,
+        (checkpoint_id, session_id),
+    ).fetchone()
+
+
+def _merged_durable_facts(
+    db: sqlite3.Connection, session_id: str, max_chars: int
+) -> list[Any] | None:
     """Collect durable facts from every retained checkpoint of a session.
 
     Facts may have been stored as strings, lists, or objects; every allowed
     payload shape is normalized into a flat list, newest checkpoint first.
+
+    Returns ``None`` as soon as the merged list alone outgrows ``max_chars``:
+    the caller's entry can then never fit, so the remaining checkpoints are
+    left undecoded. The cap is measured against the merged output rather than
+    against stored lengths because dedupe means a checkpoint can contribute
+    fewer characters than it stores -- the output, by contrast, only grows.
     """
     rows = db.execute(
         """
@@ -547,18 +686,21 @@ def _merged_durable_facts(db: sqlite3.Connection, session_id: str) -> list[Any]:
         LIMIT ?
         """,
         (session_id, _MAX_FACT_CHECKPOINTS_PER_SESSION),
-    ).fetchall()
+    )
     merged: list[Any] = []
     for row in rows:
         decoded = _decode_structured(row["durable_facts"])
-        if decoded is None:
-            continue
-        items = decoded if isinstance(decoded, list) else [decoded]
-        for item in items:
-            if item not in merged:
-                merged.append(item)
-                if len(merged) >= _MAX_MERGED_DURABLE_FACTS:
-                    return merged
+        if decoded is not None:
+            items = decoded if isinstance(decoded, list) else [decoded]
+            for item in items:
+                if item not in merged:
+                    merged.append(item)
+                    if len(merged) >= _MAX_MERGED_DURABLE_FACTS:
+                        break
+        if len(json.dumps(merged, ensure_ascii=False)) > max_chars:
+            return None
+        if len(merged) >= _MAX_MERGED_DURABLE_FACTS:
+            break
     return merged
 
 
@@ -566,31 +708,41 @@ def _earlier_important_checkpoints(
     db: sqlite3.Connection,
     session_id: str,
     latest_checkpoint_id: str | None,
-) -> list[dict[str, Any]]:
-    """Fetch up to _MAX_IMPORTANT_CHECKPOINTS older failed/blocked checkpoints."""
-    rows = db.execute(
-        """
-        SELECT timestamp, status, decisions, files_changed, tests,
-               pending, blockers, durable_facts
-        FROM checkpoints
-        WHERE session_id = ?
-          AND (? IS NULL OR checkpoint_id != ?)
-          AND (
-              status IN ('failed', 'timed_out', 'cancelled')
-              OR (blockers IS NOT NULL AND blockers NOT IN ('', '[]', 'null'))
-          )
-        ORDER BY timestamp DESC, rowid DESC
-        LIMIT ?
-        """,
-        (
-            session_id,
-            latest_checkpoint_id,
-            latest_checkpoint_id,
-            _MAX_IMPORTANT_CHECKPOINTS,
-        ),
+    max_chars: int,
+) -> list[dict[str, Any]] | None:
+    """Fetch up to _MAX_IMPORTANT_CHECKPOINTS older failed/blocked checkpoints.
+
+    Returns ``None`` when the stored lengths prove these checkpoints cannot fit
+    in ``max_chars``, leaving their payloads unselected. Every field of every
+    matched checkpoint is appended verbatim -- no dedupe, no cap on content --
+    so stored length is a sound lower bound here.
+    """
+    params = (
+        session_id,
+        latest_checkpoint_id,
+        latest_checkpoint_id,
+        _MAX_IMPORTANT_CHECKPOINTS,
     )
+    minimum = 0
+    matched = False
+    for row in db.execute(
+        f"SELECT {_size_probe_sql(_CHECKPOINT_PAYLOAD_COLUMNS)}"
+        f"{_IMPORTANT_CHECKPOINT_FILTER_SQL}",
+        params,
+    ):
+        matched = True
+        minimum += _min_row_len(row, _CHECKPOINT_PAYLOAD_COLUMNS)
+        if minimum > max_chars:
+            return None
+    if not matched:
+        return []
+
     entries = []
-    for row in rows:
+    for row in db.execute(
+        f"SELECT timestamp, status, {', '.join(_CHECKPOINT_PAYLOAD_COLUMNS)}"
+        f"{_IMPORTANT_CHECKPOINT_FILTER_SQL}",
+        params,
+    ):
         item = {
             "checkpoint_time": row["timestamp"],
             "status": row["status"],
@@ -860,6 +1012,7 @@ def _prune_candidate_rows(
         (project_key, project_key),
     )
 
+
 def _plan_prune(
     rows: list[sqlite3.Row],
     keep_last: int,
@@ -867,10 +1020,16 @@ def _plan_prune(
 ) -> tuple[list[str], int, int]:
     """Turn candidate rows into a delete plan honoring protections.
 
-    Order of operations: durable-fact protection first, then keep_last over
-    the full recency order, and only then the age cutoff marks deletion
-    candidates - so "most recent N regardless of age" holds even when those N
+    Order of operations: keep_last claims recency slots over the full order,
+    then durable-fact protection, and only then the age cutoff marks deletion
+    candidates — so "most recent N regardless of age" holds even when those N
     are fresher than the cutoff.
+
+    A durable-fact session consumes a recency slot as it passes: it is retained
+    either way, so letting an older session claim that slot instead would keep
+    more than the caller asked for. It is reported under ``protected_durable``
+    rather than ``kept_by_keep_last``, so the two counts never double-count the
+    same session.
     """
     kept_per_project: dict[str, int] = {}
     targets: list[str] = []
@@ -878,19 +1037,17 @@ def _plan_prune(
     kept_by_keep_last = 0
     for row in rows:
         count = kept_per_project.get(row["project_key"], 0)
-        kept = False
-        if count < keep_last:
+        claims_recency_slot = count < keep_last
+        if claims_recency_slot:
             kept_per_project[row["project_key"]] = count + 1
-            kept = True
 
         if row["has_durable_facts"]:
             protected_durable += 1
             continue
-
-        if kept:
+        if claims_recency_slot:
             kept_by_keep_last += 1
             continue
-            
+
         activity = row["ended_at"] or row["started_at"]
         if cutoff is not None and activity >= cutoff:
             continue
