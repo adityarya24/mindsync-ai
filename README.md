@@ -211,12 +211,12 @@ MindSync exposes 24 tools.
 | `sync_offline_facts` | Flush queued facts and refresh compiled truth |
 | `pull_truth` | Safely pull compiled-truth Markdown |
 | `health` | Inspect paths, queue depth, policy, and remote reachability |
-| `session_start` | Start a tracked local memory session (Phase 1) |
-| `memory_checkpoint` | Save structured session state locally (Phase 1) |
-| `memory_bootstrap` | Retrieve bounded relevant context for a project (Phase 1) |
-| `session_end` | Mark a session completed or failed (Phase 1) |
+| `session_start` | Start a tracked local memory session |
+| `memory_checkpoint` | Save structured session state locally |
+| `memory_bootstrap` | Retrieve bounded relevant context for a project |
+| `session_end` | Mark a session completed or failed |
 
-Note: Phase 2 adds optional automatic session memory on dispatch via
+Note: dispatch can also drive session memory automatically via
 `--memory-project <key>` (CLI) or `memory_project` (`delegate_task` / `run_task`).
 When omitted, dispatch behavior is unchanged. When enabled, MindSync bootstraps bounded
 project context before spawn, prepends a delimited compact prefix to the worker prompt,
@@ -435,7 +435,7 @@ mindsync worker --once
 | `MINDSYNC_WORKER_ALLOWED_ROOTS` | empty | Semicolon- or comma-separated allow-list of repository roots the worker may execute in |
 | `MINDSYNC_WORKER_ALLOW_ORCHESTRATOR` | `false` | Local opt-in required before an explicit remote orchestrator job can run |
 
-## Session Memory (Phase 1)
+## Session memory
 
 MindSync provides local, structured session memory via SQLite (`session_memory.db`).
 
@@ -450,16 +450,16 @@ MindSync provides local, structured session memory via SQLite (`session_memory.d
 - **Redaction**: Memory writes apply conservative masking for common token, password,
   and private-key patterns. This is best-effort protection, not a substitute for keeping
   credentials out of checkpoints. Lists and objects remain structured after redaction.
-- **Lifecycle**: Phase 1 requires explicit `session_start`, `memory_checkpoint`,
-  `memory_bootstrap`, and `session_end` calls. Phase 2 adds optional automatic
-  dispatch lifecycle via `memory_project` / `--memory-project` on the shared runner
-  path (no per-vendor adapter hooks).
+- **Lifecycle**: agents drive memory explicitly with `session_start`,
+  `memory_checkpoint`, `memory_bootstrap`, and `session_end`. Dispatch can run the
+  same lifecycle automatically via `memory_project` / `--memory-project` on the
+  shared runner path (no per-vendor adapter hooks).
 - **Coverage limits**: Automatic dispatch memory records compact job status,
   bounded changed-file paths, and check pass/fail summaries—not agent transcripts,
   raw prompts, or check output tails. Use explicit `memory_checkpoint` when agents
   need richer handoff detail.
 
-## Inspecting memory (Phase 2.1)
+## Inspecting memory
 
 Human-facing commands for the local session-memory database:
 
@@ -491,7 +491,7 @@ By default, state is stored under `~/.mindsync`:
 ├── events.jsonl.seq       monotonic sequence checkpoint
 ├── subscriptions.json     event subscriptions
 ├── orchestration.json     automatic delegation policy
-├── session_memory.db      local SQLite session memory (Phase 1)
+├── session_memory.db      local SQLite session memory
 ├── compiled-truth/        pulled durable summaries
 └── .locks/                kernel-managed lock files
 ```
@@ -531,6 +531,7 @@ mindsync-ai/
 │   ├── onboarding.py       CLI discovery and safe registration
 │   ├── orchestration.py    persistent delegation policy
 │   ├── storage.py          atomic JSON/JSONL storage and locks
+│   ├── memory.py           local SQLite session memory
 │   ├── bridge.py           optional SSH/SCP transport
 │   ├── bus/                typed local event bus
 │   └── dispatch/           adapters, router, runner, jobs, and CLI

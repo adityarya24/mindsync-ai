@@ -7,9 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-21
+
 ### Added
 
-- Phase 2.1 session-memory tooling: priority-aware bounded bootstrap (strict per-class caps of 200 — durable-fact sessions from any retained checkpoint first, unresolved blockers/pending second, routine history last; durable facts normalized across string/list/object payloads and merged across checkpoints; candidate metadata is streamed, grossly oversized base/history payloads are rejected before loading, and durable merging stops once the response cannot fit; earlier failed/blocked checkpoints surfaced as `earlier_checkpoints`) and human-facing `mindsync memory stats|list|show|prune` commands with dry-run-first retention that never deletes active or durable-fact sessions; prune selects and deletes inside one transaction, keep-last applies before the age filter, and `memory list` orders by the greatest activity timestamp.
+- Local session memory backed by SQLite (`session_memory.db`): the `session_start`,
+  `memory_checkpoint`, `memory_bootstrap`, and `session_end` MCP tools record structured
+  session state per project, with deterministic project isolation, budget character
+  limits, truncation, and conservative secret redaction on every write.
+- Automatic session-memory lifecycle on dispatch, opt in with `--memory-project <key>`
+  (CLI) or `memory_project` (`delegate_task` / `run_task`). Bounded project context is
+  bootstrapped before the adapter runs, then a compact session is started and finalized
+  exactly once across `done`, `failed`, `cancelled`, timeout, and early supervision
+  failures. Prompts, transcripts, stdout, stderr, and check output are never persisted —
+  only a bounded file list, reduced check summaries, and one durable fact per job. Any
+  memory failure degrades to a job warning instead of failing the job.
+- Priority-aware bounded bootstrap with strict per-class caps of 200: sessions carrying
+  durable facts in any retained checkpoint pack first, then sessions whose latest
+  checkpoint has unresolved blockers or pending items, then routine history. Durable
+  facts are normalized across string/list/object payloads and merged across checkpoints,
+  candidate metadata is streamed, grossly oversized base/history payloads are rejected
+  before loading, durable merging stops once the response cannot fit, and up to three
+  earlier failed or blocked checkpoints are surfaced as `earlier_checkpoints`.
+- Human-facing `mindsync memory stats|list|show|prune` commands (all accept `--json`)
+  for the local session-memory database, with dry-run-first retention that never deletes
+  active or durable-fact sessions. Prune selects and deletes inside one transaction,
+  `--keep-last` is applied before the age filter, and `memory list` orders by the
+  greatest activity timestamp.
+
+### Fixed
+
+- Bootstrap no longer raises `JSONDecodeError` when a checkpoint stores an empty string
+  for `durable_facts`. The bootstrap SQL already treats `''` as a valid "no facts"
+  sentinel, so structured decoding now reports blank values as missing on both the
+  latest-checkpoint and `earlier_checkpoints` paths.
+- SSH and SCP helpers run with `stdin` detached, so a bridge subprocess can no longer
+  consume the MCP server's stdio transport.
+
+## [1.3.0] - 2026-08-17
+
+### Added
+
 - Generic remote execution modes: queue submissions now default to non-recursive `worker` jobs and may explicitly request a depth-0 local `orchestrator`; orchestrator execution requires a local opt-in, while all delegated children remain depth-1 workers with `MINDSYNC_WORKER=1`.
 - Background job completion pings through the new `job_wait` MCP tool. The orchestrator now keeps its turn open after delegation and resumes automatically when a job completes, fails, or is cancelled; cancellation also emits a typed `job.cancelled` event.
 - One-time `mindsync setup`, `mindsync doctor`, and `mindsync config` onboarding commands. Setup detects supported local CLIs, idempotently registers the MCP server, identifies the human-facing caller, and supports non-mutating dry runs.

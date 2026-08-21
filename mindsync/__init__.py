@@ -1,3 +1,3 @@
 """Local-first MCP orchestration, shared memory, and task routing for coding agents."""
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
