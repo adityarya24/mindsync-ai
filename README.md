@@ -472,9 +472,10 @@ mindsync memory prune --older-than-days 30     # dry run: what would be deleted?
 
 `prune` only considers ended sessions, always protects active sessions and any
 session carrying durable facts in any retained checkpoint, and supports `--keep-last N`
-to preserve recent history per project. Candidate selection and deletion run in one
-transaction, so a concurrently written durable checkpoint is never deleted. Nothing
-is deleted unless `--yes` is passed.
+to preserve the most recent N ended sessions per project (keep-last is applied before
+the age filter, so fresher sessions already satisfy it). Candidate selection and
+deletion run in one transaction, so a concurrently written durable checkpoint is never
+deleted. Nothing is deleted unless `--yes` is passed.
 All four commands accept `--json` for machine-readable output.
 
 ## Local data

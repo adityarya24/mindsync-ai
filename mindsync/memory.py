@@ -23,6 +23,7 @@ _TEXT_MAX = 100_000
 _STATUS_MAX = 128
 _MAX_BOOTSTRAP_BUDGET = 200_000
 _MAX_BOOTSTRAP_SESSIONS_PER_CLASS = 200
+_SIZE_PRECHECK_SLACK = 4096
 _MAX_FACT_CHECKPOINTS_PER_SESSION = 10
 _MAX_MERGED_DURABLE_FACTS = 20
 _MAX_IMPORTANT_CHECKPOINTS = 3
@@ -460,9 +461,17 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
         ).fetchall()
     )
 
-    latest_checkpoint_ids: dict[str, str | None] = {}
-    entries: list[dict[str, Any]] = []
+    committed_len = len(json.dumps(result, ensure_ascii=False))
+    bootstraps: list[dict[str, Any]] = result["bootstraps"]
     for row in rows:
+        # Gross-oversize gate before decoding: structured payloads can
+        # approach _TEXT_MAX each, so decoding every candidate would let
+        # working memory scale with database size instead of budget_chars.
+        # The slack keeps borderline small entries eligible; the exact check
+        # after enrichment is what actually enforces the budget.
+        remaining = budget_chars - committed_len
+        if _estimate_entry_size(row) > remaining + _SIZE_PRECHECK_SLACK:
+            continue
         entry = {
             "session_id": row["session_id"],
             "agent": row["agent"],
@@ -481,7 +490,6 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
             "durable_facts": _decode_structured(row["durable_facts"]),
         }
         entry = {key: value for key, value in entry.items() if value is not None}
-        latest_checkpoint_ids[row["session_id"]] = row["checkpoint_id"]
         merged_facts = _merged_durable_facts(db, row["session_id"])
         if merged_facts:
             entry["durable_facts"] = merged_facts
@@ -492,16 +500,42 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
         )
         if earlier:
             entry["earlier_checkpoints"] = earlier
-        entries.append(entry)
+        serialized_len = len(json.dumps(entry, ensure_ascii=False))
+        # Default json.dumps separators join list items with ", " (two chars).
+        delta = serialized_len + (2 if bootstraps else 0)
+        if committed_len + delta > budget_chars:
+            continue
+        bootstraps.append(entry)
+        committed_len += delta
+    return {"project_key": project_key, "bootstraps": bootstraps}
 
-    for entry in entries:
-        candidate = {
-            "project_key": project_key,
-            "bootstraps": [*result["bootstraps"], entry],
-        }
-        if len(json.dumps(candidate, ensure_ascii=False)) <= budget_chars:
-            result = candidate
-    return result
+
+def _estimate_entry_size(row: sqlite3.Row) -> int:
+    """Conservative upper bound for an entry's serialized size, no decoding.
+
+    Structured columns are counted as their stored JSON length with 2x slack
+    for escaping; a flat pad covers keys, identifiers, and enrichment
+    headroom. False oversizing only skips an entry that might have fit — the
+    exact check after enrichment keeps the response within budget.
+    """
+    raw = 0
+    for column in (
+        "decisions",
+        "files_changed",
+        "tests",
+        "pending",
+        "blockers",
+        "durable_facts",
+    ):
+        value = row[column]
+        raw += len(value) if value else 0
+    identifiers = (
+        len(row["session_id"])
+        + len(row["agent"])
+        + len(row["session_status"] or "")
+        + len(row["timestamp"] or "")
+    )
+    return identifiers + raw * 2 + 512
 
 
 def _bootstrap_class_rows(
@@ -529,7 +563,11 @@ def _bootstrap_class_rows(
 
 
 def _merged_durable_facts(db: sqlite3.Connection, session_id: str) -> list[Any]:
-    """Collect durable facts from every retained checkpoint of a session."""
+    """Collect durable facts from every retained checkpoint of a session.
+
+    Facts may have been stored as strings, lists, or objects; every allowed
+    payload shape is normalized into a flat list, newest checkpoint first.
+    """
     rows = db.execute(
         """
         SELECT durable_facts FROM checkpoints
@@ -544,12 +582,14 @@ def _merged_durable_facts(db: sqlite3.Connection, session_id: str) -> list[Any]:
     merged: list[Any] = []
     for row in rows:
         decoded = _decode_structured(row["durable_facts"])
-        if isinstance(decoded, list):
-            for item in decoded:
-                if item not in merged:
-                    merged.append(item)
-                    if len(merged) >= _MAX_MERGED_DURABLE_FACTS:
-                        return merged
+        if decoded is None:
+            continue
+        items = decoded if isinstance(decoded, list) else [decoded]
+        for item in items:
+            if item not in merged:
+                merged.append(item)
+                if len(merged) >= _MAX_MERGED_DURABLE_FACTS:
+                    return merged
     return merged
 
 
@@ -655,8 +695,8 @@ def memory_stats() -> dict[str, Any]:
 def memory_list(
     project_key: str | None = None, limit: int = 50
 ) -> list[dict[str, Any]]:
-    """List sessions ordered by actual latest activity (last checkpoint,
-    then end time, then start time), with checkpoint counts."""
+    """List sessions ordered by greatest non-null activity timestamp (last
+    checkpoint, ended_at, started_at), with checkpoint counts."""
     if project_key is not None:
         project_key = _validate_identifier(
             project_key, "project_key", _PROJECT_KEY_MAX
@@ -675,7 +715,8 @@ def memory_list(
                 WHERE c2.session_id = s.session_id) AS last_checkpoint_at
         FROM sessions AS s
         WHERE (? IS NULL OR s.project_key = ?)
-        ORDER BY COALESCE(last_checkpoint_at, s.ended_at, s.started_at) DESC,
+        ORDER BY max(COALESCE(last_checkpoint_at, ''), COALESCE(s.ended_at, ''),
+                     COALESCE(s.started_at, '')) DESC,
                  s.rowid DESC
         LIMIT ?
         """,
@@ -790,16 +831,16 @@ def memory_prune(
     kept_by_keep_last = 0
 
     if dry_run:
-        rows = _prune_candidate_rows(db, project_key, cutoff).fetchall()
+        rows = _prune_candidate_rows(db, project_key).fetchall()
         targets, protected_durable, kept_by_keep_last = _plan_prune(
-            rows, keep_last
+            rows, keep_last, cutoff
         )
     else:
         db.execute("BEGIN IMMEDIATE")
         try:
-            rows = _prune_candidate_rows(db, project_key, cutoff).fetchall()
+            rows = _prune_candidate_rows(db, project_key).fetchall()
             targets, protected_durable, kept_by_keep_last = _plan_prune(
-                rows, keep_last
+                rows, keep_last, cutoff
             )
             for session_id in targets:
                 db.execute(
@@ -830,31 +871,43 @@ def memory_prune(
 def _prune_candidate_rows(
     db: sqlite3.Connection,
     project_key: str | None,
-    cutoff: str | None,
 ) -> sqlite3.Cursor:
-    """Select ended prune candidates; durable-fact sessions are flagged."""
+    """Select all ended sessions in scope; durable-fact sessions flagged.
+
+    Age filtering is deliberately NOT applied here: ``_plan_prune`` must see
+    every ended session so ``keep_last`` can protect the most recent N per
+    project before the age cutoff selects deletion candidates.
+    """
     return db.execute(
         f"""
-        SELECT s.session_id, s.project_key,
+        SELECT s.session_id, s.project_key, s.started_at, s.ended_at,
                {_DURABLE_EXISTS_SQL} AS has_durable_facts
         FROM sessions AS s
         WHERE s.ended_at IS NOT NULL
           AND (? IS NULL OR s.project_key = ?)
-          AND (? IS NULL OR COALESCE(s.ended_at, s.started_at) < ?)
         ORDER BY s.project_key ASC, s.ended_at DESC, s.started_at DESC,
                  s.rowid DESC
         """,
-        (project_key, project_key, cutoff, cutoff),
+        (project_key, project_key),
     )
 
 
 def _plan_prune(
-    rows: list[sqlite3.Row], keep_last: int
+    rows: list[sqlite3.Row],
+    keep_last: int,
+    cutoff: str | None,
 ) -> tuple[list[str], int, int]:
-    """Turn candidate rows into a delete plan honoring protections."""
+    """Turn candidate rows into a delete plan honoring protections.
+
+    Order of operations: durable-fact protection first, then keep_last over
+    the full recency order, and only then the age cutoff marks deletion
+    candidates — so "most recent N regardless of age" holds even when those N
+    are fresher than the cutoff.
+    """
     kept_per_project: dict[str, int] = {}
     targets: list[str] = []
     protected_durable = 0
+    kept_by_keep_last = 0
     for row in rows:
         if row["has_durable_facts"]:
             protected_durable += 1
@@ -862,6 +915,10 @@ def _plan_prune(
         count = kept_per_project.get(row["project_key"], 0)
         if count < keep_last:
             kept_per_project[row["project_key"]] = count + 1
+            kept_by_keep_last = sum(kept_per_project.values())
+            continue
+        activity = row["ended_at"] or row["started_at"]
+        if cutoff is not None and activity >= cutoff:
             continue
         targets.append(row["session_id"])
-    return targets, protected_durable, sum(kept_per_project.values())
+    return targets, protected_durable, kept_by_keep_last

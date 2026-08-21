@@ -597,3 +597,91 @@ def test_memory_list_orders_by_latest_checkpoint_activity():
 
     entries = memory_list(project_key="list-order")
     assert [entry["session_id"] for entry in entries] == [older, newer]
+
+
+def test_bootstrap_normalizes_string_and_dict_durable_facts():
+    session_id = session_start(project_key="fact-types", agent="agent")
+    memory_checkpoint(session_id, durable_facts=["older list fact"])
+    memory_checkpoint(session_id, durable_facts={"newer": "dict fact"})
+    memory_checkpoint(session_id, durable_facts="newest plain string")
+    session_end(session_id)
+
+    entry = memory_bootstrap("fact-types")["bootstraps"][0]
+    assert entry["durable_facts"] == [
+        "newest plain string",
+        {"newer": "dict fact"},
+        "older list fact",
+    ]
+
+
+def test_prune_keep_last_applies_before_age_filter():
+    fresh = session_start(project_key="prune-fresh", agent="agent")
+    session_end(fresh)
+    stale = session_start(project_key="prune-fresh", agent="agent")
+    session_end(stale)
+    _get_db().execute(
+        "UPDATE sessions SET ended_at = ? WHERE session_id = ?",
+        ("2026-01-01T00:00:00+00:00", stale),
+    )
+
+    result = memory_prune(
+        project_key="prune-fresh",
+        older_than_days=30,
+        keep_last=1,
+        dry_run=False,
+    )
+    # The fresh session already satisfies keep-last, so the stale one must
+    # not be retained a second time.
+    assert result["deleted"] == 1
+    assert result["kept_by_keep_last"] == 1
+    db = _get_db()
+    remaining = {
+        row["session_id"]
+        for row in db.execute(
+            "SELECT session_id FROM sessions WHERE project_key = 'prune-fresh'"
+        ).fetchall()
+    }
+    assert remaining == {fresh}
+
+
+def test_memory_list_orders_by_greatest_activity_timestamp():
+    ended_late = session_start(project_key="greatest", agent="agent")
+    memory_checkpoint(ended_late, decisions=["work"])
+    started_recently = session_start(project_key="greatest", agent="agent")
+
+    db = _get_db()
+    db.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ? WHERE session_id = ?",
+        ("2026-01-01T00:00:00+00:00", "2026-03-01T00:00:00+00:00", ended_late),
+    )
+    db.execute(
+        "UPDATE checkpoints SET timestamp = ? WHERE session_id = ?",
+        ("2026-02-01T00:00:00+00:00", ended_late),
+    )
+    db.execute(
+        "UPDATE sessions SET started_at = ? WHERE session_id = ?",
+        ("2026-02-15T00:00:00+00:00", started_recently),
+    )
+
+    entries = memory_list(project_key="greatest")
+    # ended_late's newest activity is its end (March), which beats the other
+    # session's start (mid-Feb) even though its last checkpoint is older.
+    assert [entry["session_id"] for entry in entries] == [
+        ended_late,
+        started_recently,
+    ]
+
+
+def test_bootstrap_skips_oversized_entries_within_tight_budget():
+    big = session_start(project_key="budget-bound", agent="agent")
+    memory_checkpoint(big, decisions=["x" * 90_000])
+    session_end(big)
+    small = session_start(project_key="budget-bound", agent="agent")
+    memory_checkpoint(small, decisions=["tiny"])
+    session_end(small)
+
+    result = memory_bootstrap("budget-bound", budget_chars=1_000)
+    ids = [entry["session_id"] for entry in result["bootstraps"]]
+    assert small in ids
+    assert big not in ids
+    assert len(json.dumps(result, ensure_ascii=False)) <= 1_000
