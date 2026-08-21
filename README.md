@@ -439,9 +439,14 @@ mindsync worker --once
 
 MindSync provides local, structured session memory via SQLite (`session_memory.db`).
 
-- **Budget semantics**: `memory_bootstrap` bounds its serialized data envelope to
-  `budget_chars`. It prioritizes open sessions and recent checkpoints, dropping records
-  that do not fit.
+- **Budget and priority semantics**: `memory_bootstrap` bounds its serialized envelope
+  to `budget_chars` and scans at most 200 sessions per priority class. Classes are
+  strict: sessions with durable facts in any retained checkpoint come first, then
+  sessions whose latest checkpoint has unresolved blockers or pending items, then
+  routine history — so routine floods can never crowd out important sessions. Durable
+  facts are merged from every retained checkpoint of an included session, and up to
+  three earlier failed or blocked checkpoints are attached as `earlier_checkpoints`.
+  Records that do not fit are dropped.
 - **Redaction**: Memory writes apply conservative masking for common token, password,
   and private-key patterns. This is best-effort protection, not a substitute for keeping
   credentials out of checkpoints. Lists and objects remain structured after redaction.
@@ -453,6 +458,25 @@ MindSync provides local, structured session memory via SQLite (`session_memory.d
   bounded changed-file paths, and check pass/fail summaries—not agent transcripts,
   raw prompts, or check output tails. Use explicit `memory_checkpoint` when agents
   need richer handoff detail.
+
+## Inspecting memory (Phase 2.1)
+
+Human-facing commands for the local session-memory database:
+
+```bash
+mindsync memory stats                          # totals, per-project counts, db size
+mindsync memory list --project my-repo         # sessions, most recently active first
+mindsync memory show <session-id>              # one session with every checkpoint
+mindsync memory prune --older-than-days 30     # dry run: what would be deleted?
+```
+
+`prune` only considers ended sessions, always protects active sessions and any
+session carrying durable facts in any retained checkpoint, and supports `--keep-last N`
+to preserve the most recent N ended sessions per project (keep-last is applied before
+the age filter, so fresher sessions already satisfy it). Candidate selection and
+deletion run in one transaction, so a concurrently written durable checkpoint is never
+deleted. Nothing is deleted unless `--yes` is passed.
+All four commands accept `--json` for machine-readable output.
 
 ## Local data
 

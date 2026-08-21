@@ -5,11 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sqlite3
 import sys
 from typing import Any
 
 from mindsync.onboarding import CLI_SPECS, doctor, setup
 from mindsync.orchestration import load_policy, policy_path, update_policy
+
+
+def _non_negative_int(raw: str) -> int:
+    value = int(raw)
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be at least 0")
+    return value
 
 
 def _positive_int(raw: str) -> int:
@@ -99,6 +107,133 @@ def _print_doctor(report: dict[str, Any]) -> None:
         print(f"  issue    {issue}")
 
 
+def _format_db_size(size_bytes: int) -> str:
+    size_kb = size_bytes / 1024
+    if size_kb < 1024:
+        return f"{size_kb:.1f} KB"
+    return f"{size_kb / 1024:.1f} MB"
+
+
+def _print_memory_stats(report: dict[str, Any]) -> None:
+    print(
+        f"MindSync session memory — {report['total_sessions']} sessions "
+        f"({report['active_sessions']} active), "
+        f"{report['total_checkpoints']} checkpoints, "
+        f"{_format_db_size(report['db_size_bytes'])}"
+    )
+    if not report["projects"]:
+        print("  no projects recorded")
+    for project in report["projects"]:
+        print(
+            f"  {project['project_key']}: {project['sessions']} sessions "
+            f"({project['active_sessions']} active)"
+        )
+
+
+def _print_memory_list(entries: list[dict[str, Any]]) -> None:
+    if not entries:
+        print("No sessions found.")
+        return
+    for entry in entries:
+        state = entry.get("session_status") or "unknown"
+        ended = entry.get("ended_at") or "in progress"
+        print(
+            f"[{entry['session_id']}] {state} · {entry['agent']} · "
+            f"project: {entry['project_key']} · started: {entry['started_at']} · "
+            f"ended: {ended} · checkpoints: {entry.get('checkpoint_count', 0)}"
+        )
+
+
+def _print_memory_show(session: dict[str, Any]) -> None:
+    print(f"Session {session['session_id']}")
+    print(f"  project:   {session['project_key']}")
+    print(f"  agent:     {session['agent']}")
+    if session.get("workspace"):
+        print(f"  workspace: {session['workspace']}")
+    if session.get("branch"):
+        print(f"  branch:    {session['branch']}")
+    if session.get("goal"):
+        print(f"  goal:      {session['goal']}")
+    print(f"  status:    {session.get('session_status') or 'unknown'}")
+    print(f"  started:   {session['started_at']}")
+    if session.get("ended_at"):
+        print(f"  ended:     {session['ended_at']}")
+    checkpoints = session.get("checkpoints") or []
+    print(f"  checkpoints ({len(checkpoints)}):")
+    for checkpoint in checkpoints:
+        summary = checkpoint.get("status") or "no status"
+        parts = [f"summary: {summary}"]
+        for field in ("decisions", "files_changed", "tests", "pending", "blockers", "durable_facts"):
+            if checkpoint.get(field):
+                parts.append(f"{field}: {json.dumps(checkpoint[field], ensure_ascii=False)}")
+        print(f"    - {checkpoint['timestamp']} · " + " · ".join(parts))
+
+
+def _print_memory_prune(result: dict[str, Any]) -> None:
+    prefix = "DRY RUN — " if result["dry_run"] else ""
+    deleted = (
+        f"{result['deleted']} deleted" if result["deleted"] is not None else "nothing deleted"
+    )
+    print(
+        f"{prefix}prune candidates: {result['candidates']} ({deleted}) · "
+        f"protected durable-fact sessions: {result['protected_durable']} · "
+        f"kept by --keep-last: {result['kept_by_keep_last']}"
+    )
+    for session_id in result["session_ids"]:
+        print(f"  {session_id}")
+    if result["dry_run"] and result["candidates"]:
+        print("Re-run with --yes to delete these sessions.")
+
+
+def _run_memory_command(args: argparse.Namespace) -> int:
+    from mindsync import memory as memory_mod
+
+    try:
+        if args.memory_command == "stats":
+            report = memory_mod.memory_stats()
+            if args.json:
+                print(json.dumps(report, indent=2))
+            else:
+                _print_memory_stats(report)
+            return 0
+        if args.memory_command == "list":
+            entries = memory_mod.memory_list(
+                project_key=args.project, limit=args.limit
+            )
+            if args.json:
+                print(json.dumps(entries, indent=2))
+            else:
+                _print_memory_list(entries)
+            return 0
+        if args.memory_command == "show":
+            session = memory_mod.memory_show(args.session_id)
+            if args.json:
+                print(json.dumps(session, indent=2))
+            else:
+                _print_memory_show(session)
+            return 0
+        if args.memory_command == "prune":
+            result = memory_mod.memory_prune(
+                project_key=args.project,
+                older_than_days=args.older_than_days,
+                keep_last=args.keep_last,
+                dry_run=not args.yes,
+            )
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                _print_memory_prune(result)
+            return 0
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    except sqlite3.Error as exc:
+        print(f"Memory database error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Unknown memory command '{args.memory_command}'.", file=sys.stderr)
+    return 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mindsync")
     sub = parser.add_subparsers(dest="command")
@@ -162,6 +297,49 @@ def build_parser() -> argparse.ArgumentParser:
 
     status_parser = sub.add_parser("status", help="Get status of a remote job or list remote jobs")
     status_parser.add_argument("job_id", nargs="?", help="Job ID to query")
+
+    memory_parser = sub.add_parser("memory", help="Inspect or maintain local session memory")
+    memory_sub = memory_parser.add_subparsers(dest="memory_command", required=True)
+
+    memory_stats_parser = memory_sub.add_parser(
+        "stats", help="Session/checkpoint totals, projects, and database size"
+    )
+    memory_stats_parser.add_argument("--json", action="store_true")
+
+    memory_list_parser = memory_sub.add_parser(
+        "list", help="List sessions, most recently active first"
+    )
+    memory_list_parser.add_argument("--project", help="Filter by project key")
+    memory_list_parser.add_argument("--limit", type=_positive_int, default=50)
+    memory_list_parser.add_argument("--json", action="store_true")
+
+    memory_show_parser = memory_sub.add_parser(
+        "show", help="Show one session with all of its checkpoints"
+    )
+    memory_show_parser.add_argument("session_id", help="32-character session identifier")
+    memory_show_parser.add_argument("--json", action="store_true")
+
+    memory_prune_parser = memory_sub.add_parser(
+        "prune", help="Delete old ended sessions (dry-run by default)"
+    )
+    memory_prune_parser.add_argument("--project", help="Limit pruning to one project key")
+    memory_prune_parser.add_argument(
+        "--older-than-days",
+        type=_positive_int,
+        help="Only consider sessions that ended more than N days ago",
+    )
+    memory_prune_parser.add_argument(
+        "--keep-last",
+        type=_non_negative_int,
+        default=0,
+        help="Always keep the most recent N ended sessions per project (default: 0)",
+    )
+    memory_prune_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Actually delete; without this flag the command is a dry run",
+    )
+    memory_prune_parser.add_argument("--json", action="store_true")
 
     return parser
 
@@ -363,6 +541,9 @@ def main(argv: list[str] | None = None) -> int:
                     f"mode: {item.get('execution_mode', 'worker')}"
                 )
             return 0
+
+    if args.command == "memory":
+        return _run_memory_command(args)
 
     build_parser().print_help()
     return 2

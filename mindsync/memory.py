@@ -8,7 +8,8 @@ import re
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,70 @@ _BRANCH_MAX = 1024
 _TEXT_MAX = 100_000
 _STATUS_MAX = 128
 _MAX_BOOTSTRAP_BUDGET = 200_000
+_MAX_BOOTSTRAP_SESSIONS_PER_CLASS = 200
+# A JSON escape can shrink when decoded and re-serialized (for example ``\/``
+# or ``\u0061``). The size probe accounts for that potential shrink instead of
+# treating stored JSON length as an unconditional lower bound.
+_MAX_UNICODE_ESCAPE_EXTRA_SHRINK = 5
+_MAX_FACT_CHECKPOINTS_PER_SESSION = 10
+_MAX_MERGED_DURABLE_FACTS = 20
+_MAX_IMPORTANT_CHECKPOINTS = 3
+_MAX_LIST_LIMIT = 500
+_MAX_PRUNE_SAMPLE = 100
 _SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
+_DURABLE_EXISTS_SQL = """
+    EXISTS (
+        SELECT 1 FROM checkpoints AS df
+        WHERE df.session_id = s.session_id
+          AND df.durable_facts IS NOT NULL
+          AND df.durable_facts NOT IN ('', '[]', 'null')
+    )
+"""
+_BOOTSTRAP_CLASS_FILTERS = (
+    # 1. Sessions carrying durable facts in any checkpoint.
+    f"AND {_DURABLE_EXISTS_SQL}",
+    # 2. Latest checkpoint still has unresolved blockers or pending work.
+    f"""
+    AND NOT {_DURABLE_EXISTS_SQL}
+    AND (
+        COALESCE(c.blockers, '') NOT IN ('', '[]', 'null')
+        OR COALESCE(c.pending, '') NOT IN ('', '[]', 'null')
+    )
+    """,
+    # 3. Routine history.
+    f"""
+    AND NOT {_DURABLE_EXISTS_SQL}
+    AND COALESCE(c.blockers, '') IN ('', '[]', 'null')
+    AND COALESCE(c.pending, '') IN ('', '[]', 'null')
+    """,
+)
+# Structured checkpoint columns, each capped at _TEXT_MAX on write.
+_CHECKPOINT_PAYLOAD_COLUMNS = (
+    "decisions",
+    "files_changed",
+    "tests",
+    "pending",
+    "blockers",
+    "durable_facts",
+)
+# durable_facts is excluded: the bootstrap entry replaces it with the deduped,
+# item-capped merge across checkpoints, which can be *shorter* than the stored
+# payload, so its stored length is not a lower bound on the entry.
+_BOOTSTRAP_SIZED_COLUMNS = tuple(
+    column for column in _CHECKPOINT_PAYLOAD_COLUMNS if column != "durable_facts"
+)
+# Shared by the size probe and the payload fetch so both see the same rows.
+_IMPORTANT_CHECKPOINT_FILTER_SQL = """
+    FROM checkpoints
+    WHERE session_id = ?
+      AND (? IS NULL OR checkpoint_id != ?)
+      AND (
+          status IN ('failed', 'timed_out', 'cancelled')
+          OR (blockers IS NOT NULL AND blockers NOT IN ('', '[]', 'null'))
+      )
+    ORDER BY timestamp DESC, rowid DESC
+    LIMIT ?
+"""
 _SENSITIVE_KEYS = {
     "apikey",
     "authorization",
@@ -153,9 +217,58 @@ def _encode_structured(value: Any, name: str) -> str | None:
 
 
 def _decode_structured(value: str | None) -> Any:
-    if value is None:
+    if value is None or not value.strip():
         return None
     return json.loads(value)
+
+
+def _size_probe_sql(columns: tuple[str, ...], prefix: str = "") -> str:
+    """Project metadata used to lower-bound decoded JSON output sizes.
+
+    ``length()`` and ``instr()`` are core SQLite scalars, so the engine answers
+    from the stored text without handing a multi-kilobyte payload to Python.
+    """
+    return ", ".join(
+        f"COALESCE(length({prefix}{column}), 0) AS {column}_len, "
+        f"COALESCE(length({prefix}{column}) - "
+        f"length(replace({prefix}{column}, '\\', '')), 0) AS {column}_slashes, "
+        f"COALESCE((length({prefix}{column}) - "
+        f"length(replace({prefix}{column}, '\\u', ''))) / 2, 0) "
+        f"AS {column}_unicode_escapes"
+        for column in columns
+    )
+
+
+def _min_serialized_len(
+    stored_len: int, slash_count: int, unicode_escape_count: int
+) -> int:
+    """Lower bound on what a stored payload costs once decoded and re-encoded.
+
+    ``_encode_structured`` writes with ``ensure_ascii=False`` and compact
+    separators, so re-serializing the decoded value with the default separators
+    cannot remove structure or whitespace produced by that encoder. Escaped
+    slashes can shrink by one character; a Unicode escape can shrink further,
+    including surrogate pairs. Subtracting one per backslash and five more per
+    ``\\u`` token deliberately under-estimates every supported case, which keeps
+    this gate from rejecting an entry that could fit.
+    """
+    possible_shrink = (
+        slash_count
+        + unicode_escape_count * _MAX_UNICODE_ESCAPE_EXTRA_SHRINK
+    )
+    return max(0, stored_len - possible_shrink)
+
+
+def _min_row_len(row: sqlite3.Row, columns: tuple[str, ...]) -> int:
+    """Sum the per-column lower bounds probed by ``_size_probe_sql``."""
+    return sum(
+        _min_serialized_len(
+            row[f"{column}_len"],
+            row[f"{column}_slashes"],
+            row[f"{column}_unicode_escapes"],
+        )
+        for column in columns
+    )
 
 
 def _harden_db_files(db_path: Path) -> None:
@@ -387,6 +500,23 @@ def session_end(session_id: str, status: str = "completed") -> None:
 
 
 def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, Any]:
+    """Return bounded cross-session context in strict priority order.
+
+    Priority classes, each scanned with its own cap of
+    ``_MAX_BOOTSTRAP_SESSIONS_PER_CLASS`` sessions so a flood of routine
+    history can never crowd out important sessions:
+
+    1. Sessions with durable facts in *any* checkpoint.
+    2. Sessions whose latest checkpoint has unresolved blockers or pending items.
+    3. Routine history.
+
+    Within each class the most recently active session wins. Durable facts are
+    collected from every retained checkpoint of an included session (not just
+    the latest one), and up to ``_MAX_IMPORTANT_CHECKPOINTS`` earlier
+    failed/blocked checkpoints are attached as ``earlier_checkpoints``.
+    Entries that do not fit the budget are dropped last-first within each
+    class order.
+    """
     project_key = _validate_identifier(
         project_key, "project_key", _PROJECT_KEY_MAX
     )
@@ -400,39 +530,222 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
     if len(json.dumps(result, ensure_ascii=False)) > budget_chars:
         raise ValueError("budget_chars is too small for the response envelope")
 
-    rows = _get_db().execute(
-        """
-        SELECT s.session_id, s.agent, s.workspace, s.branch, s.goal,
-               s.status AS session_status, s.started_at, s.ended_at,
-               c.timestamp, c.decisions, c.files_changed, c.tests,
-               c.pending, c.blockers, c.durable_facts
-        FROM sessions AS s
-        LEFT JOIN checkpoints AS c ON c.rowid = (
-            SELECT c2.rowid
-            FROM checkpoints AS c2
-            WHERE c2.session_id = s.session_id
-            ORDER BY c2.timestamp DESC, c2.rowid DESC
-            LIMIT 1
-        )
-        WHERE s.project_key = ?
-        ORDER BY
-            CASE WHEN s.ended_at IS NULL THEN 0 ELSE 1 END,
-            COALESCE(c.timestamp, s.started_at) DESC,
-            s.started_at DESC
-        """,
-        (project_key,),
-    )
-    for row in rows:
+    db = _get_db()
+    committed_len = len(json.dumps(result, ensure_ascii=False))
+    bootstraps: list[dict[str, Any]] = result["bootstraps"]
+    for row in _iter_bootstrap_candidates(db, project_key):
+        # Default json.dumps separators join list items with ", " (two chars).
+        separator_len = 2 if bootstraps else 0
+        max_entry_len = budget_chars - committed_len - separator_len
+        # Stored lengths alone can prove an entry is too large. Gating here is
+        # what keeps working memory proportional to budget_chars instead of to
+        # the database: a payload that cannot fit is never selected, so it is
+        # never handed to Python and never decoded.
+        if _bootstrap_min_entry_len(row) > max_entry_len:
+            continue
+        payload = _bootstrap_payload_row(db, row["session_id"], row["checkpoint_id"])
+        if payload is None:  # session vanished between the two statements
+            continue
         entry = {
             "session_id": row["session_id"],
             "agent": row["agent"],
             "workspace": row["workspace"],
             "branch": row["branch"],
-            "goal": row["goal"],
+            "goal": payload["goal"],
             "session_status": row["session_status"],
             "started_at": row["started_at"],
             "ended_at": row["ended_at"],
             "checkpoint_time": row["timestamp"],
+            "decisions": _decode_structured(payload["decisions"]),
+            "files_changed": _decode_structured(payload["files_changed"]),
+            "tests": _decode_structured(payload["tests"]),
+            "pending": _decode_structured(payload["pending"]),
+            "blockers": _decode_structured(payload["blockers"]),
+            "durable_facts": _decode_structured(row["base_durable_facts"]),
+        }
+        entry = {key: value for key, value in entry.items() if value is not None}
+        # Enrichment below only ever grows the entry, so an over-budget base
+        # entry can be dropped before any enrichment query runs.
+        if len(json.dumps(entry, ensure_ascii=False)) > max_entry_len:
+            continue
+
+        merged_facts = _merged_durable_facts(db, row["session_id"], max_entry_len)
+        if merged_facts is None:
+            continue
+        if merged_facts:
+            entry["durable_facts"] = merged_facts
+        earlier = _earlier_important_checkpoints(
+            db,
+            row["session_id"],
+            row["checkpoint_id"],
+            max_entry_len - len(json.dumps(entry, ensure_ascii=False)),
+        )
+        if earlier is None:
+            continue
+        if earlier:
+            entry["earlier_checkpoints"] = earlier
+        # The exact serialized length is the authority; every gate above only
+        # ever under-estimates it.
+        serialized_len = len(json.dumps(entry, ensure_ascii=False))
+        if serialized_len > max_entry_len:
+            continue
+        bootstraps.append(entry)
+        committed_len += serialized_len + separator_len
+    return {"project_key": project_key, "bootstraps": bootstraps}
+
+
+def _iter_bootstrap_candidates(
+    db: sqlite3.Connection, project_key: str
+) -> Iterator[sqlite3.Row]:
+    """Stream candidate metadata one row at a time, in priority-class order."""
+    for extra_where in _BOOTSTRAP_CLASS_FILTERS:
+        yield from _bootstrap_class_rows(db, project_key, extra_where)
+
+
+def _bootstrap_class_rows(
+    db: sqlite3.Connection,
+    project_key: str,
+    extra_where: str,
+) -> sqlite3.Cursor:
+    """Probe one priority class of bootstrap candidates, capped per class.
+
+    Selects identifiers plus size metadata only. ``goal`` is raw text rather
+    than JSON, and escaping a raw string never shortens it, so its stored
+    length is a lower bound with no escape probe needed. ``durable_facts`` is
+    carried verbatim only for the sentinel values that make
+    ``_merged_durable_facts`` come back empty -- every other value is replaced
+    by the merge, so loading it here would be wasted work.
+    """
+    return db.execute(
+        f"""
+        SELECT s.session_id, s.agent, s.workspace, s.branch,
+               s.status AS session_status, s.started_at, s.ended_at,
+               c.checkpoint_id, c.timestamp,
+               COALESCE(length(s.goal), 0) AS goal_len,
+               CASE WHEN c.durable_facts IN ('', '[]', 'null')
+                    THEN c.durable_facts END AS base_durable_facts,
+               {_size_probe_sql(_BOOTSTRAP_SIZED_COLUMNS, prefix="c.")}
+        FROM sessions AS s
+        {_latest_checkpoint_join()}
+        WHERE s.project_key = ?
+          {extra_where}
+        ORDER BY max(COALESCE(c.timestamp, ''), COALESCE(s.ended_at, ''),
+                     COALESCE(s.started_at, '')) DESC,
+                 s.rowid DESC
+        LIMIT ?
+        """,
+        (project_key, _MAX_BOOTSTRAP_SESSIONS_PER_CLASS),
+    )
+
+
+def _bootstrap_min_entry_len(row: sqlite3.Row) -> int:
+    """Lower bound on a candidate's serialized entry, from metadata only."""
+    return row["goal_len"] + _min_row_len(row, _BOOTSTRAP_SIZED_COLUMNS)
+
+
+def _bootstrap_payload_row(
+    db: sqlite3.Connection,
+    session_id: str,
+    checkpoint_id: str | None,
+) -> sqlite3.Row | None:
+    """Load the large fields for one candidate that cleared the size gate."""
+    return db.execute(
+        """
+        SELECT s.goal, c.decisions, c.files_changed, c.tests, c.pending,
+               c.blockers
+        FROM sessions AS s
+        LEFT JOIN checkpoints AS c
+          ON c.session_id = s.session_id AND c.checkpoint_id = ?
+        WHERE s.session_id = ?
+        """,
+        (checkpoint_id, session_id),
+    ).fetchone()
+
+
+def _merged_durable_facts(
+    db: sqlite3.Connection, session_id: str, max_chars: int
+) -> list[Any] | None:
+    """Collect durable facts from every retained checkpoint of a session.
+
+    Facts may have been stored as strings, lists, or objects; every allowed
+    payload shape is normalized into a flat list, newest checkpoint first.
+
+    Returns ``None`` as soon as the merged list alone outgrows ``max_chars``:
+    the caller's entry can then never fit, so the remaining checkpoints are
+    left undecoded. The cap is measured against the merged output rather than
+    against stored lengths because dedupe means a checkpoint can contribute
+    fewer characters than it stores -- the output, by contrast, only grows.
+    """
+    rows = db.execute(
+        """
+        SELECT durable_facts FROM checkpoints
+        WHERE session_id = ?
+          AND durable_facts IS NOT NULL
+          AND durable_facts NOT IN ('', '[]', 'null')
+        ORDER BY timestamp DESC, rowid DESC
+        LIMIT ?
+        """,
+        (session_id, _MAX_FACT_CHECKPOINTS_PER_SESSION),
+    )
+    merged: list[Any] = []
+    for row in rows:
+        decoded = _decode_structured(row["durable_facts"])
+        if decoded is not None:
+            items = decoded if isinstance(decoded, list) else [decoded]
+            for item in items:
+                if item not in merged:
+                    merged.append(item)
+                    if len(merged) >= _MAX_MERGED_DURABLE_FACTS:
+                        break
+        if len(json.dumps(merged, ensure_ascii=False)) > max_chars:
+            return None
+        if len(merged) >= _MAX_MERGED_DURABLE_FACTS:
+            break
+    return merged
+
+
+def _earlier_important_checkpoints(
+    db: sqlite3.Connection,
+    session_id: str,
+    latest_checkpoint_id: str | None,
+    max_chars: int,
+) -> list[dict[str, Any]] | None:
+    """Fetch up to _MAX_IMPORTANT_CHECKPOINTS older failed/blocked checkpoints.
+
+    Returns ``None`` when the stored lengths prove these checkpoints cannot fit
+    in ``max_chars``, leaving their payloads unselected. Every field of every
+    matched checkpoint is appended verbatim -- no dedupe, no cap on content --
+    so stored length is a sound lower bound here.
+    """
+    params = (
+        session_id,
+        latest_checkpoint_id,
+        latest_checkpoint_id,
+        _MAX_IMPORTANT_CHECKPOINTS,
+    )
+    minimum = 0
+    matched = False
+    for row in db.execute(
+        f"SELECT {_size_probe_sql(_CHECKPOINT_PAYLOAD_COLUMNS)}"
+        f"{_IMPORTANT_CHECKPOINT_FILTER_SQL}",
+        params,
+    ):
+        matched = True
+        minimum += _min_row_len(row, _CHECKPOINT_PAYLOAD_COLUMNS)
+        if minimum > max_chars:
+            return None
+    if not matched:
+        return []
+
+    entries = []
+    for row in db.execute(
+        f"SELECT timestamp, status, {', '.join(_CHECKPOINT_PAYLOAD_COLUMNS)}"
+        f"{_IMPORTANT_CHECKPOINT_FILTER_SQL}",
+        params,
+    ):
+        item = {
+            "checkpoint_time": row["timestamp"],
+            "status": row["status"],
             "decisions": _decode_structured(row["decisions"]),
             "files_changed": _decode_structured(row["files_changed"]),
             "tests": _decode_structured(row["tests"]),
@@ -440,11 +753,303 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
             "blockers": _decode_structured(row["blockers"]),
             "durable_facts": _decode_structured(row["durable_facts"]),
         }
-        entry = {key: value for key, value in entry.items() if value is not None}
-        candidate = {
-            "project_key": project_key,
-            "bootstraps": [*result["bootstraps"], entry],
+        entries.append(
+            {key: value for key, value in item.items() if value is not None}
+        )
+    return entries
+
+
+def _latest_checkpoint_join() -> str:
+    """SQL fragment joining each session to its most recent checkpoint."""
+    return """
+        LEFT JOIN checkpoints AS c ON c.rowid = (
+            SELECT c2.rowid
+            FROM checkpoints AS c2
+            WHERE c2.session_id = s.session_id
+            ORDER BY c2.timestamp DESC, c2.rowid DESC
+            LIMIT 1
+        )
+    """
+
+
+def memory_stats() -> dict[str, Any]:
+    """Return human-facing totals for the session-memory database."""
+    db = _get_db()
+    totals = db.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM sessions) AS total_sessions,
+            (SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL) AS active_sessions,
+            (SELECT COUNT(*) FROM checkpoints) AS total_checkpoints
+        """
+    ).fetchone()
+    projects = db.execute(
+        """
+        SELECT project_key, COUNT(*) AS sessions,
+               SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END) AS active_sessions
+        FROM sessions
+        GROUP BY project_key
+        ORDER BY project_key
+        """
+    ).fetchall()
+    try:
+        db_size_bytes = settings.memory_db_file.stat().st_size
+    except OSError:
+        db_size_bytes = 0
+    return {
+        "db_file": str(settings.memory_db_file),
+        "db_size_bytes": db_size_bytes,
+        "total_sessions": int(totals["total_sessions"]),
+        "active_sessions": int(totals["active_sessions"]),
+        "total_checkpoints": int(totals["total_checkpoints"]),
+        "projects": [
+            {
+                "project_key": row["project_key"],
+                "sessions": int(row["sessions"]),
+                "active_sessions": int(row["active_sessions"] or 0),
+            }
+            for row in projects
+        ],
+    }
+
+
+def memory_list(
+    project_key: str | None = None, limit: int = 50
+) -> list[dict[str, Any]]:
+    """List sessions ordered by greatest non-null activity timestamp (last
+    checkpoint, ended_at, started_at), with checkpoint counts."""
+    if project_key is not None:
+        project_key = _validate_identifier(
+            project_key, "project_key", _PROJECT_KEY_MAX
+        )
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ValueError("limit must be an integer")
+    if limit <= 0 or limit > _MAX_LIST_LIMIT:
+        raise ValueError(f"limit must be between 1 and {_MAX_LIST_LIMIT}")
+    rows = _get_db().execute(
+        """
+        SELECT s.session_id, s.project_key, s.agent, s.workspace, s.branch,
+               s.goal, s.status AS session_status, s.started_at, s.ended_at,
+               (SELECT COUNT(*) FROM checkpoints c
+                WHERE c.session_id = s.session_id) AS checkpoint_count,
+               (SELECT MAX(c2.timestamp) FROM checkpoints c2
+                WHERE c2.session_id = s.session_id) AS last_checkpoint_at
+        FROM sessions AS s
+        WHERE (? IS NULL OR s.project_key = ?)
+        ORDER BY max(COALESCE(last_checkpoint_at, ''), COALESCE(s.ended_at, ''),
+                     COALESCE(s.started_at, '')) DESC,
+                 s.rowid DESC
+        LIMIT ?
+        """,
+        (project_key, project_key, limit),
+    )
+    entries = []
+    for row in rows:
+        entry = {
+            "session_id": row["session_id"],
+            "project_key": row["project_key"],
+            "agent": row["agent"],
+            "workspace": row["workspace"],
+            "branch": row["branch"],
+            "goal": row["goal"],
+            "session_status": row["session_status"],
+            "started_at": row["started_at"],
+            "ended_at": row["ended_at"],
+            "checkpoint_count": int(row["checkpoint_count"]),
+            "last_checkpoint_at": row["last_checkpoint_at"],
         }
-        if len(json.dumps(candidate, ensure_ascii=False)) <= budget_chars:
-            result = candidate
-    return result
+        entries.append(
+            {key: value for key, value in entry.items() if value is not None}
+        )
+    return entries
+
+
+def memory_show(session_id: str) -> dict[str, Any]:
+    """Return one session with every checkpoint, oldest first."""
+    session_id = _validate_session_id(session_id)
+    db = _get_db()
+    row = db.execute(
+        "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown session {session_id}")
+    session: dict[str, Any] = {
+        ("session_status" if key == "status" else key): row[key]
+        for key in row.keys()
+    }
+    checkpoints: list[dict[str, Any]] = []
+    for checkpoint in db.execute(
+        """
+        SELECT * FROM checkpoints WHERE session_id = ?
+        ORDER BY timestamp ASC, rowid ASC
+        """,
+        (session_id,),
+    ):
+        item = {
+            "checkpoint_id": checkpoint["checkpoint_id"],
+            "timestamp": checkpoint["timestamp"],
+            "status": checkpoint["status"],
+            "decisions": _decode_structured(checkpoint["decisions"]),
+            "files_changed": _decode_structured(checkpoint["files_changed"]),
+            "tests": _decode_structured(checkpoint["tests"]),
+            "pending": _decode_structured(checkpoint["pending"]),
+            "blockers": _decode_structured(checkpoint["blockers"]),
+            "durable_facts": _decode_structured(checkpoint["durable_facts"]),
+        }
+        checkpoints.append(
+            {key: value for key, value in item.items() if value is not None}
+        )
+    session["checkpoints"] = checkpoints
+    return session
+
+
+def memory_prune(
+    project_key: str | None = None,
+    older_than_days: int | None = None,
+    keep_last: int = 0,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """Delete old ended sessions; never touch active or durable-fact sessions.
+
+    Only sessions that have ended are eligible. A session is protected when
+    *any* retained checkpoint carries durable facts (not just the latest one),
+    so long-term memory survives pruning. ``keep_last`` preserves the most
+    recent N ended sessions per project regardless of age.
+
+    ``dry_run`` must be a real boolean; deletion happens only when it is
+    exactly ``False``. Candidate selection and deletion run inside one
+    ``BEGIN IMMEDIATE`` transaction so a concurrent durable checkpoint can
+    never be deleted after being missed by a stale candidate list.
+    """
+    if not isinstance(dry_run, bool):
+        raise ValueError("dry_run must be a boolean")
+    if project_key is not None:
+        project_key = _validate_identifier(
+            project_key, "project_key", _PROJECT_KEY_MAX
+        )
+    if older_than_days is not None:
+        if (
+            isinstance(older_than_days, bool)
+            or not isinstance(older_than_days, int)
+            or older_than_days <= 0
+        ):
+            raise ValueError("older_than_days must be a positive integer")
+    if isinstance(keep_last, bool) or not isinstance(keep_last, int):
+        raise ValueError("keep_last must be an integer")
+    if keep_last < 0:
+        raise ValueError("keep_last must be at least 0")
+
+    cutoff: str | None = None
+    if older_than_days is not None:
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        ).isoformat()
+
+    db = _get_db()
+    deleted = 0
+    targets: list[str] = []
+    protected_durable = 0
+    kept_by_keep_last = 0
+
+    if dry_run:
+        rows = _prune_candidate_rows(db, project_key).fetchall()
+        targets, protected_durable, kept_by_keep_last = _plan_prune(
+            rows, keep_last, cutoff
+        )
+    else:
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            rows = _prune_candidate_rows(db, project_key).fetchall()
+            targets, protected_durable, kept_by_keep_last = _plan_prune(
+                rows, keep_last, cutoff
+            )
+            for session_id in targets:
+                db.execute(
+                    "DELETE FROM checkpoints WHERE session_id = ?",
+                    (session_id,),
+                )
+                cursor = db.execute(
+                    "DELETE FROM sessions WHERE session_id = ? "
+                    "AND ended_at IS NOT NULL",
+                    (session_id,),
+                )
+                deleted += int(cursor.rowcount)
+            db.execute("COMMIT")
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+
+    return {
+        "dry_run": dry_run,
+        "candidates": len(targets),
+        "deleted": deleted if not dry_run else None,
+        "protected_durable": protected_durable,
+        "kept_by_keep_last": kept_by_keep_last,
+        "session_ids": targets[:_MAX_PRUNE_SAMPLE],
+    }
+
+
+def _prune_candidate_rows(
+    db: sqlite3.Connection,
+    project_key: str | None,
+) -> sqlite3.Cursor:
+    """Select all ended sessions in scope; durable-fact sessions flagged.
+
+    Age filtering is deliberately NOT applied here: ``_plan_prune`` must see
+    every ended session so ``keep_last`` can protect the most recent N per
+    project before the age cutoff selects deletion candidates.
+    """
+    return db.execute(
+        f"""
+        SELECT s.session_id, s.project_key, s.started_at, s.ended_at,
+               {_DURABLE_EXISTS_SQL} AS has_durable_facts
+        FROM sessions AS s
+        WHERE s.ended_at IS NOT NULL
+          AND (? IS NULL OR s.project_key = ?)
+        ORDER BY s.project_key ASC, s.ended_at DESC, s.started_at DESC,
+                 s.rowid DESC
+        """,
+        (project_key, project_key),
+    )
+
+
+def _plan_prune(
+    rows: list[sqlite3.Row],
+    keep_last: int,
+    cutoff: str | None,
+) -> tuple[list[str], int, int]:
+    """Turn candidate rows into a delete plan honoring protections.
+
+    Order of operations: keep_last claims recency slots over the full order,
+    then durable-fact protection, and only then the age cutoff marks deletion
+    candidates — so "most recent N regardless of age" holds even when those N
+    are fresher than the cutoff.
+
+    A durable-fact session consumes a recency slot as it passes: it is retained
+    either way, so letting an older session claim that slot instead would keep
+    more than the caller asked for. It is reported under ``protected_durable``
+    rather than ``kept_by_keep_last``, so the two counts never double-count the
+    same session.
+    """
+    kept_per_project: dict[str, int] = {}
+    targets: list[str] = []
+    protected_durable = 0
+    kept_by_keep_last = 0
+    for row in rows:
+        count = kept_per_project.get(row["project_key"], 0)
+        claims_recency_slot = count < keep_last
+        if claims_recency_slot:
+            kept_per_project[row["project_key"]] = count + 1
+
+        if row["has_durable_facts"]:
+            protected_durable += 1
+            continue
+        if claims_recency_slot:
+            kept_by_keep_last += 1
+            continue
+
+        activity = row["ended_at"] or row["started_at"]
+        if cutoff is not None and activity >= cutoff:
+            continue
+        targets.append(row["session_id"])
+    return targets, protected_durable, kept_by_keep_last
