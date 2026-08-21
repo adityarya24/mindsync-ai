@@ -439,9 +439,12 @@ mindsync worker --once
 
 MindSync provides local, structured session memory via SQLite (`session_memory.db`).
 
-- **Budget semantics**: `memory_bootstrap` bounds its serialized data envelope to
-  `budget_chars`. It prioritizes open sessions and recent checkpoints, dropping records
-  that do not fit.
+- **Budget and priority semantics**: `memory_bootstrap` bounds its serialized envelope
+  to `budget_chars` and scans at most the 200 most relevant sessions. Sessions whose
+  latest checkpoint carries durable facts or unresolved blockers/pending items are
+  packed before routine history; each included session may also carry up to three
+  earlier failed or blocked checkpoints as `earlier_checkpoints`. Records that do not
+  fit are dropped.
 - **Redaction**: Memory writes apply conservative masking for common token, password,
   and private-key patterns. This is best-effort protection, not a substitute for keeping
   credentials out of checkpoints. Lists and objects remain structured after redaction.
@@ -453,6 +456,22 @@ MindSync provides local, structured session memory via SQLite (`session_memory.d
   bounded changed-file paths, and check pass/fail summaries—not agent transcripts,
   raw prompts, or check output tails. Use explicit `memory_checkpoint` when agents
   need richer handoff detail.
+
+## Inspecting memory (Phase 2.1)
+
+Human-facing commands for the local session-memory database:
+
+```bash
+mindsync memory stats                          # totals, per-project counts, db size
+mindsync memory list --project my-repo         # sessions, most recently active first
+mindsync memory show <session-id>              # one session with every checkpoint
+mindsync memory prune --older-than-days 30     # dry run: what would be deleted?
+```
+
+`prune` only considers ended sessions, always protects active sessions and any
+session whose latest checkpoint contains durable facts, and supports `--keep-last N`
+to preserve recent history per project. Nothing is deleted unless `--yes` is passed.
+All four commands accept `--json` for machine-readable output.
 
 ## Local data
 

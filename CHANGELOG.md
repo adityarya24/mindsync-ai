@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Phase 2.1 session-memory tooling: priority-aware bounded bootstrap (durable facts and unresolved blockers/pending items pack first, session scan capped at 200, earlier failed/blocked checkpoints surfaced as `earlier_checkpoints`) and human-facing `mindsync memory stats|list|show|prune` commands with dry-run-first retention that never deletes active or durable-fact sessions.
 - Generic remote execution modes: queue submissions now default to non-recursive `worker` jobs and may explicitly request a depth-0 local `orchestrator`; orchestrator execution requires a local opt-in, while all delegated children remain depth-1 workers with `MINDSYNC_WORKER=1`.
 - Background job completion pings through the new `job_wait` MCP tool. The orchestrator now keeps its turn open after delegation and resumes automatically when a job completes, fails, or is cancelled; cancellation also emits a typed `job.cancelled` event.
 - One-time `mindsync setup`, `mindsync doctor`, and `mindsync config` onboarding commands. Setup detects supported local CLIs, idempotently registers the MCP server, identifies the human-facing caller, and supports non-mutating dry runs.
