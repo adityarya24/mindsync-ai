@@ -217,7 +217,7 @@ def _encode_structured(value: Any, name: str) -> str | None:
 
 
 def _decode_structured(value: str | None) -> Any:
-    if value is None:
+    if value is None or not value.strip():
         return None
     return json.loads(value)
 

@@ -841,3 +841,39 @@ def test_bootstrap_stops_durable_merge_after_first_oversized_fact(monkeypatch):
         "bootstraps"
     ] == []
     assert durable_decode_count == 2
+
+
+def test_bootstrap_treats_blank_latest_durable_facts_as_missing():
+    session_id = session_start(project_key="blank-latest-durable", agent="agent")
+    checkpoint_id = memory_checkpoint(session_id, decisions=["still useful"])
+    session_end(session_id)
+    _get_db().execute(
+        "UPDATE checkpoints SET durable_facts = '' WHERE checkpoint_id = ?",
+        (checkpoint_id,),
+    )
+
+    result = memory_bootstrap("blank-latest-durable")
+
+    assert result["bootstraps"][0]["session_id"] == session_id
+    assert "durable_facts" not in result["bootstraps"][0]
+
+
+def test_bootstrap_treats_blank_earlier_durable_facts_as_missing():
+    session_id = session_start(project_key="blank-earlier-durable", agent="agent")
+    earlier_id = memory_checkpoint(
+        session_id,
+        status="failed",
+        decisions=["earlier failure"],
+    )
+    memory_checkpoint(session_id, status="done", decisions=["latest checkpoint"])
+    session_end(session_id)
+    _get_db().execute(
+        "UPDATE checkpoints SET durable_facts = '' WHERE checkpoint_id = ?",
+        (earlier_id,),
+    )
+
+    result = memory_bootstrap("blank-earlier-durable")
+
+    earlier = result["bootstraps"][0]["earlier_checkpoints"][0]
+    assert earlier["decisions"] == ["earlier failure"]
+    assert "durable_facts" not in earlier
