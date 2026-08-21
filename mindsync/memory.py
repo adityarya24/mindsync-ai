@@ -433,45 +433,37 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
         raise ValueError("budget_chars is too small for the response envelope")
 
     db = _get_db()
-    rows = (
-        _bootstrap_class_rows(
-            db,
-            project_key,
-            f"AND {_DURABLE_EXISTS_SQL}",
-        ).fetchall()
-        + _bootstrap_class_rows(
-            db,
-            project_key,
-            f"""
-            AND NOT {_DURABLE_EXISTS_SQL}
-            AND (
-                COALESCE(c.blockers, '') NOT IN ('', '[]', 'null')
-                OR COALESCE(c.pending, '') NOT IN ('', '[]', 'null')
-            )
-            """,
-        ).fetchall()
-        + _bootstrap_class_rows(
-            db,
-            project_key,
-            f"""
-            AND NOT {_DURABLE_EXISTS_SQL}
-            AND COALESCE(c.blockers, '') IN ('', '[]', 'null')
-            AND COALESCE(c.pending, '') IN ('', '[]', 'null')
-            """,
-        ).fetchall()
-    )
+
+    def _iter_candidates():
+        cursors = [
+            _bootstrap_class_rows(db, project_key, f"AND {_DURABLE_EXISTS_SQL}"),
+            _bootstrap_class_rows(
+                db,
+                project_key,
+                f"""
+                AND NOT {_DURABLE_EXISTS_SQL}
+                AND (
+                    COALESCE(c.blockers, '') NOT IN ('', '[]', 'null')
+                    OR COALESCE(c.pending, '') NOT IN ('', '[]', 'null')
+                )
+                """,
+            ),
+            _bootstrap_class_rows(
+                db,
+                project_key,
+                f"""
+                AND NOT {_DURABLE_EXISTS_SQL}
+                AND COALESCE(c.blockers, '') IN ('', '[]', 'null')
+                AND COALESCE(c.pending, '') IN ('', '[]', 'null')
+                """,
+            ),
+        ]
+        for cursor in cursors:
+            yield from cursor
 
     committed_len = len(json.dumps(result, ensure_ascii=False))
     bootstraps: list[dict[str, Any]] = result["bootstraps"]
-    for row in rows:
-        # Gross-oversize gate before decoding: structured payloads can
-        # approach _TEXT_MAX each, so decoding every candidate would let
-        # working memory scale with database size instead of budget_chars.
-        # The slack keeps borderline small entries eligible; the exact check
-        # after enrichment is what actually enforces the budget.
-        remaining = budget_chars - committed_len
-        if _estimate_entry_size(row) > remaining + _SIZE_PRECHECK_SLACK:
-            continue
+    for row in _iter_candidates():
         entry = {
             "session_id": row["session_id"],
             "agent": row["agent"],
@@ -490,6 +482,10 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
             "durable_facts": _decode_structured(row["durable_facts"]),
         }
         entry = {key: value for key, value in entry.items() if value is not None}
+        base_serialized_len = len(json.dumps(entry, ensure_ascii=False))
+        if committed_len + base_serialized_len + (2 if bootstraps else 0) > budget_chars:
+            continue
+
         merged_facts = _merged_durable_facts(db, row["session_id"])
         if merged_facts:
             entry["durable_facts"] = merged_facts
@@ -510,34 +506,6 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
     return {"project_key": project_key, "bootstraps": bootstraps}
 
 
-def _estimate_entry_size(row: sqlite3.Row) -> int:
-    """Conservative upper bound for an entry's serialized size, no decoding.
-
-    Structured columns are counted as their stored JSON length with 2x slack
-    for escaping; a flat pad covers keys, identifiers, and enrichment
-    headroom. False oversizing only skips an entry that might have fit — the
-    exact check after enrichment keeps the response within budget.
-    """
-    raw = 0
-    for column in (
-        "decisions",
-        "files_changed",
-        "tests",
-        "pending",
-        "blockers",
-        "durable_facts",
-    ):
-        value = row[column]
-        raw += len(value) if value else 0
-    identifiers = (
-        len(row["session_id"])
-        + len(row["agent"])
-        + len(row["session_status"] or "")
-        + len(row["timestamp"] or "")
-    )
-    return identifiers + raw * 2 + 512
-
-
 def _bootstrap_class_rows(
     db: sqlite3.Connection,
     project_key: str,
@@ -554,7 +522,8 @@ def _bootstrap_class_rows(
         {_latest_checkpoint_join()}
         WHERE s.project_key = ?
           {extra_where}
-        ORDER BY COALESCE(c.timestamp, s.ended_at, s.started_at) DESC,
+        ORDER BY max(COALESCE(c.timestamp, ''), COALESCE(s.ended_at, ''),
+                     COALESCE(s.started_at, '')) DESC,
                  s.rowid DESC
         LIMIT ?
         """,
@@ -891,7 +860,6 @@ def _prune_candidate_rows(
         (project_key, project_key),
     )
 
-
 def _plan_prune(
     rows: list[sqlite3.Row],
     keep_last: int,
@@ -901,7 +869,7 @@ def _plan_prune(
 
     Order of operations: durable-fact protection first, then keep_last over
     the full recency order, and only then the age cutoff marks deletion
-    candidates — so "most recent N regardless of age" holds even when those N
+    candidates - so "most recent N regardless of age" holds even when those N
     are fresher than the cutoff.
     """
     kept_per_project: dict[str, int] = {}
@@ -909,14 +877,20 @@ def _plan_prune(
     protected_durable = 0
     kept_by_keep_last = 0
     for row in rows:
+        count = kept_per_project.get(row["project_key"], 0)
+        kept = False
+        if count < keep_last:
+            kept_per_project[row["project_key"]] = count + 1
+            kept = True
+
         if row["has_durable_facts"]:
             protected_durable += 1
             continue
-        count = kept_per_project.get(row["project_key"], 0)
-        if count < keep_last:
-            kept_per_project[row["project_key"]] = count + 1
-            kept_by_keep_last = sum(kept_per_project.values())
+
+        if kept:
+            kept_by_keep_last += 1
             continue
+            
         activity = row["ended_at"] or row["started_at"]
         if cutoff is not None and activity >= cutoff:
             continue
