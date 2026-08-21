@@ -22,11 +22,21 @@ _BRANCH_MAX = 1024
 _TEXT_MAX = 100_000
 _STATUS_MAX = 128
 _MAX_BOOTSTRAP_BUDGET = 200_000
-_MAX_BOOTSTRAP_SESSIONS = 200
+_MAX_BOOTSTRAP_SESSIONS_PER_CLASS = 200
+_MAX_FACT_CHECKPOINTS_PER_SESSION = 10
+_MAX_MERGED_DURABLE_FACTS = 20
 _MAX_IMPORTANT_CHECKPOINTS = 3
 _MAX_LIST_LIMIT = 500
 _MAX_PRUNE_SAMPLE = 100
 _SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
+_DURABLE_EXISTS_SQL = """
+    EXISTS (
+        SELECT 1 FROM checkpoints AS df
+        WHERE df.session_id = s.session_id
+          AND df.durable_facts IS NOT NULL
+          AND df.durable_facts NOT IN ('', '[]', 'null')
+    )
+"""
 _SENSITIVE_KEYS = {
     "apikey",
     "authorization",
@@ -391,14 +401,22 @@ def session_end(session_id: str, status: str = "completed") -> None:
 
 
 def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, Any]:
-    """Return bounded cross-session context, most important first.
+    """Return bounded cross-session context in strict priority order.
 
-    Priority order: sessions whose latest checkpoint carries durable facts or
-    unresolved blockers/pending items come before routine history; within each
-    class the most recent session wins. Candidate sessions are capped at
-    ``_MAX_BOOTSTRAP_SESSIONS`` so retrieval never scans unbounded history.
-    Each included session may also carry up to ``_MAX_IMPORTANT_CHECKPOINTS``
-    earlier failed/blocked checkpoints as ``earlier_checkpoints``.
+    Priority classes, each scanned with its own cap of
+    ``_MAX_BOOTSTRAP_SESSIONS_PER_CLASS`` sessions so a flood of routine
+    history can never crowd out important sessions:
+
+    1. Sessions with durable facts in *any* checkpoint.
+    2. Sessions whose latest checkpoint has unresolved blockers or pending items.
+    3. Routine history.
+
+    Within each class the most recently active session wins. Durable facts are
+    collected from every retained checkpoint of an included session (not just
+    the latest one), and up to ``_MAX_IMPORTANT_CHECKPOINTS`` earlier
+    failed/blocked checkpoints are attached as ``earlier_checkpoints``.
+    Entries that do not fit the budget are dropped last-first within each
+    class order.
     """
     project_key = _validate_identifier(
         project_key, "project_key", _PROJECT_KEY_MAX
@@ -413,27 +431,37 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
     if len(json.dumps(result, ensure_ascii=False)) > budget_chars:
         raise ValueError("budget_chars is too small for the response envelope")
 
-    rows = _get_db().execute(
-        f"""
-        SELECT s.session_id, s.agent, s.workspace, s.branch, s.goal,
-               s.status AS session_status, s.started_at, s.ended_at,
-               c.checkpoint_id, c.timestamp, c.decisions, c.files_changed,
-               c.tests, c.pending, c.blockers, c.durable_facts
-        FROM sessions AS s
-        {_latest_checkpoint_join()}
-        WHERE s.project_key = ?
-        ORDER BY
-            CASE WHEN s.ended_at IS NULL THEN 0 ELSE 1 END,
-            COALESCE(c.timestamp, s.started_at) DESC,
-            s.started_at DESC,
-            s.rowid DESC
-        LIMIT ?
-        """,
-        (project_key, _MAX_BOOTSTRAP_SESSIONS),
+    db = _get_db()
+    rows = (
+        _bootstrap_class_rows(
+            db,
+            project_key,
+            f"AND {_DURABLE_EXISTS_SQL}",
+        ).fetchall()
+        + _bootstrap_class_rows(
+            db,
+            project_key,
+            f"""
+            AND NOT {_DURABLE_EXISTS_SQL}
+            AND (
+                COALESCE(c.blockers, '') NOT IN ('', '[]', 'null')
+                OR COALESCE(c.pending, '') NOT IN ('', '[]', 'null')
+            )
+            """,
+        ).fetchall()
+        + _bootstrap_class_rows(
+            db,
+            project_key,
+            f"""
+            AND NOT {_DURABLE_EXISTS_SQL}
+            AND COALESCE(c.blockers, '') IN ('', '[]', 'null')
+            AND COALESCE(c.pending, '') IN ('', '[]', 'null')
+            """,
+        ).fetchall()
     )
+
     latest_checkpoint_ids: dict[str, str | None] = {}
-    important: list[dict[str, Any]] = []
-    routine: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     for row in rows:
         entry = {
             "session_id": row["session_id"],
@@ -454,21 +482,19 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
         }
         entry = {key: value for key, value in entry.items() if value is not None}
         latest_checkpoint_ids[row["session_id"]] = row["checkpoint_id"]
-        has_unresolved = bool(entry.get("blockers")) or bool(entry.get("pending"))
-        if entry.get("durable_facts") or has_unresolved:
-            important.append(entry)
-        else:
-            routine.append(entry)
-
-    db = _get_db()
-    for entry in (*important, *routine):
+        merged_facts = _merged_durable_facts(db, row["session_id"])
+        if merged_facts:
+            entry["durable_facts"] = merged_facts
         earlier = _earlier_important_checkpoints(
             db,
-            entry["session_id"],
-            latest_checkpoint_ids.get(entry["session_id"]),
+            row["session_id"],
+            row["checkpoint_id"],
         )
         if earlier:
             entry["earlier_checkpoints"] = earlier
+        entries.append(entry)
+
+    for entry in entries:
         candidate = {
             "project_key": project_key,
             "bootstraps": [*result["bootstraps"], entry],
@@ -476,6 +502,55 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
         if len(json.dumps(candidate, ensure_ascii=False)) <= budget_chars:
             result = candidate
     return result
+
+
+def _bootstrap_class_rows(
+    db: sqlite3.Connection,
+    project_key: str,
+    extra_where: str,
+) -> sqlite3.Cursor:
+    """Fetch one priority class of bootstrap candidates, capped per class."""
+    return db.execute(
+        f"""
+        SELECT s.session_id, s.agent, s.workspace, s.branch, s.goal,
+               s.status AS session_status, s.started_at, s.ended_at,
+               c.checkpoint_id, c.timestamp, c.decisions, c.files_changed,
+               c.tests, c.pending, c.blockers, c.durable_facts
+        FROM sessions AS s
+        {_latest_checkpoint_join()}
+        WHERE s.project_key = ?
+          {extra_where}
+        ORDER BY COALESCE(c.timestamp, s.ended_at, s.started_at) DESC,
+                 s.rowid DESC
+        LIMIT ?
+        """,
+        (project_key, _MAX_BOOTSTRAP_SESSIONS_PER_CLASS),
+    )
+
+
+def _merged_durable_facts(db: sqlite3.Connection, session_id: str) -> list[Any]:
+    """Collect durable facts from every retained checkpoint of a session."""
+    rows = db.execute(
+        """
+        SELECT durable_facts FROM checkpoints
+        WHERE session_id = ?
+          AND durable_facts IS NOT NULL
+          AND durable_facts NOT IN ('', '[]', 'null')
+        ORDER BY timestamp DESC, rowid DESC
+        LIMIT ?
+        """,
+        (session_id, _MAX_FACT_CHECKPOINTS_PER_SESSION),
+    ).fetchall()
+    merged: list[Any] = []
+    for row in rows:
+        decoded = _decode_structured(row["durable_facts"])
+        if isinstance(decoded, list):
+            for item in decoded:
+                if item not in merged:
+                    merged.append(item)
+                    if len(merged) >= _MAX_MERGED_DURABLE_FACTS:
+                        return merged
+    return merged
 
 
 def _earlier_important_checkpoints(
@@ -580,7 +655,8 @@ def memory_stats() -> dict[str, Any]:
 def memory_list(
     project_key: str | None = None, limit: int = 50
 ) -> list[dict[str, Any]]:
-    """List sessions, most recently active first, with checkpoint counts."""
+    """List sessions ordered by actual latest activity (last checkpoint,
+    then end time, then start time), with checkpoint counts."""
     if project_key is not None:
         project_key = _validate_identifier(
             project_key, "project_key", _PROJECT_KEY_MAX
@@ -599,7 +675,7 @@ def memory_list(
                 WHERE c2.session_id = s.session_id) AS last_checkpoint_at
         FROM sessions AS s
         WHERE (? IS NULL OR s.project_key = ?)
-        ORDER BY COALESCE(s.ended_at, s.started_at) DESC, s.started_at DESC,
+        ORDER BY COALESCE(last_checkpoint_at, s.ended_at, s.started_at) DESC,
                  s.rowid DESC
         LIMIT ?
         """,
@@ -673,12 +749,18 @@ def memory_prune(
 ) -> dict[str, Any]:
     """Delete old ended sessions; never touch active or durable-fact sessions.
 
-    Only sessions that have ended are eligible. Sessions whose latest
-    checkpoint carries durable facts are always protected so long-term memory
-    survives pruning. ``keep_last`` preserves the most recent N ended sessions
-    per project regardless of age. Callers must pass ``dry_run=False``
-    explicitly; the default only reports what would be deleted.
+    Only sessions that have ended are eligible. A session is protected when
+    *any* retained checkpoint carries durable facts (not just the latest one),
+    so long-term memory survives pruning. ``keep_last`` preserves the most
+    recent N ended sessions per project regardless of age.
+
+    ``dry_run`` must be a real boolean; deletion happens only when it is
+    exactly ``False``. Candidate selection and deletion run inside one
+    ``BEGIN IMMEDIATE`` transaction so a concurrent durable checkpoint can
+    never be deleted after being missed by a stale candidate list.
     """
+    if not isinstance(dry_run, bool):
+        raise ValueError("dry_run must be a boolean")
     if project_key is not None:
         project_key = _validate_identifier(
             project_key, "project_key", _PROJECT_KEY_MAX
@@ -702,37 +784,23 @@ def memory_prune(
         ).isoformat()
 
     db = _get_db()
-    rows = db.execute(
-        f"""
-        SELECT s.session_id, s.project_key, c.durable_facts AS latest_durable_facts
-        FROM sessions AS s
-        {_latest_checkpoint_join()}
-        WHERE s.ended_at IS NOT NULL
-          AND (? IS NULL OR s.project_key = ?)
-          AND (? IS NULL OR COALESCE(s.ended_at, s.started_at) < ?)
-        ORDER BY s.project_key ASC, s.ended_at DESC, s.started_at DESC,
-                 s.rowid DESC
-        """,
-        (project_key, project_key, cutoff, cutoff),
-    ).fetchall()
-
-    kept_per_project: dict[str, int] = {}
+    deleted = 0
     targets: list[str] = []
     protected_durable = 0
-    for row in rows:
-        if row["latest_durable_facts"]:
-            protected_durable += 1
-            continue
-        count = kept_per_project.get(row["project_key"], 0)
-        if count < keep_last:
-            kept_per_project[row["project_key"]] = count + 1
-            continue
-        targets.append(row["session_id"])
+    kept_by_keep_last = 0
 
-    deleted = 0
-    if not dry_run and targets:
+    if dry_run:
+        rows = _prune_candidate_rows(db, project_key, cutoff).fetchall()
+        targets, protected_durable, kept_by_keep_last = _plan_prune(
+            rows, keep_last
+        )
+    else:
         db.execute("BEGIN IMMEDIATE")
         try:
+            rows = _prune_candidate_rows(db, project_key, cutoff).fetchall()
+            targets, protected_durable, kept_by_keep_last = _plan_prune(
+                rows, keep_last
+            )
             for session_id in targets:
                 db.execute(
                     "DELETE FROM checkpoints WHERE session_id = ?",
@@ -754,6 +822,46 @@ def memory_prune(
         "candidates": len(targets),
         "deleted": deleted if not dry_run else None,
         "protected_durable": protected_durable,
-        "kept_by_keep_last": sum(kept_per_project.values()),
+        "kept_by_keep_last": kept_by_keep_last,
         "session_ids": targets[:_MAX_PRUNE_SAMPLE],
     }
+
+
+def _prune_candidate_rows(
+    db: sqlite3.Connection,
+    project_key: str | None,
+    cutoff: str | None,
+) -> sqlite3.Cursor:
+    """Select ended prune candidates; durable-fact sessions are flagged."""
+    return db.execute(
+        f"""
+        SELECT s.session_id, s.project_key,
+               {_DURABLE_EXISTS_SQL} AS has_durable_facts
+        FROM sessions AS s
+        WHERE s.ended_at IS NOT NULL
+          AND (? IS NULL OR s.project_key = ?)
+          AND (? IS NULL OR COALESCE(s.ended_at, s.started_at) < ?)
+        ORDER BY s.project_key ASC, s.ended_at DESC, s.started_at DESC,
+                 s.rowid DESC
+        """,
+        (project_key, project_key, cutoff, cutoff),
+    )
+
+
+def _plan_prune(
+    rows: list[sqlite3.Row], keep_last: int
+) -> tuple[list[str], int, int]:
+    """Turn candidate rows into a delete plan honoring protections."""
+    kept_per_project: dict[str, int] = {}
+    targets: list[str] = []
+    protected_durable = 0
+    for row in rows:
+        if row["has_durable_facts"]:
+            protected_durable += 1
+            continue
+        count = kept_per_project.get(row["project_key"], 0)
+        if count < keep_last:
+            kept_per_project[row["project_key"]] = count + 1
+            continue
+        targets.append(row["session_id"])
+    return targets, protected_durable, sum(kept_per_project.values())

@@ -440,11 +440,13 @@ mindsync worker --once
 MindSync provides local, structured session memory via SQLite (`session_memory.db`).
 
 - **Budget and priority semantics**: `memory_bootstrap` bounds its serialized envelope
-  to `budget_chars` and scans at most the 200 most relevant sessions. Sessions whose
-  latest checkpoint carries durable facts or unresolved blockers/pending items are
-  packed before routine history; each included session may also carry up to three
-  earlier failed or blocked checkpoints as `earlier_checkpoints`. Records that do not
-  fit are dropped.
+  to `budget_chars` and scans at most 200 sessions per priority class. Classes are
+  strict: sessions with durable facts in any retained checkpoint come first, then
+  sessions whose latest checkpoint has unresolved blockers or pending items, then
+  routine history — so routine floods can never crowd out important sessions. Durable
+  facts are merged from every retained checkpoint of an included session, and up to
+  three earlier failed or blocked checkpoints are attached as `earlier_checkpoints`.
+  Records that do not fit are dropped.
 - **Redaction**: Memory writes apply conservative masking for common token, password,
   and private-key patterns. This is best-effort protection, not a substitute for keeping
   credentials out of checkpoints. Lists and objects remain structured after redaction.
@@ -469,8 +471,10 @@ mindsync memory prune --older-than-days 30     # dry run: what would be deleted?
 ```
 
 `prune` only considers ended sessions, always protects active sessions and any
-session whose latest checkpoint contains durable facts, and supports `--keep-last N`
-to preserve recent history per project. Nothing is deleted unless `--yes` is passed.
+session carrying durable facts in any retained checkpoint, and supports `--keep-last N`
+to preserve recent history per project. Candidate selection and deletion run in one
+transaction, so a concurrently written durable checkpoint is never deleted. Nothing
+is deleted unless `--yes` is passed.
 All four commands accept `--json` for machine-readable output.
 
 ## Local data

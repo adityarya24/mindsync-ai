@@ -380,10 +380,9 @@ def test_bootstrap_prioritizes_durable_and_unresolved_sessions():
 
     result = memory_bootstrap("prio", budget_chars=2000)
     order = [entry["session_id"] for entry in result["bootstraps"]]
-    # Active blocked session first (active class), then the durable-fact
-    # session must beat the older routine one even though it is newer.
-    assert order[0] == blocked
-    assert order.index(important) < order.index(routine_old)
+    # Strict priority classes: durable-fact sessions first, unresolved
+    # blockers/pending second, routine history last.
+    assert order == [important, blocked, routine_old]
 
 
 def test_bootstrap_includes_earlier_important_checkpoints():
@@ -509,3 +508,92 @@ def test_prune_rejects_bad_input():
         memory_prune(older_than_days=0)
     with pytest.raises(ValueError, match="keep_last"):
         memory_prune(keep_last=-1)
+
+
+def test_bootstrap_surfaces_durable_session_beyond_routine_flood():
+    durable = session_start(project_key="flood", agent="agent")
+    memory_checkpoint(durable, durable_facts=["anchor fact"])
+    session_end(durable)
+    for _ in range(205):
+        routine = session_start(project_key="flood", agent="agent")
+        memory_checkpoint(routine, decisions=["routine work"])
+        session_end(routine)
+
+    result = memory_bootstrap("flood", budget_chars=200_000)
+    order = [entry["session_id"] for entry in result["bootstraps"]]
+    # The old durable session must lead despite 205 newer routine sessions.
+    assert order[0] == durable
+    assert len(order) <= 2 * memory_mod._MAX_BOOTSTRAP_SESSIONS_PER_CLASS + 1
+
+
+def test_bootstrap_preserves_durable_facts_from_older_checkpoints():
+    session_id = session_start(project_key="facts-mid", agent="agent")
+    memory_checkpoint(session_id, durable_facts=["key architecture fact"])
+    memory_checkpoint(session_id, decisions=["later routine decision"])
+    session_end(session_id)
+
+    entry = memory_bootstrap("facts-mid")["bootstraps"][0]
+    assert entry["durable_facts"] == ["key architecture fact"]
+    assert entry["decisions"] == ["later routine decision"]
+
+
+def test_prune_protects_durable_fact_in_any_checkpoint():
+    durable_mid = session_start(project_key="prune-any", agent="agent")
+    memory_checkpoint(durable_mid, durable_facts=["old but gold"])
+    memory_checkpoint(durable_mid, decisions=["routine follow-up"])
+    session_end(durable_mid)
+    plain = session_start(project_key="prune-any", agent="agent")
+    session_end(plain)
+
+    result = memory_prune(project_key="prune-any", dry_run=False)
+    assert result["protected_durable"] == 1
+    assert result["deleted"] == 1
+    db = _get_db()
+    remaining = {
+        row["session_id"]
+        for row in db.execute(
+            "SELECT session_id FROM sessions WHERE project_key = 'prune-any'"
+        ).fetchall()
+    }
+    assert remaining == {durable_mid}
+
+
+def test_prune_rechecks_protection_at_deletion_time():
+    target = session_start(project_key="prune-recheck", agent="agent")
+    session_end(target)
+
+    dry = memory_prune(project_key="prune-recheck", dry_run=True)
+    assert dry["candidates"] == 1
+
+    # A durable checkpoint lands after the dry run saw the candidate.
+    memory_checkpoint(target, durable_facts=["arrived late"])
+
+    result = memory_prune(project_key="prune-recheck", dry_run=False)
+    assert result["deleted"] == 0
+    assert result["protected_durable"] == 1
+    stats = memory_stats()
+    assert stats["total_sessions"] == 1
+
+
+def test_memory_prune_rejects_non_bool_dry_run():
+    ended = session_start(project_key="prune-bool", agent="agent")
+    session_end(ended)
+    for bad_value in (None, 0, 1, "yes", "false"):
+        with pytest.raises(ValueError, match="dry_run must be a boolean"):
+            memory_prune(project_key="prune-bool", dry_run=bad_value)
+    assert memory_stats()["total_sessions"] == 1
+
+
+def test_memory_list_orders_by_latest_checkpoint_activity():
+    older = session_start(project_key="list-order", agent="agent")
+    memory_checkpoint(older, decisions=["older session works"])
+    newer = session_start(project_key="list-order", agent="agent")
+
+    # Force the older session's checkpoint to be the newest activity overall.
+    _get_db().execute(
+        "UPDATE checkpoints SET timestamp = ? WHERE session_id = ?",
+        ("2027-01-01T00:00:00+00:00", older),
+    )
+
+    entries = memory_list(project_key="list-order")
+    assert [entry["session_id"] for entry in entries] == [older, newer]
