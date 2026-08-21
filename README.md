@@ -28,7 +28,9 @@ MindSync provides:
 - **Automatic orchestration** — the human-facing CLI decides when delegation is useful.
 - **Capability-based routing** — workers are ranked by task fit, availability, and priority.
 - **Conflict prevention** — active file and project focus is visible before work begins.
-- **Shared local memory** — session state, events, and queued facts survive restarts.
+- **Durable local state** — focus, events, and queued facts survive restarts.
+- **Session memory** — decisions, blockers, and durable facts persist per project, and
+  bounded prior context is replayed into the next session instead of being re-explained.
 - **Safe process control** — tracked jobs, timeouts, cancellation, and process-tree cleanup.
 - **Optional durable sync** — important facts can be shared through your own SSH host.
 - **Explainable decisions** — every automatic route includes the reason and candidate scores.
@@ -46,6 +48,7 @@ MindSync AI
  ├── capability router ──────► Codex / Claude / AGY / Gemini / Grok / Cursor / Aider
  ├── focus + conflict map
  ├── event bus + job records
+ ├── session memory (SQLite) ──► bounded context replayed on the next run
  └── local durable state ────► optional SSH/VPS truth store
 ```
 
