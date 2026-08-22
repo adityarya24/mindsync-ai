@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MindSync AI — One orchestrator. Your coding agents. Shared context.</title>
+  <meta name="description" content="MindSync AI is a local-first MCP orchestration layer for coding agents. Route tasks by capability, prevent file conflicts, and keep session memory across runs. MIT licensed, no account required." />
+  <meta property="og:title" content="MindSync AI — One orchestrator. Your coding agents. Shared context." />
+  <meta property="og:description" content="A local-first MCP orchestration layer for coding agents. Codex, Claude, Gemini, Grok, Cursor and Aider as one coordinated system." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://adityarya24.github.io/mindsync-ai/" />
+  <meta property="og:image" content="https://avatars.githubusercontent.com/u/82873763?v=4" />
+  <meta name="twitter:card" content="summary" />
+  <link rel="canonical" href="https://adityarya24.github.io/mindsync-ai/" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%2309090b'/><text x='32' y='44' font-family='monospace' font-size='30' font-weight='700' fill='%2334d399' text-anchor='middle'>ms</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #09090b;
+      --surface: #101013;
+      --border: #232327;
+      --text: #e4e4e7;
+      --muted: #9f9fa8;
+      --accent: #34d399;
+      --accent-dim: rgba(52, 211, 153, 0.12);
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Inter", system-ui, -apple-system, sans-serif;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(60rem 30rem at 70% -10%, rgba(52, 211, 153, 0.07), transparent 60%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .wrap { max-width: 62rem; margin: 0 auto; padding: 0 1.5rem; position: relative; z-index: 1; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, pre, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+
+    /* nav */
+    nav {
+      position: sticky; top: 0; z-index: 10;
+      background: rgba(9, 9, 11, 0.85);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+    }
+    nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 3.75rem; gap: 1rem; }
+    .brand { font-family: "JetBrains Mono", monospace; font-weight: 500; color: var(--text); }
+    .brand span { color: var(--accent); }
+    .nav-links { display: flex; gap: 1.5rem; font-size: 0.9rem; flex-wrap: wrap; }
+    .nav-links a { color: var(--muted); }
+    .nav-links a:hover { color: var(--text); text-decoration: none; }
+
+    /* section rhythm */
+    section { padding: 5rem 0; border-bottom: 1px solid var(--border); }
+    section:last-of-type { border-bottom: 0; }
+    .label {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.8rem;
+      color: var(--accent);
+      margin-bottom: 1rem;
+      letter-spacing: 0.02em;
+    }
+    h2 { font-size: clamp(1.5rem, 3.5vw, 2rem); font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.75rem; }
+    .lede { color: var(--muted); max-width: 44rem; }
+
+    /* hero */
+    .hero { padding: 6rem 0 5rem; border-bottom: 1px solid var(--border); }
+    .hero h1 {
+      font-size: clamp(2rem, 6vw, 3.4rem);
+      font-weight: 800;
+      letter-spacing: -0.035em;
+      line-height: 1.1;
+      margin-bottom: 1.25rem;
+    }
+    .hero h1 em { font-style: normal; color: var(--accent); }
+    .hero p { color: var(--muted); font-size: 1.1rem; max-width: 42rem; }
+    .badges { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.75rem; }
+    .badge {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.75rem;
+      color: var(--accent);
+      background: var(--accent-dim);
+      border: 1px solid rgba(52, 211, 153, 0.25);
+      border-radius: 999px;
+      padding: 0.2rem 0.7rem;
+    }
+    .cta { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem; }
+    .btn {
+      display: inline-block;
+      font-size: 0.95rem;
+      font-weight: 600;
+      padding: 0.7rem 1.3rem;
+      border-radius: 0.5rem;
+      border: 1px solid var(--border);
+    }
+    .btn:hover { text-decoration: none; }
+    .btn-primary { background: var(--accent); color: #06251a; border-color: var(--accent); }
+    .btn-primary:hover { filter: brightness(1.08); }
+    .btn-ghost { color: var(--text); background: var(--surface); }
+    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+    /* code blocks */
+    pre {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.6rem;
+      padding: 1.1rem 1.25rem;
+      overflow-x: auto;
+      font-size: 0.875rem;
+      line-height: 1.75;
+      color: var(--text);
+    }
+    pre .c { color: var(--muted); }
+    pre .p { color: var(--accent); }
+    .install { margin-top: 2.25rem; max-width: 34rem; }
+
+    /* grids */
+    .grid { display: grid; gap: 1rem; margin-top: 2rem; }
+    .grid-3 { grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.7rem;
+      padding: 1.4rem;
+    }
+    .card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 0.4rem; }
+    .card p { color: var(--muted); font-size: 0.92rem; }
+    .card .k { font-family: "JetBrains Mono", monospace; font-size: 0.78rem; color: var(--accent); display: block; margin-bottom: 0.6rem; }
+
+    /* problem list */
+    ul.plain { list-style: none; margin-top: 1.5rem; display: grid; gap: 0.6rem; }
+    ul.plain li { color: var(--muted); padding-left: 1.4rem; position: relative; }
+    ul.plain li::before {
+      content: "—";
+      position: absolute; left: 0;
+      color: var(--accent);
+      font-family: "JetBrains Mono", monospace;
+    }
+
+    /* table */
+    .table-scroll { overflow-x: auto; margin-top: 2rem; border: 1px solid var(--border); border-radius: 0.7rem; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.9rem; min-width: 34rem; }
+    th, td { text-align: left; padding: 0.75rem 1.1rem; border-bottom: 1px solid var(--border); }
+    th { font-family: "JetBrains Mono", monospace; font-size: 0.78rem; color: var(--accent); font-weight: 500; }
+    tr:last-child td { border-bottom: 0; }
+    td.w { color: var(--muted); }
+
+    footer { padding: 3rem 0 4rem; color: var(--muted); font-size: 0.88rem; }
+    footer .row { display: flex; flex-wrap: wrap; gap: 1.25rem; justify-content: space-between; }
+    .note { font-family: "JetBrains Mono", monospace; font-size: 0.78rem; }
+
+    @media (max-width: 40rem) {
+      section { padding: 3.5rem 0; }
+      .hero { padding: 4rem 0 3.5rem; }
+      .nav-links { gap: 1rem; font-size: 0.82rem; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top">mindsync<span>_ai</span></a>
+    <div class="nav-links">
+      <a href="#why">Why</a>
+      <a href="#how">How</a>
+      <a href="#memory">Memory</a>
+      <a href="#workers">Workers</a>
+      <a href="https://github.com/adityarya24/mindsync-ai">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="wrap">
+    <div class="badges">
+      <span class="badge">MIT licensed</span>
+      <span class="badge">local-first</span>
+      <span class="badge">no account required</span>
+      <span class="badge">Python 3.10+</span>
+    </div>
+    <h1>One orchestrator.<br />Your coding agents.<br /><em>Shared context.</em></h1>
+    <p>
+      MindSync AI is a local-first MCP orchestration layer for coding agents. It turns the
+      CLI already working with you into the lead orchestrator — discovering available workers,
+      routing tasks by capability, supervising execution, and keeping every session aligned
+      through shared focus, events, and durable memory.
+    </p>
+    <div class="install">
+      <pre><span class="c"># install</span>
+pip install mindsync-ai
+
+<span class="c"># one-time onboarding, then restart your CLI</span>
+mindsync setup <span class="p">--mode</span> auto
+mindsync doctor</pre>
+    </div>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/adityarya24/mindsync-ai">Read the docs</a>
+      <a class="btn btn-ghost" href="https://pypi.org/project/mindsync-ai/">View on PyPI</a>
+    </div>
+  </div>
+</header>
+
+<section id="why">
+  <div class="wrap">
+    <div class="label">// Why MindSync</div>
+    <h2>Running several capable agents is easy. Keeping them coordinated is the hard part.</h2>
+    <p class="lede">Without a shared layer, agents duplicate work, overwrite each other's files, lose decisions between sessions, and make you pick a worker by hand for every single task.</p>
+    <div class="grid grid-3">
+      <div class="card">
+        <span class="k">01</span>
+        <h3>Automatic orchestration</h3>
+        <p>The human-facing CLI decides when delegation is actually useful — you stop naming a worker for every task.</p>
+      </div>
+      <div class="card">
+        <span class="k">02</span>
+        <h3>Capability-based routing</h3>
+        <p>Workers are ranked by task fit, availability, and priority. Every automatic route reports its reason and candidate scores.</p>
+      </div>
+      <div class="card">
+        <span class="k">03</span>
+        <h3>Conflict prevention</h3>
+        <p>Active file and project focus is visible before work begins, so two agents don't edit the same file blind.</p>
+      </div>
+      <div class="card">
+        <span class="k">04</span>
+        <h3>Session memory</h3>
+        <p>Decisions, blockers, and durable facts persist per project and replay into the next run instead of being re-explained.</p>
+      </div>
+      <div class="card">
+        <span class="k">05</span>
+        <h3>Safe process control</h3>
+        <p>Tracked jobs, timeouts, cancellation, and process-tree cleanup — plus optional git worktree isolation per job.</p>
+      </div>
+      <div class="card">
+        <span class="k">06</span>
+        <h3>Yours, locally</h3>
+        <p>No hosted control plane, no MindSync account. Remote sync is optional and runs through your own SSH host.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <div class="label">// How it works</div>
+    <h2>Your CLI stays in charge.</h2>
+    <p class="lede">The orchestrator keeps planning, authorization, integration, and the final answer. Delegated workers receive bounded tasks and cannot recursively delegate through MindSync.</p>
+    <pre style="margin-top:2rem">You
+ │
+ ▼
+Human-facing CLI (orchestrator)
+ │  MCP
+ ▼
+MindSync AI
+ ├── capability router ──────► Codex / Claude / AGY / Gemini / Grok / Cursor / Aider
+ ├── focus + conflict map
+ ├── event bus + job records
+ ├── session memory (SQLite) ──► bounded context replayed on the next run
+ └── local durable state ────► optional SSH/VPS truth store</pre>
+  </div>
+</section>
+
+<section id="memory">
+  <div class="wrap">
+    <div class="label">// Session memory</div>
+    <h2>Context that survives the session.</h2>
+    <p class="lede">
+      Agents record decisions, blockers, and durable facts per project in local SQLite. The next
+      run gets a bounded, priority-ordered replay: sessions carrying durable facts pack first,
+      then unresolved blockers, then routine history — so noise can never crowd out what mattered.
+    </p>
+    <ul class="plain">
+      <li>Bounded by a character budget, so a long history never blows up the context window.</li>
+      <li>Conservative redaction of common token, password, and private-key patterns on every write.</li>
+      <li>Dispatch can drive the whole lifecycle automatically — prompts, transcripts, and stdout are never persisted.</li>
+      <li>Human-facing inspection and safe retention, with a dry run before anything is deleted.</li>
+    </ul>
+    <pre style="margin-top:2rem"><span class="c"># look at what your agents have remembered</span>
+mindsync memory stats
+mindsync memory list <span class="p">--project</span> my-repo
+mindsync memory show &lt;session-id&gt;
+
+<span class="c"># dry run first — nothing is deleted without --yes</span>
+mindsync memory prune <span class="p">--older-than-days</span> 30</pre>
+  </div>
+</section>
+
+<section id="workers">
+  <div class="wrap">
+    <div class="label">// Supported workers</div>
+    <h2>Use them as one system.</h2>
+    <p class="lede">MindSync separates the MCP host from the worker backend. A CLI may act as either, or both — without locking you into a single model or provider.</p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>CLI</th><th>MCP host setup</th><th>Best at</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>OpenAI Codex</td><td class="w">Native</td><td class="w">Coding, debugging, testing, DevOps</td></tr>
+          <tr><td>Anthropic Claude</td><td class="w">Native</td><td class="w">Architecture, reasoning, review, large context</td></tr>
+          <tr><td>Google Gemini CLI</td><td class="w">Native</td><td class="w">Alternate backend in the Gemini/Antigravity family</td></tr>
+          <tr><td>Antigravity (<code>agy</code>)</td><td class="w">Via Gemini CLI host</td><td class="w">Preferred backend in that family</td></tr>
+          <tr><td>Grok CLI</td><td class="w">Native</td><td class="w">Research, reasoning, review, security work</td></tr>
+          <tr><td>Cursor Agent</td><td class="w">JSON setup</td><td class="w">Coding and repository work</td></tr>
+          <tr><td>Aider</td><td class="w">—</td><td class="w">Focused code editing</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="lede" style="margin-top:1.5rem; font-size:0.9rem">
+      Detected clients without a supported registration surface are reported, never modified
+      through guessed or undocumented configuration.
+    </p>
+  </div>
+</section>
+
+<section id="start">
+  <div class="wrap">
+    <div class="label">// Get started</div>
+    <h2>Three commands.</h2>
+    <pre style="margin-top:1.5rem; max-width:34rem">pip install mindsync-ai
+mindsync setup <span class="p">--mode</span> auto
+mindsync doctor</pre>
+    <p class="lede" style="margin-top:1.5rem">
+      Setup is idempotent — existing MCP registrations are preserved unless you pass
+      <code>--force</code>, and <code>--dry-run</code> previews every change without touching a file.
+      Requires Python 3.10 or newer.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/adityarya24/mindsync-ai">Full documentation</a>
+      <a class="btn btn-ghost" href="https://github.com/adityarya24/mindsync-ai/blob/master/CHANGELOG.md">Changelog</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap row">
+    <div>
+      <div class="note">MIT licensed · built by <a href="https://adityarya24.github.io/">Aditya Arya</a></div>
+    </div>
+    <div class="note">
+      <a href="https://github.com/adityarya24/mindsync-ai">GitHub</a> ·
+      <a href="https://pypi.org/project/mindsync-ai/">PyPI</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
