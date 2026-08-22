@@ -5,6 +5,8 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+**[adityarya24.github.io/mindsync-ai](https://adityarya24.github.io/mindsync-ai/)**
+
 ### One orchestrator. Your coding agents. Shared context.
 
 MindSync AI is a local-first MCP orchestration layer for coding agents. It turns the

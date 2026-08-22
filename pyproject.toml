@@ -38,7 +38,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/adityarya24/mindsync-ai"
+Homepage = "https://adityarya24.github.io/mindsync-ai/"
+Source = "https://github.com/adityarya24/mindsync-ai"
 Documentation = "https://github.com/adityarya24/mindsync-ai#readme"
 Issues = "https://github.com/adityarya24/mindsync-ai/issues"
 Changelog = "https://github.com/adityarya24/mindsync-ai/blob/master/CHANGELOG.md"
