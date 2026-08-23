@@ -74,7 +74,12 @@ def parse_run_args(argv: list[str]) -> dict:
             flags["memory_project"] = argv[i] if i < len(argv) else None
         elif a == "--memory-mode":
             i += 1
-            flags["memory_mode"] = argv[i] if i < len(argv) else None
+            # Unlike --memory-project, None is not a valid value here: it
+            # surfaces as "memory_mode must be one of: ..." and never
+            # mentions that the flag was simply missing its argument.
+            if i >= len(argv):
+                raise SystemExit(usage_str)
+            flags["memory_mode"] = argv[i]
         elif a == "--write":
             flags["write"] = True
         elif a == "--background":

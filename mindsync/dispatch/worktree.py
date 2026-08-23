@@ -2,20 +2,37 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
+
+# Environment variables that redirect git's repository discovery. ``git -C``
+# does not override them: with GIT_DIR set, git reports on that repository no
+# matter which directory it was pointed at.
+_AMBIENT_REPO_ENV = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE")
 
 
 class WorktreeError(RuntimeError):
     pass
 
 
-def _git(cwd: str, *args: str) -> str | None:
+def _git(cwd: str, *args: str, ignore_ambient_repo: bool = False) -> str | None:
     """Run a git command, returning stdout, or None when it could not run.
 
     Callers must distinguish "git said no" from "git said nothing" — an empty
     string is a real answer, None is a failure.
+
+    ``ignore_ambient_repo`` drops the discovery variables in
+    ``_AMBIENT_REPO_ENV``. Ask for it when the answer is meant to describe
+    ``cwd`` itself, because otherwise a caller running under a git hook,
+    ``git rebase --exec``, ``git bisect run``, or a CI step that exports
+    GIT_DIR is quietly told about a different repository — and
+    ``--is-inside-work-tree`` still answers "true", so the mistake does not
+    look like a failure.
     """
+    env = None
+    if ignore_ambient_repo:
+        env = {k: v for k, v in os.environ.items() if k not in _AMBIENT_REPO_ENV}
     try:
         res = subprocess.run(
             ["git", "-C", cwd, *args],
@@ -24,6 +41,7 @@ def _git(cwd: str, *args: str) -> str | None:
             text=True,
             check=False,
             timeout=15,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

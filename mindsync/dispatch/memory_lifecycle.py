@@ -59,8 +59,23 @@ def _infer_git_project_key(workspace: str | None) -> str | None:
     try:
         from mindsync.dispatch.worktree import _git
 
-        inside = _git(str(workspace_path), "rev-parse", "--is-inside-work-tree")
-        common = _git(str(workspace_path), "rev-parse", "--git-common-dir")
+        # The workspace decides the project key, so these two probes must
+        # describe the workspace and not an inherited GIT_DIR. Since #22 the
+        # key also partitions the fact store, and a fact written under the
+        # wrong key is served at the top of every later bootstrap for that
+        # project with nothing left to mark it as misattributed.
+        inside = _git(
+            str(workspace_path),
+            "rev-parse",
+            "--is-inside-work-tree",
+            ignore_ambient_repo=True,
+        )
+        common = _git(
+            str(workspace_path),
+            "rev-parse",
+            "--git-common-dir",
+            ignore_ambient_repo=True,
+        )
     except Exception:
         # Memory is optional. Even a surprising Git/helper failure must degrade
         # to memory-off rather than escape after the dispatch job was created.

@@ -615,3 +615,38 @@ async def test_supervisor_validation_failure_finalizes_memory(tmp_path, monkeypa
     fresh = store.get_job(meta["id"])
     assert fresh is not None
     assert fresh["memoryFinalized"] is True
+
+
+def test_inference_ignores_an_ambient_git_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A workspace must key to itself, not to whatever repo GIT_DIR points at.
+
+    ``git -C`` does not override GIT_DIR for repository discovery, and
+    ``--is-inside-work-tree`` still answers "true", so without scrubbing the
+    environment a job launched from a git hook, ``git rebase --exec``, or a CI
+    step that exports GIT_DIR would silently read and write another project's
+    session memory.
+    """
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    _init_git_repo(repo_a)
+    _init_git_repo(repo_b)
+
+    key_a = _infer_git_project_key(str(repo_a))
+    key_b = _infer_git_project_key(str(repo_b))
+    assert key_a and key_b and key_a != key_b
+
+    monkeypatch.setenv("GIT_DIR", str(repo_b / ".git"))
+    assert _infer_git_project_key(str(repo_a)) == key_a
+
+    monkeypatch.setenv("GIT_WORK_TREE", str(repo_b))
+    monkeypatch.setenv("GIT_COMMON_DIR", str(repo_b / ".git"))
+    assert _infer_git_project_key(str(repo_a)) == key_a
+
+
+def test_memory_mode_flag_without_a_value_is_a_usage_error():
+    """`--memory-mode` with no argument must say so, not fail validation later."""
+    with pytest.raises(SystemExit) as excinfo:
+        parse_run_args(["codex", "a task", "--memory-mode"])
+    assert "--memory-mode" in str(excinfo.value)
