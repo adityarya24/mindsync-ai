@@ -15,16 +15,25 @@
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%2309090b'/><text x='32' y='44' font-family='monospace' font-size='30' font-weight='700' fill='%2334d399' text-anchor='middle'>ms</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #09090b;
-      --surface: #101013;
-      --border: #232327;
-      --text: #e4e4e7;
-      --muted: #9f9fa8;
+      --bg: #0a0a12;
+      --bg-2: #0d0d18;
+      --surface: #12121e;
+      --surface-2: #191926;
+      --border: #262638;
+      --text: #eceaf4;
+      --muted: #9d9ab0;
       --accent: #34d399;
-      --accent-dim: rgba(52, 211, 153, 0.12);
+      --accent-dim: rgba(52, 211, 153, 0.13);
+      --info: #818cf8;
+      --info-dim: rgba(129, 140, 248, 0.13);
+      --cyan: #22d3ee;
+      --cyan-dim: rgba(34, 211, 238, 0.12);
+      --violet: #c084fc;
+      --warn: #fbbf24;
+      --danger: #f87171;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html { scroll-behavior: smooth; }
@@ -35,21 +44,36 @@
       line-height: 1.6;
       -webkit-font-smoothing: antialiased;
     }
-    body::before {
+    body::before, body::after {
       content: "";
       position: fixed;
-      inset: 0;
-      background:
-        radial-gradient(60rem 30rem at 70% -10%, rgba(52, 211, 153, 0.07), transparent 60%);
+      inset: -20%;
       pointer-events: none;
       z-index: 0;
     }
-    .wrap { max-width: 62rem; margin: 0 auto; padding: 0 1.5rem; position: relative; z-index: 1; }
+    body::before {
+      background:
+        radial-gradient(42rem 26rem at 72% -8%, rgba(52, 211, 153, 0.11), transparent 62%),
+        radial-gradient(38rem 24rem at 12% 22%, rgba(129, 140, 248, 0.09), transparent 60%),
+        radial-gradient(30rem 20rem at 85% 68%, rgba(192, 132, 252, 0.06), transparent 65%);
+      animation: drift 26s ease-in-out infinite alternate;
+    }
+    body::after {
+      background:
+        radial-gradient(36rem 22rem at 28% 82%, rgba(34, 211, 238, 0.07), transparent 60%),
+        radial-gradient(26rem 18rem at 58% 40%, rgba(52, 211, 153, 0.05), transparent 62%);
+      animation: drift 32s ease-in-out infinite alternate-reverse;
+    }
+    @keyframes drift {
+      from { transform: translate3d(-1.5%, -1%, 0) scale(1); }
+      to   { transform: translate3d(1.5%, 1.5%, 0) scale(1.05); }
+    }
+    .wrap { max-width: 64rem; margin: 0 auto; padding: 0 1.5rem; position: relative; z-index: 1; }
     a { color: var(--accent); text-decoration: none; }
     a:hover { text-decoration: underline; }
     code, pre, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
 
-    /* nav */
+    /* ── nav ─────────────────────────────────────────── */
     nav {
       position: sticky; top: 0; z-index: 10;
       background: rgba(9, 9, 11, 0.85);
@@ -59,11 +83,20 @@
     nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 3.75rem; gap: 1rem; }
     .brand { font-family: "JetBrains Mono", monospace; font-weight: 500; color: var(--text); }
     .brand span { color: var(--accent); }
-    .nav-links { display: flex; gap: 1.5rem; font-size: 0.9rem; flex-wrap: wrap; }
+    .nav-links { display: flex; gap: 1.5rem; font-size: 0.9rem; flex-wrap: wrap; align-items: center; }
     .nav-links a { color: var(--muted); }
     .nav-links a:hover { color: var(--text); text-decoration: none; }
+    .nav-links .nav-gh {
+      color: var(--text);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.45rem;
+      padding: 0.35rem 0.8rem;
+      font-size: 0.85rem;
+    }
+    .nav-links .nav-gh:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
 
-    /* section rhythm */
+    /* ── section rhythm ──────────────────────────────── */
     section { padding: 5rem 0; border-bottom: 1px solid var(--border); }
     section:last-of-type { border-bottom: 0; }
     .label {
@@ -73,29 +106,109 @@
       margin-bottom: 1rem;
       letter-spacing: 0.02em;
     }
-    h2 { font-size: clamp(1.5rem, 3.5vw, 2rem); font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.75rem; }
+    main > section:nth-of-type(4n+2) .label, #before-after .label { color: var(--info); }
+    main > section:nth-of-type(4n+3) .label, #memory .label { color: var(--cyan); }
+    main > section:nth-of-type(4n) .label, #faq .label { color: var(--violet); }
+    h2 { font-size: clamp(1.5rem, 3.5vw, 2rem); font-weight: 700; letter-spacing: -0.02em; margin-bottom: 0.75rem; text-wrap: balance; }
     .lede { color: var(--muted); max-width: 44rem; }
 
-    /* hero */
-    .hero { padding: 6rem 0 5rem; border-bottom: 1px solid var(--border); }
-    .hero h1 {
-      font-size: clamp(2rem, 6vw, 3.4rem);
-      font-weight: 800;
-      letter-spacing: -0.035em;
-      line-height: 1.1;
-      margin-bottom: 1.25rem;
+    /* ── hero ────────────────────────────────────────── */
+    .hero { padding: 5.5rem 0 4.5rem; border-bottom: 1px solid var(--border); }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+      gap: 3.5rem;
+      align-items: center;
     }
-    .hero h1 em { font-style: normal; color: var(--accent); }
-    .hero p { color: var(--muted); font-size: 1.1rem; max-width: 42rem; }
-    .badges { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.75rem; }
+    .badges { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.6rem; }
     .badge {
       font-family: "JetBrains Mono", monospace;
-      font-size: 0.75rem;
+      font-size: 0.74rem;
       color: var(--accent);
       background: var(--accent-dim);
       border: 1px solid rgba(52, 211, 153, 0.25);
       border-radius: 999px;
-      padding: 0.2rem 0.7rem;
+      padding: 0.18rem 0.65rem;
+    }
+    .hero h1 {
+      font-size: clamp(2rem, 5vw, 3.15rem);
+      font-weight: 800;
+      letter-spacing: -0.035em;
+      line-height: 1.08;
+      margin-bottom: 1.1rem;
+      text-wrap: balance;
+    }
+    .hero h1 em {
+      font-style: normal;
+      background: linear-gradient(92deg, var(--accent) 0%, var(--cyan) 55%, var(--info) 110%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero .lede { font-size: 1.06rem; max-width: 34rem; }
+
+    /* trust strip */
+    .trust { display: flex; flex-wrap: wrap; gap: 1.75rem; margin-top: 2.25rem; }
+    .trust div { display: flex; flex-direction: column; }
+    .trust b {
+      font-size: 1.35rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      font-variant-numeric: tabular-nums;
+      background: linear-gradient(180deg, var(--text), var(--muted));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .trust > div:nth-child(1) b { background: linear-gradient(180deg, var(--accent), var(--cyan)); -webkit-background-clip: text; background-clip: text; }
+    .trust > div:nth-child(2) b { background: linear-gradient(180deg, var(--info), var(--violet)); -webkit-background-clip: text; background-clip: text; }
+    .trust > div:nth-child(3) b { background: linear-gradient(180deg, var(--cyan), var(--info)); -webkit-background-clip: text; background-clip: text; }
+    .trust span {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.72rem;
+      color: var(--muted);
+      letter-spacing: 0.03em;
+    }
+
+    /* install card */
+    .install-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.8rem;
+      overflow: hidden;
+      box-shadow: 0 20px 60px -30px rgba(0, 0, 0, 0.8);
+    }
+    .install-card .bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.55rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+    .install-card .bar .dots { display: flex; gap: 0.4rem; }
+    .install-card .bar .dots i {
+      width: 0.62rem; height: 0.62rem; border-radius: 50%;
+      background: var(--border); display: block;
+    }
+    .install-card .bar .ttl { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: var(--muted); }
+    .copy-btn {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.68rem;
+      color: var(--muted);
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 0.4rem;
+      padding: 0.22rem 0.55rem;
+      cursor: pointer;
+      transition: color 0.15s ease, border-color 0.15s ease;
+    }
+    .copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .copy-btn.copied { color: var(--accent); border-color: var(--accent); }
+    .install-card pre { padding: 1.05rem 1.15rem; font-size: 0.84rem; line-height: 1.9; border: 0; border-radius: 0; }
+    .cmd-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+    .cmd-row .prompt-char { color: var(--accent); user-select: none; }
+    .install-note {
+      font-size: 0.78rem; color: var(--muted);
+      padding: 0 1.15rem 0.95rem;
     }
     .cta { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 2rem; }
     .btn {
@@ -107,67 +220,294 @@
       border: 1px solid var(--border);
     }
     .btn:hover { text-decoration: none; }
-    .btn-primary { background: var(--accent); color: #06251a; border-color: var(--accent); }
-    .btn-primary:hover { filter: brightness(1.08); }
-    .btn-ghost { color: var(--text); background: var(--surface); }
-    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
-
-    /* code blocks */
-    pre {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 0.6rem;
-      padding: 1.1rem 1.25rem;
-      overflow-x: auto;
-      font-size: 0.875rem;
-      line-height: 1.75;
-      color: var(--text);
+    .btn-primary {
+      background: linear-gradient(135deg, var(--accent), #10b981);
+      color: #052318; border-color: transparent;
+      box-shadow: 0 4px 20px -8px rgba(52,211,153,.55);
+      transition: transform .15s ease, box-shadow .15s ease, filter .15s ease;
     }
-    pre .c { color: var(--muted); }
-    pre .p { color: var(--accent); }
-    .install { margin-top: 2.25rem; max-width: 34rem; }
+    .btn-primary:hover { filter: brightness(1.07); transform: translateY(-1px); box-shadow: 0 8px 28px -8px rgba(52,211,153,.65); }
+    .btn-ghost { color: var(--text); background: var(--surface); }
+    .btn-ghost { transition: transform .15s ease, border-color .15s ease, color .15s ease; }
+    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); transform: translateY(-1px); }
 
-    /* grids */
-    .grid { display: grid; gap: 1rem; margin-top: 2rem; }
-    .grid-3 { grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
-    .card {
+    /* ── demo terminal ───────────────────────────────── */
+    .demo-section { padding-bottom: 5.5rem; }
+    .term-wrap { margin-top: 2.25rem; }
+    .term {
+      background: #0c0c0f;
+      border: 1px solid var(--border);
+      border-radius: 0.8rem;
+      overflow: hidden;
+      box-shadow: 0 30px 80px -40px rgba(0, 0, 0, 0.9);
+    }
+    .term .bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.55rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+    .term .dots { display: flex; gap: 0.4rem; }
+    .term .dots i { width: 0.62rem; height: 0.62rem; border-radius: 50%; display: block; }
+    .term .dots i:nth-child(1) { background: #ff5f57; }
+    .term .dots i:nth-child(2) { background: #febc2e; }
+    .term .dots i:nth-child(3) { background: #28c840; }
+    .term .ttl { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: var(--muted); }
+    .term-body .route-block { display:inline-block; border-left:2px solid var(--warn); padding-left:.6rem; margin:.15rem 0; }
+    .term-body {
+      padding: 1.15rem 1.25rem;
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.82rem;
+      line-height: 1.85;
+      min-height: 21.5em;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .t-prompt { color: var(--accent); }
+    .t-cmd { color: var(--text); font-weight: 500; }
+    .t-dim { color: var(--muted); }
+    .t-ok { color: var(--accent); }
+    .t-info { color: #93c5fd; }
+    .t-warn { color: var(--warn); }
+    .caret {
+      display: inline-block; width: 0.55em; height: 1.15em;
+      background: var(--accent); vertical-align: text-bottom;
+      animation: blink 1s step-end infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ── before / after ──────────────────────────────── */
+    .ba-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: 1.25rem; margin-top: 2.25rem; }
+    .ba {
+      border-radius: 0.8rem;
+      border: 1px solid var(--border);
+      background: #0c0c0f;
+      overflow: hidden;
+    }
+    .ba.bad { border-color: rgba(248, 113, 113, 0.25); }
+    .ba.good { border-color: rgba(52, 211, 153, 0.3); }
+    .ba .head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.6rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-family: "JetBrains Mono", monospace; font-size: 0.74rem;
+    }
+    .ba.bad .head { color: var(--danger); background: rgba(248, 113, 113, 0.06); }
+    .ba.good .head { color: var(--accent); background: rgba(52, 211, 153, 0.06); }
+    .ba pre {
+      padding: 1rem 1.1rem;
+      font-size: 0.76rem; line-height: 1.85;
+      border: 0; border-radius: 0;
+      background: transparent;
+    }
+    .b-x { color: var(--danger); }
+    .b-dim { color: var(--muted); }
+    .g-ok { color: var(--accent); }
+    .g-info { color: #93c5fd; }
+    .g-route { color: var(--warn); }
+
+    /* ── why: asymmetric two-col ─────────────────────── */
+    .why-grid { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 3rem; margin-top: 1rem; }
+    .why-left { position: sticky; top: 5.5rem; align-self: start; }
+    .feat-list { display: grid; gap: 0; counter-reset: feat; }
+    .feat {
+      display: grid;
+      grid-template-columns: 3.2rem 1fr;
+      gap: 1rem;
+      padding: 1.35rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .feat:last-child { border-bottom: 0; }
+    .feat .n {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.8rem; color: var(--accent);
+      padding-top: 0.2rem;
+    }
+    .feat:nth-child(2) .n { color: var(--info); }
+    .feat:nth-child(3) .n { color: var(--cyan); }
+    .feat:nth-child(4) .n { color: var(--violet); }
+    .feat:nth-child(5) .n { color: var(--warn); }
+    .feat:nth-child(6) .n { color: var(--danger); }
+    .feat { transition: transform .18s ease, background .18s ease; border-radius: .6rem; }
+    .feat:hover { background: rgba(255,255,255,0.02); transform: translateX(4px); }
+    .feat h3 { font-size: 1.02rem; font-weight: 600; margin-bottom: 0.3rem; }
+    .feat p { color: var(--muted); font-size: 0.92rem; }
+
+    /* ── how: flow diagram ───────────────────────────── */
+    .flow { display: flex; flex-direction: column; gap: 0; margin-top: 2.25rem; max-width: 42rem; }
+    .flow-node {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 0.7rem;
-      padding: 1.4rem;
+      padding: 0.95rem 1.25rem;
+      display: flex; align-items: center; justify-content: space-between; gap: 1rem;
     }
-    .card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 0.4rem; }
-    .card p { color: var(--muted); font-size: 0.92rem; }
-    .card .k { font-family: "JetBrains Mono", monospace; font-size: 0.78rem; color: var(--accent); display: block; margin-bottom: 0.6rem; }
+    .flow-node .fn-t { font-weight: 600; font-size: 0.95rem; }
+    .flow-node .fn-d { color: var(--muted); font-size: 0.8rem; font-family: "JetBrains Mono", monospace; }
+    .flow-node { transition: border-color .18s ease, box-shadow .18s ease; }
+    .flow-node:hover { border-color: rgba(129,140,248,.45); box-shadow: 0 0 24px -12px rgba(129,140,248,.35); }
+    .flow-node.core { border-color: rgba(52, 211, 153, 0.4); background: linear-gradient(180deg, rgba(52,211,153,0.07), transparent); }
+    .flow-node.core:hover { border-color: rgba(52,211,153,.65); box-shadow: 0 0 28px -10px rgba(52,211,153,.4); }
+    .flow-node.core .fn-t { color: var(--accent); }
+    .flow-arrow {
+      text-align: center; color: var(--muted);
+      font-family: "JetBrains Mono", monospace; font-size: 0.75rem;
+      padding: 0.35rem 0;
+    }
+    .workers-chips { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 0.85rem; }
+    .chip {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.7rem;
+      color: var(--text);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0.16rem 0.6rem;
+      transition: transform .15s ease, border-color .15s ease, color .15s ease;
+    }
+    .chip:hover { transform: translateY(-2px); }
+    .chip:nth-child(1):hover { border-color: #10a37f; color: #10a37f; }
+    .chip:nth-child(2):hover { border-color: #d97757; color: #d97757; }
+    .chip:nth-child(3):hover { border-color: #4285f4; color: #6b9bff; }
+    .chip:nth-child(4):hover { border-color: var(--violet); color: var(--violet); }
+    .chip:nth-child(5):hover { border-color: #cbd5e1; color: #e2e8f0; }
+    .chip:nth-child(6):hover { border-color: #ffb86b; color: #ffbd80; }
+    .chip:nth-child(7):hover { border-color: var(--cyan); color: var(--cyan); }
 
-    /* problem list */
-    ul.plain { list-style: none; margin-top: 1.5rem; display: grid; gap: 0.6rem; }
-    ul.plain li { color: var(--muted); padding-left: 1.4rem; position: relative; }
+    /* ── memory ──────────────────────────────────────── */
+    .mem-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 3rem; align-items: start; margin-top: 0.5rem; }
+    ul.plain { list-style: none; display: grid; gap: 0.65rem; }
+    ul.plain li { color: var(--muted); padding-left: 1.4rem; position: relative; font-size: 0.95rem; }
     ul.plain li::before {
       content: "—";
       position: absolute; left: 0;
       color: var(--accent);
       font-family: "JetBrains Mono", monospace;
     }
+    .mem-term { position: sticky; top: 5.5rem; }
 
-    /* table */
+    /* ── workers table ───────────────────────────────── */
     .table-scroll { overflow-x: auto; margin-top: 2rem; border: 1px solid var(--border); border-radius: 0.7rem; }
     table { border-collapse: collapse; width: 100%; font-size: 0.9rem; min-width: 34rem; }
     th, td { text-align: left; padding: 0.75rem 1.1rem; border-bottom: 1px solid var(--border); }
-    th { font-family: "JetBrains Mono", monospace; font-size: 0.78rem; color: var(--accent); font-weight: 500; }
+    th { font-family: "JetBrains Mono", monospace; font-size: 0.76rem; font-weight: 500; }
+    th:first-child { color: var(--accent); }
+    thead tr { background: linear-gradient(90deg, rgba(52,211,153,.06), rgba(129,140,248,.05)); }
     tr:last-child td { border-bottom: 0; }
     td.w { color: var(--muted); }
+    tbody tr:hover td { background: rgba(255,255,255,0.015); }
+
+    /* ── get started steps ───────────────────────────── */
+    .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; margin-top: 2.25rem; counter-reset: step; }
+    .step {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.7rem;
+      padding: 1.3rem;
+    }
+    .step .sn {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 0.74rem; color: var(--accent);
+      display: inline-block;
+      background: var(--accent-dim);
+      border-radius: 999px;
+      padding: 0.12rem 0.6rem;
+      margin-bottom: 0.8rem;
+    }
+    .step:nth-child(2) .sn { color: var(--info); background: var(--info-dim); }
+    .step:nth-child(3) .sn { color: var(--violet); background: rgba(192,132,252,.12); }
+    .step { transition: transform .18s ease, border-color .18s ease; }
+    .step:hover { transform: translateY(-3px); border-color: rgba(52,211,153,.4); }
+    .step h3 { font-size: 1rem; font-weight: 600; margin-bottom: 0.35rem; }
+    .step p { color: var(--muted); font-size: 0.88rem; margin-bottom: 0.9rem; }
+    .step code.cmd {
+      display: block;
+      background: #0c0c0f;
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 0.55rem 0.8rem;
+      font-size: 0.78rem;
+      color: var(--text);
+    }
+    .step code.cmd::before { content: "$ "; color: var(--accent); }
+
+    /* ── faq ─────────────────────────────────────────── */
+    details {
+      border-bottom: 1px solid var(--border);
+      padding: 1.15rem 0;
+    }
+    details:first-of-type { border-top: 1px solid var(--border); margin-top: 2rem; }
+    summary {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 1rem;
+      list-style: none;
+      display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+    }
+    summary::-webkit-details-marker { display: none; }
+    summary .pm {
+      font-family: "JetBrains Mono", monospace;
+      color: var(--accent);
+      font-size: 1.1rem;
+      transition: transform 0.2s ease;
+      flex-shrink: 0;
+    }
+    details[open] .pm { transform: rotate(45deg); }
+    details p { color: var(--muted); font-size: 0.92rem; margin-top: 0.7rem; max-width: 42rem; }
+    details summary:hover { color: var(--cyan); transition: color .15s ease; }
+    details[open] summary { color: var(--cyan); }
+    details code { background: var(--surface-2); border: 1px solid var(--border); border-radius: 0.35rem; padding: 0.05rem 0.4rem; font-size: 0.82em; }
+
+    /* ── final cta ───────────────────────────────────── */
+    .final { text-align: left; }
+    .final h2 { font-size: clamp(1.7rem, 4vw, 2.4rem); max-width: 36rem; }
+    .final .lede { margin-top: 0.75rem; }
 
     footer { padding: 3rem 0 4rem; color: var(--muted); font-size: 0.88rem; }
     footer .row { display: flex; flex-wrap: wrap; gap: 1.25rem; justify-content: space-between; }
     .note { font-family: "JetBrains Mono", monospace; font-size: 0.78rem; }
 
+    /* ── responsive ──────────────────────────────────── */
+    @media (max-width: 56rem) {
+      .hero-grid, .why-grid, .mem-grid { grid-template-columns: 1fr; }
+      .why-left, .mem-term { position: static; }
+      .hero { padding: 4rem 0 3.5rem; }
+      .trust { gap: 1.25rem; }
+      .term-body .route-block { display:inline-block; border-left:2px solid var(--warn); padding-left:.6rem; margin:.15rem 0; }
+    .term-body { font-size: 0.74rem; min-height: 19em; }
+    }
     @media (max-width: 40rem) {
       section { padding: 3.5rem 0; }
-      .hero { padding: 4rem 0 3.5rem; }
-      .nav-links { gap: 1rem; font-size: 0.82rem; }
+      .nav-links a:not(.nav-gh) { display: none; }
     }
-  </style>
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .caret { animation: none; }
+      * { transition-duration: 0.01ms !important; }
+    }
+  
+    /* ── scroll reveal ───────────────────────────── */
+    .will-reveal { opacity: 0; transform: translateY(18px); transition: opacity .6s ease, transform .6s cubic-bezier(.22,.61,.36,1); }
+    .will-reveal.revealed { opacity: 1; transform: none; }
+    .feat.will-reveal:nth-child(2), .step.will-reveal:nth-child(2) { transition-delay: .07s; }
+    .feat.will-reveal:nth-child(3), .step.will-reveal:nth-child(3) { transition-delay: .14s; }
+    .feat.will-reveal:nth-child(4), .step.will-reveal:nth-child(4) { transition-delay: .21s; }
+    .feat.will-reveal:nth-child(5) { transition-delay: .28s; }
+    .feat.will-reveal:nth-child(6) { transition-delay: .35s; }
+
+    /* ── hero entrance ───────────────────────────── */
+    @keyframes rise-in { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: none; } }
+    .hero .badges   { animation: rise-in .7s cubic-bezier(.22,.61,.36,1) both; }
+    .hero h1        { animation: rise-in .7s .08s cubic-bezier(.22,.61,.36,1) both; }
+    .hero .lede     { animation: rise-in .7s .16s cubic-bezier(.22,.61,.36,1) both; }
+    .hero .trust    { animation: rise-in .7s .24s cubic-bezier(.22,.61,.36,1) both; }
+    .hero .cta      { animation: rise-in .7s .3s cubic-bezier(.22,.61,.36,1) both; }
+    .hero .install-card { animation: rise-in .8s .22s cubic-bezier(.22,.61,.36,1) both; }
+    @media (prefers-reduced-motion: reduce) {
+      .hero .badges, .hero h1, .hero .lede, .hero .trust, .hero .cta, .hero .install-card { animation: none; }
+    }
+</style>
 </head>
 <body>
 
@@ -175,11 +515,12 @@
   <div class="wrap">
     <a class="brand" href="#top">mindsync<span>_ai</span></a>
     <div class="nav-links">
+      <a href="#demo">Demo</a>
       <a href="#why">Why</a>
       <a href="#how">How</a>
       <a href="#memory">Memory</a>
-      <a href="#workers">Workers</a>
-      <a href="https://github.com/adityarya24/mindsync-ai">GitHub</a>
+      <a href="#faq">FAQ</a>
+      <a class="nav-gh" href="https://github.com/adityarya24/mindsync-ai">GitHub ↗</a>
     </div>
   </div>
 </nav>
@@ -192,63 +533,109 @@
       <span class="badge">no account required</span>
       <span class="badge">Python 3.10+</span>
     </div>
-    <h1>One orchestrator.<br />Your coding agents.<br /><em>Shared context.</em></h1>
-    <p>
-      MindSync AI is a local-first MCP orchestration layer for coding agents. It turns the
-      CLI already working with you into the lead orchestrator — discovering available workers,
-      routing tasks by capability, supervising execution, and keeping every session aligned
-      through shared focus, events, and durable memory.
-    </p>
-    <div class="install">
-      <pre><span class="c"># install</span>
-pip install mindsync-ai
-
-<span class="c"># one-time onboarding, then restart your CLI</span>
-mindsync setup <span class="p">--mode</span> auto
-mindsync doctor</pre>
-    </div>
-    <div class="cta">
-      <a class="btn btn-primary" href="https://github.com/adityarya24/mindsync-ai">Read the docs</a>
-      <a class="btn btn-ghost" href="https://pypi.org/project/mindsync-ai/">View on PyPI</a>
+    <div class="hero-grid">
+      <div>
+        <h1>One orchestrator.<br />Your coding agents.<br /><em>Shared context.</em></h1>
+        <p class="lede">
+          MindSync turns the CLI you already use into the lead orchestrator — routing tasks to the right agent,
+          preventing file conflicts, and remembering decisions across sessions.
+        </p>
+        <div class="trust">
+          <div><b id="stat-downloads">469</b><span>installs · last 30 days</span></div>
+          <div><b id="stat-clis">7+</b><span>CLIs wired · any harness works</span></div>
+          <div><b>0</b><span>servers · runs on your machine</span></div>
+        </div>
+        <div class="cta">
+          <a class="btn btn-primary" href="#start">Get started</a>
+          <a class="btn btn-ghost" href="https://github.com/adityarya24/mindsync-ai">GitHub</a>
+        </div>
+      </div>
+      <div class="install-card">
+        <div class="bar">
+          <span class="ttl">terminal</span>
+          <button class="copy-btn" data-copy="pip install mindsync-ai&#10;mindsync setup --mode auto&#10;mindsync doctor">copy</button>
+        </div>
+        <pre><div class="cmd-row"><span><span class="prompt-char">$</span> pip install mindsync-ai</span></div>
+<div class="cmd-row"><span><span class="prompt-char">$</span> mindsync setup <span style="color:var(--accent)">--mode</span> auto</span></div>
+<div class="cmd-row"><span><span class="prompt-char">$</span> mindsync doctor</span></div>
+<div class="cmd-row"><span class="t-ok" id="install-status">✓ 3 CLIs detected · 2 registered as workers</span></div></pre>
+        <p class="install-note">Idempotent setup — existing MCP registrations preserved unless <code>--force</code>.</p>
+      </div>
     </div>
   </div>
 </header>
 
+<section id="demo" class="demo-section">
+  <div class="wrap">
+    <div class="label">// Watch it work</div>
+    <h2>You describe the task. MindSync does the delegation dance.</h2>
+    <p class="lede">One command. The orchestrator picks the worker, locks the files, supervises the run, and saves what mattered to memory.</p>
+    <div class="term-wrap">
+      <div class="term">
+        <div class="bar">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <span class="ttl">mindsync — dispatch</span>
+          <button class="copy-btn" data-copy='mindsync dispatch "fix the auth token refresh bug in src/auth/"'>copy command</button>
+        </div>
+        <div class="term-body" id="demo-terminal"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="before-after">
+  <div class="wrap">
+    <div class="label">// The difference</div>
+    <h2>Same agents. Very different afternoon.</h2>
+    <p class="lede">The tools are identical — what changes is who keeps score between them.</p>
+    <div class="ba-grid">
+      <div class="ba bad">
+        <div class="head"><span>without mindsync</span><span>manual relay</span></div>
+        <pre><span class="b-x">$ claude "fix auth bug"</span>
+<span class="b-dim">…edits src/auth.py from memory of an
+older conversation…</span>
+<span class="b-x">$ codex "write auth tests"</span>
+<span class="b-dim">…rewrites the same file, clobbers the
+first fix…</span>
+<span class="b-x">$ grok "review what changed"</span>
+<span class="b-dim">…reviews a mix of both edits, flags
+problems nobody remembers making…</span>
+<span class="b-x">result:</span> <span class="b-dim">you are the router, the referee,
+and the memory. for every task.</span></pre>
+      </div>
+      <div class="ba good">
+        <div class="head"><span>with mindsync</span><span>orchestrated</span></div>
+        <pre><span class="g-ok">$ mindsync dispatch "fix auth bug"</span>
+<span class="g-route">◆ routed → codex (fit 0.92)</span>
+<span class="g-info">◆ focus lock: src/auth.py held</span>
+<span class="g-dim">  …worker implements…</span>
+<span class="g-ok">✓ done · decision saved to memory</span>
+<span class="g-ok">$ mindsync dispatch "add auth tests"</span>
+<span class="g-info">◆ conflict avoided → routed to claude,
+  waits on codex's lock release</span>
+<span class="g-ok">✓ done · context replayed, not re-explained</span>
+<span class="g-ok">result:</span> <span class="b-dim">one command per task. the system
+keeps its own state.</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section id="why">
   <div class="wrap">
     <div class="label">// Why MindSync</div>
-    <h2>Running several capable agents is easy. Keeping them coordinated is the hard part.</h2>
-    <p class="lede">Without a shared layer, agents duplicate work, overwrite each other's files, lose decisions between sessions, and make you pick a worker by hand for every single task.</p>
-    <div class="grid grid-3">
-      <div class="card">
-        <span class="k">01</span>
-        <h3>Automatic orchestration</h3>
-        <p>The human-facing CLI decides when delegation is actually useful — you stop naming a worker for every task.</p>
+    <div class="why-grid">
+      <div class="why-left">
+        <h2>Running several capable agents is easy. Keeping them coordinated is the hard part.</h2>
+        <p class="lede" style="margin-top:0.75rem">Without a shared layer, agents duplicate work, overwrite each other's files, lose decisions between sessions, and make you pick a worker by hand for every single task.</p>
       </div>
-      <div class="card">
-        <span class="k">02</span>
-        <h3>Capability-based routing</h3>
-        <p>Workers are ranked by task fit, availability, and priority. Every automatic route reports its reason and candidate scores.</p>
-      </div>
-      <div class="card">
-        <span class="k">03</span>
-        <h3>Conflict prevention</h3>
-        <p>Active file and project focus is visible before work begins, so two agents don't edit the same file blind.</p>
-      </div>
-      <div class="card">
-        <span class="k">04</span>
-        <h3>Session memory</h3>
-        <p>Decisions, blockers, and durable facts persist per project and replay into the next run instead of being re-explained.</p>
-      </div>
-      <div class="card">
-        <span class="k">05</span>
-        <h3>Safe process control</h3>
-        <p>Tracked jobs, timeouts, cancellation, and process-tree cleanup — plus optional git worktree isolation per job.</p>
-      </div>
-      <div class="card">
-        <span class="k">06</span>
-        <h3>Yours, locally</h3>
-        <p>No hosted control plane, no MindSync account. Remote sync is optional and runs through your own SSH host.</p>
+      <div class="feat-list">
+        <div class="feat"><span class="n">01</span><div><h3>Automatic orchestration</h3><p>The human-facing CLI decides when delegation is actually useful — you stop naming a worker for every task.</p></div></div>
+        <div class="feat"><span class="n">02</span><div><h3>Capability-based routing</h3><p>Workers are ranked by task fit, availability, and priority. Every automatic route reports its reason and candidate scores.</p></div></div>
+        <div class="feat"><span class="n">03</span><div><h3>Conflict prevention</h3><p>Active file and project focus is visible before work begins, so two agents don't edit the same file blind.</p></div></div>
+        <div class="feat"><span class="n">04</span><div><h3>Session memory</h3><p>Decisions, blockers, and durable facts persist per project and replay into the next run instead of being re-explained.</p></div></div>
+        <div class="feat"><span class="n">05</span><div><h3>Safe process control</h3><p>Tracked jobs, timeouts, cancellation, and process-tree cleanup — plus optional git worktree isolation per job.</p></div></div>
+        <div class="feat"><span class="n">06</span><div><h3>Yours, locally</h3><p>No hosted control plane, no MindSync account. Remote sync is optional and runs through your own SSH host.</p></div></div>
       </div>
     </div>
   </div>
@@ -259,43 +646,59 @@ mindsync doctor</pre>
     <div class="label">// How it works</div>
     <h2>Your CLI stays in charge.</h2>
     <p class="lede">The orchestrator keeps planning, authorization, integration, and the final answer. Delegated workers receive bounded tasks and cannot recursively delegate through MindSync.</p>
-    <pre style="margin-top:2rem">You
- │
- ▼
-Human-facing CLI (orchestrator)
- │  MCP
- ▼
-MindSync AI
- ├── capability router ──────► Codex / Claude / AGY / Gemini / Grok / Cursor / Aider
- ├── focus + conflict map
- ├── event bus + job records
- ├── session memory (SQLite) ──► bounded context replayed on the next run
- └── local durable state ────► optional SSH/VPS truth store</pre>
+    <div class="flow">
+      <div class="flow-node"><span class="fn-t">You</span><span class="fn-d">describe the outcome</span></div>
+      <div class="flow-arrow">│&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;MCP&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;▼</div>
+      <div class="flow-node core"><span class="fn-t">Human-facing CLI · lead orchestrator</span><span class="fn-d">plans · authorizes · integrates</span></div>
+      <div class="flow-arrow">▼</div>
+      <div class="flow-node"><span class="fn-t">MindSync AI</span><span class="fn-d">router · focus map · event bus · SQLite memory</span></div>
+      <div class="flow-arrow">▼ routes by capability</div>
+      <div>
+        <div class="workers-chips">
+          <span class="chip">Codex</span><span class="chip">Claude</span><span class="chip">Gemini CLI</span><span class="chip">Antigravity (agy)</span><span class="chip">Grok</span><span class="chip">Cursor Agent</span><span class="chip">Aider</span>
+        </div>
+      </div>
+    </div>
   </div>
 </section>
 
 <section id="memory">
   <div class="wrap">
-    <div class="label">// Session memory</div>
-    <h2>Context that survives the session.</h2>
-    <p class="lede">
-      Agents record decisions, blockers, and durable facts per project in local SQLite. The next
-      run gets a bounded, priority-ordered replay: sessions carrying durable facts pack first,
-      then unresolved blockers, then routine history — so noise can never crowd out what mattered.
-    </p>
-    <ul class="plain">
-      <li>Bounded by a character budget, so a long history never blows up the context window.</li>
-      <li>Conservative redaction of common token, password, and private-key patterns on every write.</li>
-      <li>Dispatch can drive the whole lifecycle automatically — prompts, transcripts, and stdout are never persisted.</li>
-      <li>Human-facing inspection and safe retention, with a dry run before anything is deleted.</li>
-    </ul>
-    <pre style="margin-top:2rem"><span class="c"># look at what your agents have remembered</span>
-mindsync memory stats
-mindsync memory list <span class="p">--project</span> my-repo
-mindsync memory show &lt;session-id&gt;
+    <div class="mem-grid">
+      <div>
+        <div class="label">// Session memory</div>
+        <h2>Context that survives the session.</h2>
+        <p class="lede" style="margin-top:0.5rem">
+          Agents record decisions, blockers, and durable facts per project in local SQLite. The next
+          run gets a bounded, priority-ordered replay: durable facts pack first, then unresolved
+          blockers, then routine history — so noise can never crowd out what mattered.
+        </p>
+        <ul class="plain" style="margin-top:1.5rem">
+          <li>Bounded by a character budget — long history never blows up the context window.</li>
+          <li>Conservative redaction of tokens, passwords, and private keys on every write.</li>
+          <li>Prompts, transcripts, and stdout are never persisted.</li>
+          <li>Dry-run retention: nothing is deleted without <code>--yes</code>.</li>
+        </ul>
+      </div>
+      <div class="mem-term">
+        <div class="term">
+          <div class="bar">
+            <div class="dots"><i></i><i></i><i></i></div>
+            <span class="ttl">mindsync — memory</span>
+            <button class="copy-btn" data-copy="mindsync memory stats&#10;mindsync memory list --project my-repo&#10;mindsync memory show &lt;session-id&gt;">copy</button>
+          </div>
+          <div class="term-body" style="min-height:auto"><span class="t-prompt">$</span> <span class="t-cmd">mindsync memory stats</span>
+<span class="t-dim">project   facts  blockers  decisions</span>
+my-repo      47         2         12
 
-<span class="c"># dry run first — nothing is deleted without --yes</span>
-mindsync memory prune <span class="p">--older-than-days</span> 30</pre>
+<span class="t-prompt">$</span> <span class="t-cmd">mindsync dispatch "continue the migration"</span>
+<span class="t-info">◆ replaying context (bounded, priority-ordered)</span>
+<span class="t-dim">  · 3 durable facts packed</span>
+<span class="t-dim">  · 1 unresolved blocker surfaced</span>
+<span class="t-ok">✓ resuming exactly where you left off</span></div>
+        </div>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -303,7 +706,7 @@ mindsync memory prune <span class="p">--older-than-days</span> 30</pre>
   <div class="wrap">
     <div class="label">// Supported workers</div>
     <h2>Use them as one system.</h2>
-    <p class="lede">MindSync separates the MCP host from the worker backend. A CLI may act as either, or both — without locking you into a single model or provider.</p>
+    <p class="lede">MindSync separates the MCP host from the worker backend. A CLI may act as either, or both — without locking you into a single model or provider. These seven are the ones we run daily — <strong>any agent harness with an MCP-compatible registration surface works as a worker</strong>, and unsupported clients are detected and reported, never guessed at.</p>
     <div class="table-scroll">
       <table>
         <thead>
@@ -321,8 +724,7 @@ mindsync memory prune <span class="p">--older-than-days</span> 30</pre>
       </table>
     </div>
     <p class="lede" style="margin-top:1.5rem; font-size:0.9rem">
-      Detected clients without a supported registration surface are reported, never modified
-      through guessed or undocumented configuration.
+      The seven above are first-class and battle-tested daily — but they are not a whitelist. Any harness that exposes a documented registration surface can be onboarded; detected-but-unsupported clients are reported, never modified through guessed configuration.
     </p>
   </div>
 </section>
@@ -331,17 +733,63 @@ mindsync memory prune <span class="p">--older-than-days</span> 30</pre>
   <div class="wrap">
     <div class="label">// Get started</div>
     <h2>Three commands.</h2>
-    <pre style="margin-top:1.5rem; max-width:34rem">pip install mindsync-ai
-mindsync setup <span class="p">--mode</span> auto
-mindsync doctor</pre>
+    <div class="steps">
+      <div class="step">
+        <span class="sn">step 1</span>
+        <h3>Install</h3>
+        <p>One package, pure Python. Nothing else to provision.</p>
+        <code class="cmd">pip install mindsync-ai</code>
+      </div>
+      <div class="step">
+        <span class="sn">step 2</span>
+        <h3>Onboard your CLIs</h3>
+        <p>Detects installed agents, registers workers. Idempotent and previewable.</p>
+        <code class="cmd">mindsync setup --mode auto</code>
+      </div>
+      <div class="step">
+        <span class="sn">step 3</span>
+        <h3>Verify &amp; dispatch</h3>
+        <p>Check health, then hand out your first task.</p>
+        <code class="cmd">mindsync doctor &amp;&amp; mindsync dispatch "…"</code>
+      </div>
+    </div>
     <p class="lede" style="margin-top:1.5rem">
-      Setup is idempotent — existing MCP registrations are preserved unless you pass
-      <code>--force</code>, and <code>--dry-run</code> previews every change without touching a file.
-      Requires Python 3.10 or newer.
+      Requires Python 3.10 or newer. <code>--dry-run</code> previews every change without touching a file.
     </p>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <div class="label">// FAQ</div>
+    <h2>Fair questions.</h2>
+    <details>
+      <summary>Is my code sent anywhere?<span class="pm">+</span></summary>
+      <p>No. MindSync runs entirely on your machine — routing, focus tracking, and memory are all local files and local SQLite. The only network calls are the ones your own CLIs already make to their model providers. Optional remote sync goes through <em>your own</em> SSH host.</p>
+    </details>
+    <details>
+      <summary>How is this different from just running multiple CLIs myself?<span class="pm">+</span></summary>
+      <p>You become the router, the referee, and the memory: choosing the worker for each task, checking who touched which file, and re-explaining decisions every session. MindSync automates those three jobs while your CLI stays the lead orchestrator.</p>
+    </details>
+    <details>
+      <summary>Does it modify my CLI installations?<span class="pm">+</span></summary>
+      <p>Only through each CLI's official, documented registration surface (native MCP setup or JSON config). Setup is idempotent — existing registrations are preserved unless you pass <code>--force</code>, and <code>--dry-run</code> previews everything first. Unsupported clients are reported, never guessed at.</p>
+    </details>
+    <details>
+      <summary>Can workers talk to each other?<span class="pm">+</span></summary>
+      <p>No — deliberately. Delegated workers receive bounded tasks and cannot recursively delegate. Planning, authorization, integration, and the final answer stay with your human-facing CLI, so there is always one accountable chain of command.</p>
+    </details>
+  </div>
+</section>
+
+<section class="final">
+  <div class="wrap">
+    <div class="label">// Ready when you are</div>
+    <h2>Your agents are already good.<br />Make them a team.</h2>
+    <p class="lede">Local-first, MIT licensed, and three commands away.</p>
     <div class="cta">
-      <a class="btn btn-primary" href="https://github.com/adityarya24/mindsync-ai">Full documentation</a>
-      <a class="btn btn-ghost" href="https://github.com/adityarya24/mindsync-ai/blob/master/CHANGELOG.md">Changelog</a>
+      <a class="btn btn-primary" href="https://pypi.org/project/mindsync-ai/">Install from PyPI</a>
+      <a class="btn btn-ghost" href="https://github.com/adityarya24/mindsync-ai">Read the docs</a>
     </div>
   </div>
 </section>
@@ -353,10 +801,172 @@ mindsync doctor</pre>
     </div>
     <div class="note">
       <a href="https://github.com/adityarya24/mindsync-ai">GitHub</a> ·
-      <a href="https://pypi.org/project/mindsync-ai/">PyPI</a>
+      <a href="https://pypi.org/project/mindsync-ai/">PyPI</a> ·
+      <a href="https://github.com/adityarya24/mindsync-ai/blob/master/CHANGELOG.md">Changelog</a>
     </div>
   </div>
 </footer>
+
+<script>
+  // ── copy buttons ─────────────────────────────────────
+  document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var text = btn.getAttribute('data-copy') || '';
+      function done() {
+        var old = btn.textContent;
+        btn.textContent = 'copied ✓';
+        btn.classList.add('copied');
+        setTimeout(function () { btn.textContent = old; btn.classList.remove('copied'); }, 1600);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, done);
+      } else {
+        var ta = document.createElement('textarea');
+        ta.value = text; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); } catch (e) {}
+        document.body.removeChild(ta); done();
+      }
+    });
+  });
+
+  // ── dispatch demo typing animation ──────────────────
+  (function () {
+    var el = document.getElementById('demo-terminal');
+    if (!el) return;
+
+    var LINES = [
+      { cls: '',           parts: [['t-prompt', '$ '], ['t-cmd', 'mindsync dispatch "fix the auth token refresh bug in src/auth/"']] },
+      { cls: '',           parts: [['t-dim', '  analyzing task…']] },
+      { cls: '',           parts: [['t-route', ''], ['g-route', '◆ routing: 3 workers eligible']] },
+      { cls: '',           parts: [['g-dim', '    codex   fit 0.92  available  ← selected']] },
+      { cls: '',           parts: [['g-dim', '    claude  fit 0.81  available']] },
+      { cls: '',           parts: [['g-dim', '    aider   fit 0.54  available']] },
+      { cls: '',           parts: [['g-info', '◆ focus lock: src/auth/token.py held by codex']] },
+      { cls: '',           parts: [['g-dim', '  spawning codex (worktree isolation: on)…']] },
+      { cls: '',           parts: [['g-dim', '  │ reading auth module…']] },
+      { cls: '',           parts: [['g-dim', '  │ patching refresh flow…']] },
+      { cls: '',           parts: [['g-dim', '  │ running pytest tests/auth -q…']] },
+      { cls: '',           parts: [['g-dim', '  │ 41 passed, 0 failed']] },
+      { cls: '',           parts: [['g-ok', '✓ codex finished in 4m12s · exit 0']] },
+      { cls: '',           parts: [['g-ok', '✓ focus released']] },
+      { cls: '',           parts: [['g-ok', '✓ memory: saved decision "use refresh-token rotation, not re-login"']] },
+      { cls: '',           parts: [['t-prompt', '$ '], ['caret', '']] }
+    ];
+
+    var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function spanFor(cls) {
+      var s = document.createElement('span');
+      s.className = cls || '';
+      return s;
+    }
+
+    function renderStatic() {
+      LINES.forEach(function (line) {
+        var row = document.createElement('div');
+        line.parts.forEach(function (p) {
+          var s = spanFor(p[0]);
+          s.textContent = p[1];
+          row.appendChild(s);
+        });
+        el.appendChild(row);
+      });
+    }
+
+    function typeLine(line, cb) {
+      var row = document.createElement('div');
+      el.appendChild(row);
+      var queue = [];
+      line.parts.forEach(function (p) {
+        var s = spanFor(p[0]);
+        row.appendChild(s);
+        var chars = p[1] || '';
+        for (var i = 0; i < chars.length; i++) queue.push({ span: s, ch: chars[i] });
+      });
+      var idx = 0;
+      (function tick() {
+        if (idx >= queue.length) return cb();
+        var n = Math.min(idx + 3, queue.length);
+        var frag = '';
+        for (var i = idx; i < n; i++) frag += queue[i].ch;
+        queue[idx].span.textContent += frag;
+        idx = n;
+        setTimeout(tick, 14);
+      })();
+    }
+
+    function run() {
+      el.textContent = '';
+      var i = 0;
+      (function next() {
+        if (i >= LINES.length) {
+          setTimeout(run, 5200); // pause, then loop
+          return;
+        }
+        typeLine(LINES[i], function () { i++; setTimeout(next, 260); });
+      })();
+    }
+
+    if (reduced) { renderStatic(); return; }
+
+    // start when scrolled into view
+    if ('IntersectionObserver' in window) {
+      var started = false;
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (e.isIntersecting && !started) { started = true; run(); io.disconnect(); }
+        });
+      }, { threshold: 0.35 });
+      io.observe(el);
+    } else {
+      run();
+    }
+  })();
+
+  // extra classes used above
+  (function(){ var st=document.createElement('style');
+    st.textContent='.t-route{color:#93c5fd}.g-route{color:var(--warn)}.g-info{color:#93c5fd}.g-ok{color:var(--accent)}.g-dim{color:var(--muted)}';
+    document.head.appendChild(st); })();
+
+  // ── scroll reveal ────────────────────────────────────
+  (function () {
+    var targets = document.querySelectorAll('section .wrap > *, .feat, .step, .ba, .flow-node');
+    if (!targets.length) return;
+    var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduced || !('IntersectionObserver' in window)) {
+      targets.forEach(function(t){ t.classList.add('revealed'); });
+      return;
+    }
+    targets.forEach(function(t){ t.classList.add('will-reveal'); });
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          e.target.classList.add('revealed');
+          io.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+    targets.forEach(function(t){ io.observe(t); });
+  })();
+
+  // ── install-card status ticker ───────────────────────
+  (function () {
+    var el = document.getElementById('install-status');
+    if (!el) return;
+    var msgs = [
+      ['t-ok', '✓ 3 CLIs detected · 2 registered as workers'],
+      ['t-info', '◆ focus map ready · 0 conflicts'],
+      ['t-ok', '✓ memory online · 12 facts from last session'],
+      ['g-route', '◆ router armed · dispatch when ready']
+    ];
+    var i = 0;
+    setInterval(function () {
+      i = (i + 1) % msgs.length;
+      el.className = msgs[i][0];
+      el.textContent = msgs[i][1];
+    }, 2800);
+  })();
+</script>
 
 </body>
 </html>
