@@ -409,7 +409,7 @@ def _backfill_facts(conn: sqlite3.Connection) -> None:
     """
     rows = conn.execute(
         """
-        SELECT c.checkpoint_id, c.durable_facts, s.project_key
+        SELECT c.checkpoint_id, c.timestamp, c.durable_facts, s.project_key
         FROM checkpoints AS c
         JOIN sessions AS s ON s.session_id = c.session_id
         WHERE c.durable_facts IS NOT NULL
@@ -423,6 +423,7 @@ def _backfill_facts(conn: sqlite3.Connection) -> None:
             row["project_key"],
             row["checkpoint_id"],
             _decode_structured(row["durable_facts"]),
+            observed_at=row["timestamp"],
         )
 
 
@@ -454,6 +455,7 @@ def _record_facts(
     project_key: str,
     checkpoint_id: str,
     durable_facts: Any,
+    observed_at: str | None = None,
 ) -> None:
     """Upsert one checkpoint's durable facts into the project fact store.
 
@@ -462,24 +464,33 @@ def _record_facts(
     checkpoint cannot inflate it. It is deliberately not decremented when a
     checkpoint is later pruned: it records how often the fact was observed,
     not how much provenance is still retained.
+
+    ``observed_at`` stamps ``first_seen`` on insert. The backfill passes the
+    originating checkpoint's timestamp so migrated history keeps its real age
+    instead of collapsing onto the moment of migration; an existing fact never
+    has its ``first_seen`` rewritten.
+
+    The insert is conflict-safe rather than SELECT-then-INSERT. Both call sites
+    already hold a ``BEGIN IMMEDIATE`` write transaction, which SQLite
+    serializes, so two writers cannot currently interleave here -- but the fact
+    store must not silently depend on that invariant holding for every future
+    caller, because an IntegrityError raised here would roll back the caller's
+    checkpoint, not just the fact promotion.
     """
-    now = _utc_now()
+    first_seen = observed_at or _utc_now()
     for text in _fact_texts(durable_facts):
-        row = conn.execute(
+        conn.execute(
+            """
+            INSERT INTO facts (fact_id, project_key, text, first_seen)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(project_key, text) DO NOTHING
+            """,
+            (uuid.uuid4().hex, project_key, text, first_seen),
+        )
+        fact_id = conn.execute(
             "SELECT fact_id FROM facts WHERE project_key = ? AND text = ?",
             (project_key, text),
-        ).fetchone()
-        if row is None:
-            fact_id = uuid.uuid4().hex
-            conn.execute(
-                """
-                INSERT INTO facts (fact_id, project_key, text, first_seen)
-                VALUES (?, ?, ?, ?)
-                """,
-                (fact_id, project_key, text, now),
-            )
-        else:
-            fact_id = row["fact_id"]
+        ).fetchone()["fact_id"]
         cursor = conn.execute(
             "INSERT OR IGNORE INTO fact_sources (fact_id, checkpoint_id) "
             "VALUES (?, ?)",
@@ -1136,6 +1147,12 @@ def memory_prune(
     dry_run: bool = True,
 ) -> dict[str, Any]:
     """Delete old ended sessions; never touch active or durable-fact sessions.
+
+    Project facts survive this: ``fact_sources`` rows cascade away with their
+    checkpoints, but the fact itself is project-scoped and stays. ``facts.
+    source_count`` is a historical observation counter and is deliberately not
+    decremented when provenance is pruned -- decrementing it would silently
+    re-rank the fact store, so leave it alone.
 
     Only sessions that have ended are eligible. A session is protected when
     *any* retained checkpoint carries durable facts (not just the latest one),

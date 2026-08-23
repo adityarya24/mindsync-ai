@@ -1033,3 +1033,37 @@ def test_memory_stats_counts_facts():
     assert report["total_facts"] == 1
     projects = {item["project_key"]: item for item in report["projects"]}
     assert projects["counted"]["facts"] == 1
+
+
+def test_backfill_keeps_the_checkpoint_time_as_first_seen():
+    session_id = session_start(project_key="aged", agent="agent")
+    memory_checkpoint(session_id, durable_facts=["an old lesson"])
+    checkpoint_time = _get_db().execute(
+        "SELECT timestamp FROM checkpoints WHERE session_id = ?", (session_id,)
+    ).fetchone()["timestamp"]
+    _downgrade_to_schema_v1()
+
+    memory_bootstrap("aged")
+
+    first_seen = _get_db().execute(
+        "SELECT first_seen FROM facts WHERE project_key = 'aged'"
+    ).fetchone()["first_seen"]
+    assert first_seen == checkpoint_time
+
+
+def test_relinking_a_fact_does_not_rewrite_first_seen():
+    first = session_start(project_key="stable", agent="agent")
+    memory_checkpoint(first, durable_facts=["stable fact"])
+    db = _get_db()
+    original = db.execute(
+        "SELECT first_seen FROM facts WHERE project_key = 'stable'"
+    ).fetchone()["first_seen"]
+
+    second = session_start(project_key="stable", agent="agent")
+    memory_checkpoint(second, durable_facts=["stable fact"])
+
+    row = db.execute(
+        "SELECT first_seen, source_count FROM facts WHERE project_key = 'stable'"
+    ).fetchone()
+    assert row["first_seen"] == original
+    assert row["source_count"] == 2

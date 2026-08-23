@@ -26,9 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Session memory migrates from schema v1 to v2 automatically on first open, backfilling
   the fact store from durable facts already stored in checkpoints. The migration is
-  idempotent and additive: no existing column or call signature changes, and every
-  existing tool call behaves as it did before. Facts outlive the sessions they came
-  from, so pruning old episodes no longer discards what was learned in them.
+  idempotent and additive: no existing column or call signature changes. Facts
+  outlive the sessions they came from, so pruning old episodes no longer discards
+  what was learned in them.
+- `memory_bootstrap` payload *membership* can shift even though its signature does
+  not: `project_facts` claim up to a quarter of `budget_chars` before session
+  entries are packed, so under a tight budget an entry that previously fit may now
+  be dropped in favour of a fact. Intentional, but it will show up in any snapshot
+  test asserting on a complete bootstrap response.
 
 ## [1.4.0] - 2026-08-21
 
