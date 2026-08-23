@@ -28,6 +28,8 @@ from mindsync.dispatch.memory_lifecycle import (
     append_warnings,
     finalize_dispatch_memory,
     prepare_dispatch_memory,
+    resolve_dispatch_memory_project,
+    validate_memory_mode,
 )
 from mindsync.dispatch.review import diff_summary, run_checks
 from mindsync.dispatch.routing import select_agent
@@ -247,8 +249,10 @@ async def run_task(
     execution_mode: str = "worker",
     timeout_seconds: float | None = None,
     memory_project: str | None = None,
+    memory_mode: str = "explicit",
 ) -> dict[str, Any]:
     execution_mode = validate_execution_mode(execution_mode)
+    memory_mode = validate_memory_mode(memory_mode)
     delegation_depth = 0 if execution_mode == "orchestrator" else 1
     if (agent is None and role is None) or (agent is not None and role is not None):
         raise ValueError("Exactly one of 'agent' or 'role' must be provided.")
@@ -315,9 +319,12 @@ async def run_task(
     effective_effort, effort_warning = resolve_effort(adapter, eff_effort)
 
     worktree_suffix = _WORKTREE_PROMPT_NOTE if worktree else ""
+    memory_requested = memory_mode == "auto" or (
+        memory_mode != "off" and memory_project is not None
+    )
     job_prompt = (
         prompt
-        if memory_project is not None
+        if memory_requested
         else prompt + worktree_suffix
     )
 
@@ -352,7 +359,7 @@ async def run_task(
                 meta["id"],
                 {"status": "failed", "exitCode": -1, "endedAt": store.utc_now()},
             )
-            if memory_project is not None:
+            if memory_requested:
                 _finalize_memory_if_needed(meta["id"])
             raise
         meta = store.update_job(meta["id"], {
@@ -372,10 +379,23 @@ async def run_task(
         if base:
             meta = store.update_job(meta["id"], {"baseCommit": base})
 
-    if memory_project is not None:
+    resolved_project, project_source, resolution_warnings = (
+        resolve_dispatch_memory_project(
+            memory_project,
+            memory_mode,
+            meta.get("cwd"),
+        )
+    )
+    mode_metadata: dict[str, Any] = {"memoryMode": memory_mode}
+    if project_source is not None:
+        mode_metadata["memoryProjectSource"] = project_source
+    meta = store.update_job(meta["id"], mode_metadata)
+    append_warnings(meta["id"], resolution_warnings)
+
+    if resolved_project is not None:
         prefix, memory_warnings = prepare_dispatch_memory(
             meta["id"],
-            memory_project,
+            resolved_project,
             agent=eff_agent,
             workspace=meta.get("cwd"),
             branch=meta.get("branch"),
@@ -386,6 +406,11 @@ async def run_task(
             agent_prompt = prefix + agent_prompt
         agent_prompt += worktree_suffix
         _update_job_prompt(meta["id"], agent_prompt)
+        meta = store.get_job(meta["id"]) or meta
+    elif memory_requested and worktree_suffix:
+        # Auto inference can fail closed after the job is created. Preserve the
+        # worktree boundary note even though no memory prefix will be injected.
+        _update_job_prompt(meta["id"], prompt + worktree_suffix)
         meta = store.get_job(meta["id"]) or meta
 
     if background:

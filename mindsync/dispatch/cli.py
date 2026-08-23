@@ -31,6 +31,7 @@ def parse_run_args(argv: list[str]) -> dict:
         "required_capabilities": [],
         "exclude_agents": [],
         "memory_project": None,
+        "memory_mode": "explicit",
     }
     rest: list[str] = []
     i = 0
@@ -40,7 +41,7 @@ def parse_run_args(argv: list[str]) -> dict:
         "options: [--background] [--write] [--model <m>] [--effort <level>] "
         "[--worktree] [--cwd <path>] [--check <command>]... "
         "[--capability <name>]... [--exclude-agent <name>]... "
-        "[--memory-project <key>]"
+        "[--memory-project <key>] [--memory-mode <auto|explicit|off>]"
     )
     while i < len(argv):
         a = argv[i]
@@ -71,6 +72,9 @@ def parse_run_args(argv: list[str]) -> dict:
         elif a == "--memory-project":
             i += 1
             flags["memory_project"] = argv[i] if i < len(argv) else None
+        elif a == "--memory-mode":
+            i += 1
+            flags["memory_mode"] = argv[i] if i < len(argv) else None
         elif a == "--write":
             flags["write"] = True
         elif a == "--background":

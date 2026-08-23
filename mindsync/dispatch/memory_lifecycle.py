@@ -1,12 +1,16 @@
-"""Automatic dispatch session-memory lifecycle (Phase 2).
+"""Automatic dispatch session-memory lifecycle (Phases 2 and 3A).
 
-Shared runner integration only — no per-adapter hooks. When ``memory_project`` is
-omitted, this module is never invoked and dispatch behavior is unchanged.
+Shared runner integration only — no per-adapter hooks. Phase 3A preserves the
+explicit opt-in default while allowing callers to pilot privacy-safe Git identity
+inference or opt out completely.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+from pathlib import Path
 from typing import Any
 
 from mindsync.dispatch import store
@@ -24,6 +28,101 @@ _CONTEXT_START = "--- MindSync session memory"
 _CONTEXT_END = "--- end MindSync session memory ---"
 _MAX_FILES = 50
 _MAX_CHECK_ENTRIES = 20
+_MEMORY_MODES = {"auto", "explicit", "off"}
+_GIT_IDENTITY_DOMAIN = "mindsync-git-project-v1"
+
+
+def validate_memory_mode(memory_mode: str) -> str:
+    """Validate the Phase 3A rollout mode before a dispatch job is created."""
+    if memory_mode not in _MEMORY_MODES:
+        choices = ", ".join(sorted(_MEMORY_MODES))
+        raise ValueError(f"memory_mode must be one of: {choices}")
+    return memory_mode
+
+
+def _infer_git_project_key(workspace: str | None) -> str | None:
+    """Return an opaque identity shared by one Git checkout and its worktrees.
+
+    Git's common directory is stable across linked worktrees. Hashing its resolved
+    local path keeps usernames, repository names, and remote URLs out of the
+    project key. A missing or unverifiable directory is not guessed around.
+    """
+    if not workspace:
+        return None
+    try:
+        workspace_path = Path(workspace)
+        if not workspace_path.is_dir():
+            return None
+    except (OSError, TypeError, ValueError):
+        return None
+
+    try:
+        from mindsync.dispatch.worktree import _git
+
+        inside = _git(str(workspace_path), "rev-parse", "--is-inside-work-tree")
+        common = _git(str(workspace_path), "rev-parse", "--git-common-dir")
+    except Exception:
+        # Memory is optional. Even a surprising Git/helper failure must degrade
+        # to memory-off rather than escape after the dispatch job was created.
+        return None
+    if inside is None or inside.strip() != "true" or not common or not common.strip():
+        return None
+
+    try:
+        common_path = Path(common.strip())
+        if not common_path.is_absolute():
+            common_path = workspace_path / common_path
+        resolved = common_path.resolve(strict=True)
+        if not resolved.is_dir():
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    normalized = os.path.normcase(str(resolved))
+    material = f"{_GIT_IDENTITY_DOMAIN}\0{normalized}".encode("utf-8")
+    return f"git-{hashlib.sha256(material).hexdigest()}"
+
+
+def resolve_dispatch_memory_project(
+    memory_project: str | None,
+    memory_mode: str,
+    workspace: str | None,
+) -> tuple[str | None, str | None, list[str]]:
+    """Resolve an explicit or inferred project without ever guessing a raw key.
+
+    The return value is ``(project_key, source, warnings)``. ``off`` is an
+    explicit opt-out and wins over a supplied key. In ``auto`` mode an explicit
+    key wins over inference. ``explicit`` preserves the pre-Phase-3A default.
+    """
+    mode = validate_memory_mode(memory_mode)
+    if mode == "off":
+        warnings = []
+        if memory_project is not None:
+            warnings.append(
+                "session memory disabled by memory_mode='off'; memory_project ignored"
+            )
+        return None, None, warnings
+    if memory_project is not None:
+        return memory_project, "explicit", []
+    if mode == "explicit":
+        return None, None, []
+
+    try:
+        inferred = _infer_git_project_key(workspace)
+    except Exception:
+        # Keep the resolver fail-closed even if the inference helper regresses
+        # or a caller replaces it with a failing implementation.
+        inferred = None
+    if inferred is None:
+        return (
+            None,
+            None,
+            [
+                "session memory auto disabled: no trustworthy Git repository "
+                "identity could be inferred"
+            ],
+        )
+    return inferred, "git", []
 
 
 def _validate_project_key(project_key: str) -> str:
