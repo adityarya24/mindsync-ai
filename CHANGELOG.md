@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Project-scoped fact store (session-memory schema v2). Durable facts are still written
+  to their checkpoint exactly as before, and are now also promoted into `facts` /
+  `fact_sources` keyed by project, so the same lesson recorded in twenty sessions becomes
+  one row instead of twenty unmerged payloads. Each fact carries `first_seen`,
+  `last_recalled`, `recall_count`, and `source_count`; `source_count` rises only when a
+  genuinely new checkpoint asserts the fact.
+- `memory_bootstrap` now returns `project_facts` ahead of `bootstraps`, ordered by
+  strength (recalls plus asserting checkpoints, recency breaking ties) and capped at a
+  quarter of `budget_chars` so facts cannot starve the session history that gives them
+  context. Serving a fact records the recall; a failed counter update degrades the
+  strength signal rather than failing the read.
+- `memory_stats` reports `total_facts` and a per-project `facts` count.
+
+### Changed
+
+- Session memory migrates from schema v1 to v2 automatically on first open, backfilling
+  the fact store from durable facts already stored in checkpoints. The migration is
+  idempotent and additive: no existing column or call signature changes. Facts
+  outlive the sessions they came from, so pruning old episodes no longer discards
+  what was learned in them.
+- `memory_bootstrap` payload *membership* can shift even though its signature does
+  not: `project_facts` claim up to a quarter of `budget_chars` before session
+  entries are packed, so under a tight budget an entry that previously fit may now
+  be dropped in favour of a fact. Intentional, but it will show up in any snapshot
+  test asserting on a complete bootstrap response.
+
 ## [1.4.0] - 2026-08-21
 
 ### Added

@@ -254,7 +254,7 @@ def test_invalid_session_identifier_is_rejected():
 def test_restart_persistence_and_schema_version():
     session_id = session_start(project_key="restart", agent="agent")
     memory_checkpoint(session_id, decisions=["survive restart"])
-    assert _get_db().execute("PRAGMA user_version").fetchone()[0] == 1
+    assert _get_db().execute("PRAGMA user_version").fetchone()[0] == 2
     _close_local_db()
 
     result = memory_bootstrap("restart")
@@ -877,3 +877,193 @@ def test_bootstrap_treats_blank_earlier_durable_facts_as_missing():
     earlier = result["bootstraps"][0]["earlier_checkpoints"][0]
     assert earlier["decisions"] == ["earlier failure"]
     assert "durable_facts" not in earlier
+
+
+def _downgrade_to_schema_v1() -> None:
+    """Strip the v2 fact store so the next open has to migrate a v1 database."""
+    db = _get_db()
+    db.execute("DROP TABLE IF EXISTS fact_sources")
+    db.execute("DROP TABLE IF EXISTS facts")
+    db.execute("PRAGMA user_version = 1")
+    _close_local_db()
+
+
+def test_durable_facts_surface_as_project_facts():
+    session_id = session_start(project_key="facts", agent="agent")
+    memory_checkpoint(session_id, durable_facts=["kite api is unreliable"])
+
+    assert memory_bootstrap("facts")["project_facts"] == ["kite api is unreliable"]
+
+
+def test_same_fact_across_sessions_is_stored_once():
+    for _ in range(3):
+        session_id = session_start(project_key="repeat", agent="agent")
+        memory_checkpoint(session_id, durable_facts=["dhan data plan lapsed"])
+        session_end(session_id)
+
+    rows = _get_db().execute(
+        "SELECT text, source_count FROM facts WHERE project_key = 'repeat'"
+    ).fetchall()
+    assert [row["text"] for row in rows] == ["dhan data plan lapsed"]
+    assert rows[0]["source_count"] == 3
+    assert memory_bootstrap("repeat")["project_facts"] == ["dhan data plan lapsed"]
+
+
+def test_project_facts_do_not_leak_across_projects():
+    first = session_start(project_key="alpha", agent="agent")
+    memory_checkpoint(first, durable_facts=["alpha only"])
+    second = session_start(project_key="beta", agent="agent")
+    memory_checkpoint(second, durable_facts=["beta only"])
+
+    assert memory_bootstrap("alpha")["project_facts"] == ["alpha only"]
+    assert memory_bootstrap("beta")["project_facts"] == ["beta only"]
+
+
+def test_serving_a_fact_records_the_recall():
+    session_id = session_start(project_key="strength", agent="agent")
+    memory_checkpoint(session_id, durable_facts=["recalled fact"])
+
+    memory_bootstrap("strength")
+    memory_bootstrap("strength")
+
+    row = _get_db().execute(
+        "SELECT recall_count, last_recalled FROM facts "
+        "WHERE project_key = 'strength'"
+    ).fetchone()
+    assert row["recall_count"] == 2
+    assert row["last_recalled"] is not None
+
+
+def test_stronger_facts_are_served_first():
+    weak = session_start(project_key="ranked-facts", agent="agent")
+    memory_checkpoint(weak, durable_facts=["weak fact"])
+    for _ in range(3):
+        strong = session_start(project_key="ranked-facts", agent="agent")
+        memory_checkpoint(strong, durable_facts=["strong fact"])
+
+    assert memory_bootstrap("ranked-facts")["project_facts"][0] == "strong fact"
+
+
+def test_schema_v1_database_backfills_project_facts():
+    session_id = session_start(project_key="legacy", agent="agent")
+    memory_checkpoint(session_id, durable_facts=["survives the migration"])
+    _downgrade_to_schema_v1()
+
+    result = memory_bootstrap("legacy")
+
+    assert result["project_facts"] == ["survives the migration"]
+    assert _get_db().execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_backfill_does_not_double_count_recorded_facts():
+    session_id = session_start(project_key="idem", agent="agent")
+    memory_checkpoint(session_id, durable_facts=["one fact"])
+
+    db = _get_db()
+    memory_mod._backfill_facts(db)
+
+    rows = db.execute(
+        "SELECT source_count FROM facts WHERE project_key = 'idem'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["source_count"] == 1
+
+
+def test_deleting_sessions_keeps_their_project_facts():
+    session_id = session_start(project_key="outlives", agent="agent")
+    memory_checkpoint(session_id, durable_facts=["the lesson outlives the episode"])
+    session_end(session_id)
+
+    db = _get_db()
+    db.execute("DELETE FROM checkpoints WHERE session_id = ?", (session_id,))
+    db.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+
+    assert memory_bootstrap("outlives")["bootstraps"] == []
+    assert memory_bootstrap("outlives")["project_facts"] == [
+        "the lesson outlives the episode"
+    ]
+
+
+def test_project_facts_are_redacted():
+    session_id = session_start(project_key="secret-facts", agent="agent")
+    memory_checkpoint(
+        session_id,
+        durable_facts=["token is ghp_abcdefghijklmnopqrstuvwxyz0123456789"],
+    )
+
+    serialized = json.dumps(memory_bootstrap("secret-facts")["project_facts"])
+    assert "ghp_" not in serialized
+    assert "[REDACTED]" in serialized
+
+
+def test_project_facts_never_claim_the_whole_budget():
+    session_id = session_start(project_key="fact-budget", agent="agent")
+    memory_checkpoint(
+        session_id,
+        durable_facts=[f"fact-{index:03d}-" + "x" * 80 for index in range(40)],
+    )
+
+    result = memory_bootstrap("fact-budget", budget_chars=2000)
+
+    facts_len = len(json.dumps(result["project_facts"], ensure_ascii=False))
+    assert result["project_facts"]
+    assert facts_len <= 2000 // 4
+    assert len(json.dumps(result, ensure_ascii=False)) <= 2000
+
+
+def test_object_facts_dedupe_regardless_of_key_order():
+    first = session_start(project_key="objects", agent="agent")
+    memory_checkpoint(first, durable_facts=[{"a": 1, "b": 2}])
+    second = session_start(project_key="objects", agent="agent")
+    memory_checkpoint(second, durable_facts=[{"b": 2, "a": 1}])
+
+    rows = _get_db().execute(
+        "SELECT source_count FROM facts WHERE project_key = 'objects'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0]["source_count"] == 2
+
+
+def test_memory_stats_counts_facts():
+    session_id = session_start(project_key="counted", agent="agent")
+    memory_checkpoint(session_id, durable_facts=["counted fact"])
+
+    report = memory_stats()
+
+    assert report["total_facts"] == 1
+    projects = {item["project_key"]: item for item in report["projects"]}
+    assert projects["counted"]["facts"] == 1
+
+
+def test_backfill_keeps_the_checkpoint_time_as_first_seen():
+    session_id = session_start(project_key="aged", agent="agent")
+    memory_checkpoint(session_id, durable_facts=["an old lesson"])
+    checkpoint_time = _get_db().execute(
+        "SELECT timestamp FROM checkpoints WHERE session_id = ?", (session_id,)
+    ).fetchone()["timestamp"]
+    _downgrade_to_schema_v1()
+
+    memory_bootstrap("aged")
+
+    first_seen = _get_db().execute(
+        "SELECT first_seen FROM facts WHERE project_key = 'aged'"
+    ).fetchone()["first_seen"]
+    assert first_seen == checkpoint_time
+
+
+def test_relinking_a_fact_does_not_rewrite_first_seen():
+    first = session_start(project_key="stable", agent="agent")
+    memory_checkpoint(first, durable_facts=["stable fact"])
+    db = _get_db()
+    original = db.execute(
+        "SELECT first_seen FROM facts WHERE project_key = 'stable'"
+    ).fetchone()["first_seen"]
+
+    second = session_start(project_key="stable", agent="agent")
+    memory_checkpoint(second, durable_facts=["stable fact"])
+
+    row = db.execute(
+        "SELECT first_seen, source_count FROM facts WHERE project_key = 'stable'"
+    ).fetchone()
+    assert row["first_seen"] == original
+    assert row["source_count"] == 2

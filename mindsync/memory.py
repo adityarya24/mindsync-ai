@@ -15,7 +15,7 @@ from typing import Any
 
 from mindsync.config import settings
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _PROJECT_KEY_MAX = 256
 _AGENT_MAX = 128
 _WORKSPACE_MAX = 4096
@@ -30,6 +30,11 @@ _MAX_BOOTSTRAP_SESSIONS_PER_CLASS = 200
 _MAX_UNICODE_ESCAPE_EXTRA_SHRINK = 5
 _MAX_FACT_CHECKPOINTS_PER_SESSION = 10
 _MAX_MERGED_DURABLE_FACTS = 20
+_MAX_BOOTSTRAP_PROJECT_FACTS = 50
+# Project facts are the highest-value payload, but they must not starve
+# the session history that gives them context, so they may claim at most
+# this fraction of the caller's budget.
+_BOOTSTRAP_FACTS_BUDGET_DIVISOR = 4
 _MAX_IMPORTANT_CHECKPOINTS = 3
 _MAX_LIST_LIMIT = 500
 _MAX_PRUNE_SAMPLE = 100
@@ -344,11 +349,159 @@ def _init_schema(conn: sqlite3.Connection) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_checkpoints_session "
                 "ON checkpoints(session_id)"
             )
+        if version < 2:
+            _init_facts_schema(conn)
+        if version < _SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+
+def _init_facts_schema(conn: sqlite3.Connection) -> None:
+    """Create the project-scoped fact store and backfill it (schema v2).
+
+    Durable facts stay exactly where they are written. This lifts a *copy* out
+    of session scope so the same lesson learned in twenty sessions becomes one
+    row carrying a strength score, instead of twenty unrelated payloads that
+    nothing ever merges.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS facts (
+            fact_id TEXT PRIMARY KEY,
+            project_key TEXT NOT NULL,
+            text TEXT NOT NULL,
+            first_seen TEXT NOT NULL,
+            last_recalled TEXT,
+            recall_count INTEGER NOT NULL DEFAULT 0,
+            source_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fact_sources (
+            fact_id TEXT NOT NULL REFERENCES facts(fact_id) ON DELETE CASCADE,
+            checkpoint_id TEXT NOT NULL
+                REFERENCES checkpoints(checkpoint_id) ON DELETE CASCADE,
+            PRIMARY KEY (fact_id, checkpoint_id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_project_text "
+        "ON facts(project_key, text)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_fact_sources_checkpoint "
+        "ON fact_sources(checkpoint_id)"
+    )
+    _backfill_facts(conn)
+
+
+def _backfill_facts(conn: sqlite3.Connection) -> None:
+    """Populate ``facts`` from durable facts already stored in checkpoints.
+
+    Idempotent: every write is keyed on ``(project_key, text)`` or
+    ``(fact_id, checkpoint_id)``, so a second run adds nothing.
+    """
+    rows = conn.execute(
+        """
+        SELECT c.checkpoint_id, c.timestamp, c.durable_facts, s.project_key
+        FROM checkpoints AS c
+        JOIN sessions AS s ON s.session_id = c.session_id
+        WHERE c.durable_facts IS NOT NULL
+          AND c.durable_facts NOT IN ('', '[]', 'null')
+        ORDER BY c.timestamp, c.rowid
+        """
+    ).fetchall()
+    for row in rows:
+        _record_facts(
+            conn,
+            row["project_key"],
+            row["checkpoint_id"],
+            _decode_structured(row["durable_facts"]),
+            observed_at=row["timestamp"],
+        )
+
+
+def _fact_texts(value: Any) -> list[str]:
+    """Normalize a durable-facts payload into deduped fact strings.
+
+    Payloads are stored as strings, lists, or objects. Strings are used as
+    written; anything else is serialized with sorted keys so two equal objects
+    yield one fact rather than two.
+    """
+    if value is None:
+        return []
+    items = value if isinstance(value, list) else [value]
+    texts: list[str] = []
+    for item in items:
+        if item is None:
+            continue
+        if isinstance(item, str):
+            text = item.strip()
+        else:
+            text = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        if text and text not in texts:
+            texts.append(text)
+    return texts
+
+
+def _record_facts(
+    conn: sqlite3.Connection,
+    project_key: str,
+    checkpoint_id: str,
+    durable_facts: Any,
+    observed_at: str | None = None,
+) -> None:
+    """Upsert one checkpoint's durable facts into the project fact store.
+
+    ``source_count`` counts the checkpoints that have asserted a fact and is
+    bumped only when a link is genuinely new, so re-recording the same
+    checkpoint cannot inflate it. It is deliberately not decremented when a
+    checkpoint is later pruned: it records how often the fact was observed,
+    not how much provenance is still retained.
+
+    ``observed_at`` stamps ``first_seen`` on insert. The backfill passes the
+    originating checkpoint's timestamp so migrated history keeps its real age
+    instead of collapsing onto the moment of migration; an existing fact never
+    has its ``first_seen`` rewritten.
+
+    The insert is conflict-safe rather than SELECT-then-INSERT. Both call sites
+    already hold a ``BEGIN IMMEDIATE`` write transaction, which SQLite
+    serializes, so two writers cannot currently interleave here -- but the fact
+    store must not silently depend on that invariant holding for every future
+    caller, because an IntegrityError raised here would roll back the caller's
+    checkpoint, not just the fact promotion.
+    """
+    first_seen = observed_at or _utc_now()
+    for text in _fact_texts(durable_facts):
+        conn.execute(
+            """
+            INSERT INTO facts (fact_id, project_key, text, first_seen)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(project_key, text) DO NOTHING
+            """,
+            (uuid.uuid4().hex, project_key, text, first_seen),
+        )
+        fact_id = conn.execute(
+            "SELECT fact_id FROM facts WHERE project_key = ? AND text = ?",
+            (project_key, text),
+        ).fetchone()["fact_id"]
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO fact_sources (fact_id, checkpoint_id) "
+            "VALUES (?, ?)",
+            (fact_id, checkpoint_id),
+        )
+        if cursor.rowcount:
+            conn.execute(
+                "UPDATE facts SET source_count = source_count + 1 "
+                "WHERE fact_id = ?",
+                (fact_id,),
+            )
 
 
 def _get_db() -> sqlite3.Connection:
@@ -447,9 +600,10 @@ def memory_checkpoint(
         "durable_facts": _encode_structured(durable_facts, "durable_facts"),
     }
     db = _get_db()
-    if db.execute(
-        "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)
-    ).fetchone() is None:
+    session_row = db.execute(
+        "SELECT project_key FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    if session_row is None:
         raise ValueError(f"Unknown session {session_id}")
     checkpoint_id = uuid.uuid4().hex
     db.execute("BEGIN IMMEDIATE")
@@ -479,6 +633,14 @@ def memory_checkpoint(
                 "UPDATE sessions SET status = ? WHERE session_id = ?",
                 (status, session_id),
             )
+        # Same transaction as the checkpoint insert: a fact can never be
+        # recorded for a checkpoint that was rolled back.
+        _record_facts(
+            db,
+            session_row["project_key"],
+            checkpoint_id,
+            _decode_structured(fields["durable_facts"]),
+        )
         db.execute("COMMIT")
     except Exception:
         db.execute("ROLLBACK")
@@ -526,11 +688,18 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
         raise ValueError(
             f"budget_chars must be between 1 and {_MAX_BOOTSTRAP_BUDGET}"
         )
-    result: dict[str, Any] = {"project_key": project_key, "bootstraps": []}
+    result: dict[str, Any] = {
+        "project_key": project_key,
+        "project_facts": [],
+        "bootstraps": [],
+    }
     if len(json.dumps(result, ensure_ascii=False)) > budget_chars:
         raise ValueError("budget_chars is too small for the response envelope")
 
     db = _get_db()
+    result["project_facts"] = _project_facts(
+        db, project_key, budget_chars // _BOOTSTRAP_FACTS_BUDGET_DIVISOR
+    )
     committed_len = len(json.dumps(result, ensure_ascii=False))
     bootstraps: list[dict[str, Any]] = result["bootstraps"]
     for row in _iter_bootstrap_candidates(db, project_key):
@@ -591,7 +760,7 @@ def memory_bootstrap(project_key: str, budget_chars: int = 20_000) -> dict[str, 
             continue
         bootstraps.append(entry)
         committed_len += serialized_len + separator_len
-    return {"project_key": project_key, "bootstraps": bootstraps}
+    return result
 
 
 def _iter_bootstrap_candidates(
@@ -660,6 +829,68 @@ def _bootstrap_payload_row(
         """,
         (checkpoint_id, session_id),
     ).fetchone()
+
+
+def _project_facts(
+    db: sqlite3.Connection, project_key: str, max_chars: int
+) -> list[str]:
+    """Return the strongest project facts that fit within ``max_chars``.
+
+    Strength is how often a fact has been recalled plus how many checkpoints
+    asserted it, with recency breaking ties. Weak facts sort last and fall off
+    the budget; nothing is ever deleted by decay.
+    """
+    if max_chars <= 0:
+        return []
+    rows = db.execute(
+        """
+        SELECT fact_id, text
+        FROM facts
+        WHERE project_key = ?
+        ORDER BY (recall_count + source_count) DESC,
+                 COALESCE(last_recalled, first_seen) DESC,
+                 rowid DESC
+        LIMIT ?
+        """,
+        (project_key, _MAX_BOOTSTRAP_PROJECT_FACTS),
+    ).fetchall()
+    selected: list[str] = []
+    fact_ids: list[str] = []
+    for row in rows:
+        candidate = selected + [row["text"]]
+        if len(json.dumps(candidate, ensure_ascii=False)) > max_chars:
+            break
+        selected = candidate
+        fact_ids.append(row["fact_id"])
+    if fact_ids:
+        _bump_fact_recalls(db, fact_ids)
+    return selected
+
+
+def _bump_fact_recalls(db: sqlite3.Connection, fact_ids: list[str]) -> None:
+    """Record that these facts were served, best effort.
+
+    Bootstrap is the read path dispatch calls at session start. A lost counter
+    update costs only strength accuracy, while a raised error would cost the
+    caller its memory, so a write failure here degrades rather than propagates.
+    """
+    placeholders = ",".join("?" * len(fact_ids))
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(
+            f"""
+            UPDATE facts
+            SET recall_count = recall_count + 1, last_recalled = ?
+            WHERE fact_id IN ({placeholders})
+            """,
+            (_utc_now(), *fact_ids),
+        )
+        db.execute("COMMIT")
+    except sqlite3.Error:
+        try:
+            db.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
 
 
 def _merged_durable_facts(
@@ -780,16 +1011,20 @@ def memory_stats() -> dict[str, Any]:
         SELECT
             (SELECT COUNT(*) FROM sessions) AS total_sessions,
             (SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL) AS active_sessions,
-            (SELECT COUNT(*) FROM checkpoints) AS total_checkpoints
+            (SELECT COUNT(*) FROM checkpoints) AS total_checkpoints,
+            (SELECT COUNT(*) FROM facts) AS total_facts
         """
     ).fetchone()
     projects = db.execute(
         """
-        SELECT project_key, COUNT(*) AS sessions,
-               SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END) AS active_sessions
-        FROM sessions
-        GROUP BY project_key
-        ORDER BY project_key
+        SELECT s.project_key, COUNT(*) AS sessions,
+               SUM(CASE WHEN s.ended_at IS NULL THEN 1 ELSE 0 END)
+                   AS active_sessions,
+               (SELECT COUNT(*) FROM facts AS f
+                 WHERE f.project_key = s.project_key) AS facts
+        FROM sessions AS s
+        GROUP BY s.project_key
+        ORDER BY s.project_key
         """
     ).fetchall()
     try:
@@ -802,11 +1037,13 @@ def memory_stats() -> dict[str, Any]:
         "total_sessions": int(totals["total_sessions"]),
         "active_sessions": int(totals["active_sessions"]),
         "total_checkpoints": int(totals["total_checkpoints"]),
+        "total_facts": int(totals["total_facts"]),
         "projects": [
             {
                 "project_key": row["project_key"],
                 "sessions": int(row["sessions"]),
                 "active_sessions": int(row["active_sessions"] or 0),
+                "facts": int(row["facts"] or 0),
             }
             for row in projects
         ],
@@ -910,6 +1147,12 @@ def memory_prune(
     dry_run: bool = True,
 ) -> dict[str, Any]:
     """Delete old ended sessions; never touch active or durable-fact sessions.
+
+    Project facts survive this: ``fact_sources`` rows cascade away with their
+    checkpoints, but the fact itself is project-scoped and stays. ``facts.
+    source_count`` is a historical observation counter and is deliberately not
+    decremented when provenance is pruned -- decrementing it would silently
+    re-rank the fact store, so leave it alone.
 
     Only sessions that have ended are eligible. A session is protected when
     *any* retained checkpoint carries durable facts (not just the latest one),
