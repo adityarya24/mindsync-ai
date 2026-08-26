@@ -158,8 +158,10 @@ def consolidate_facts(
                 {
                     "role": "system",
                     "content": (
-                        "Generalize only the supplied facts. Do not infer, predict, or add "
-                        "details. Return one concise fact and the exact IDs that support it."
+                        "Generalize only the supplied facts. Combine meaning supported by at "
+                        "least two distinct facts into one concise paraphrase. Do not copy any "
+                        "source text verbatim. Do not infer, predict, or add details. Return the "
+                        "exact IDs that support the paraphrase."
                     ),
                 },
                 {

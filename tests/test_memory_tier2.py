@@ -250,6 +250,26 @@ def test_consolidation_preview_apply_and_undo_preserve_provenance():
     assert audit[0]["source_fact_ids"] == applied["source_fact_ids"]
 
 
+def test_consolidation_preview_rejects_verbatim_source_copy():
+    _record("alpha", "SQLite stores session memory", "Database facts stay local")
+
+    def copy_source(facts: list[dict[str, str]], model: str) -> dict[str, object]:
+        return {
+            "text": facts[0]["text"],
+            "supporting_fact_ids": [item["fact_id"] for item in facts],
+        }
+
+    with pytest.raises(ValueError, match="generalize rather than copy"):
+        memory_consolidate_preview(
+            "alpha",
+            min_similarity=0.9,
+            _embedder=_embed,
+            _consolidator=copy_source,
+        )
+
+    assert memory_consolidation_list(project_key="alpha") == []
+
+
 def test_apply_rejects_stale_proposal_without_partial_changes():
     _record("alpha", "SQLite stores session memory", "Database facts stay local")
 

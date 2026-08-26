@@ -89,6 +89,9 @@ def test_consolidation_requests_strict_structured_output(
     assert payload["stream"] is False
     assert payload["format"]["additionalProperties"] is False
     assert payload["options"] == {"temperature": 0}
+    system_prompt = payload["messages"][0]["content"]
+    assert "at least two distinct facts" in system_prompt
+    assert "Do not copy any source text verbatim" in system_prompt
     prompt_lines = payload["messages"][1]["content"].splitlines()[1:]
     parsed_lines = [json.loads(line) for line in prompt_lines]
     assert parsed_lines[0] == {
