@@ -9,6 +9,10 @@ _MINDSYNC_ENV = (
     "MINDSYNC_REMOTE_WRITE_SCRIPT",
     "MINDSYNC_REMOTE_CONSOLIDATE_SCRIPT",
     "MINDSYNC_REMOTE_TRUTH_SUBDIR",
+    "MINDSYNC_MEMORY_MODEL_URL",
+    "MINDSYNC_MEMORY_EMBEDDING_MODEL",
+    "MINDSYNC_MEMORY_CONSOLIDATION_MODEL",
+    "MINDSYNC_MEMORY_MODEL_TIMEOUT",
 )
 
 
@@ -31,6 +35,10 @@ def test_defaults_are_generic_and_local_only(monkeypatch):
     assert "gbrain" not in s.remote_write_script
     assert "openclaw" not in s.remote_root
     assert "gbrain" not in s.remote_root
+    assert s.memory_model_url == "http://127.0.0.1:11434"
+    assert s.memory_embedding_model == ""
+    assert s.memory_consolidation_model == ""
+    assert s.memory_model_timeout_seconds == 60
 
 
 def test_remote_env_overrides(monkeypatch, tmp_path):
@@ -43,3 +51,25 @@ def test_remote_env_overrides(monkeypatch, tmp_path):
     assert s.ssh_host == "my-server"
     assert s.remote_root == "/opt/mindsync"
     assert s.remote_write_script == "bin/write_fact.py"
+
+
+def test_memory_model_timeout_is_bounded(monkeypatch):
+    _clear_mindsync_env(monkeypatch)
+    monkeypatch.setenv("MINDSYNC_MEMORY_MODEL_TIMEOUT", "0")
+    try:
+        Settings()
+    except ValueError as exc:
+        assert "MINDSYNC_MEMORY_MODEL_TIMEOUT" in str(exc)
+    else:  # pragma: no cover - explicit failure keeps this dependency-free
+        raise AssertionError("zero timeout should be rejected")
+
+
+def test_memory_model_timeout_names_invalid_numeric_setting(monkeypatch):
+    _clear_mindsync_env(monkeypatch)
+    monkeypatch.setenv("MINDSYNC_MEMORY_MODEL_TIMEOUT", "not-a-number")
+    try:
+        Settings()
+    except ValueError as exc:
+        assert str(exc) == "MINDSYNC_MEMORY_MODEL_TIMEOUT must be a number"
+    else:  # pragma: no cover
+        raise AssertionError("non-numeric timeout should be rejected")

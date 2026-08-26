@@ -28,6 +28,11 @@ EXPECTED_TOOLS = {
     "session_start",
     "memory_checkpoint",
     "memory_bootstrap",
+    "memory_recall",
+    "memory_consolidate_preview",
+    "memory_consolidation_apply",
+    "memory_consolidation_undo",
+    "memory_consolidation_list",
     "session_end",
     # Event bus
     "publish_event",

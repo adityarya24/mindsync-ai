@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Tier 2 semantic recall and reversible fact consolidation (session-memory schema
+  v3). `memory_recall` caches local embeddings by model/text hash and ranks active
+  project facts with exact `sqlite-vec` cosine distance. Consolidation is preview-first:
+  a generated fact is never applied without a separate explicit action, every cited
+  source remains traceable through checkpoint provenance, and undo atomically restores
+  the sources while retaining the generated fact ID in proposal history. CLI and MCP
+  surfaces expose recall, preview, list, apply, and undo. Recall indexing is capped and
+  independently committed in bounded batches so retries preserve forward progress;
+  pending proposals are capped per project to keep the review queue bounded.
+- Loopback-only Ollama-compatible model adapter for embeddings and strict structured
+  consolidation output. Remote or credential-bearing model URLs are rejected, request
+  failures are visible without response-body leakage, cues are redacted and never
+  persisted, and consolidation receives only already-redacted durable-fact text.
 - Phase 3A dispatch memory rollout modes: `explicit` remains the compatibility
   default, `auto` infers a privacy-safe opaque identity shared by a Git checkout
   and its linked worktrees, and `off` is an explicit opt-out. A supplied
@@ -30,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Session memory migrates additively from schema v2 to v3 on first open. Existing
+  facts and call signatures remain valid; new embedding, proposal, generated-fact,
+  and `superseded_by` metadata supports traceable and reversible Tier 2 operations.
 - Session memory migrates from schema v1 to v2 automatically on first open, backfilling
   the fact store from durable facts already stored in checkpoints. The migration is
   idempotent and additive: no existing column or call signature changes. Facts

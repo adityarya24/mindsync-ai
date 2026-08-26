@@ -79,6 +79,25 @@ class Settings:
         self.subscriptions_file: Path = self.home / "subscriptions.json"
         self.orchestration_file: Path = self.home / "orchestration.json"
         self.memory_db_file: Path = self.home / "session_memory.db"
+        self.memory_model_url: str = _env(
+            "MINDSYNC_MEMORY_MODEL_URL", "http://127.0.0.1:11434"
+        )
+        self.memory_embedding_model: str = _env("MINDSYNC_MEMORY_EMBEDDING_MODEL")
+        self.memory_consolidation_model: str = _env(
+            "MINDSYNC_MEMORY_CONSOLIDATION_MODEL"
+        )
+        try:
+            self.memory_model_timeout_seconds = float(
+                _env("MINDSYNC_MEMORY_MODEL_TIMEOUT", "60") or "60"
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "MINDSYNC_MEMORY_MODEL_TIMEOUT must be a number"
+            ) from exc
+        if not 0 < self.memory_model_timeout_seconds <= 300:
+            raise ValueError(
+                "MINDSYNC_MEMORY_MODEL_TIMEOUT must be greater than 0 and at most 300"
+            )
 
         # Remote is disabled until both host and root are set.
         self.ssh_host: str = _env("MINDSYNC_SSH_HOST")

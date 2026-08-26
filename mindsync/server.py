@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import sqlite3
 import sys
 import time
 import uuid
@@ -50,10 +51,16 @@ from mindsync.dispatch.runner import (
 from mindsync.memory import (
     memory_bootstrap as memory_memory_bootstrap,
     memory_checkpoint as memory_memory_checkpoint,
+    memory_consolidate_preview as memory_memory_consolidate_preview,
+    memory_consolidation_apply as memory_memory_consolidation_apply,
+    memory_consolidation_list as memory_memory_consolidation_list,
+    memory_consolidation_undo as memory_memory_consolidation_undo,
+    memory_recall as memory_memory_recall,
     redact_memory_text,
     session_end as memory_session_end,
     session_start as memory_session_start,
 )
+from mindsync.memory_models import MemoryModelError
 from mindsync.orchestration import (
     caller_cli_from_context,
     effective_exclusions,
@@ -1090,6 +1097,127 @@ def memory_bootstrap(
         )
         return {"ok": True, "data": data}
     except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+def memory_recall(
+    agent_name: str,
+    project_key: str,
+    query: str,
+    limit: int = 5,
+    min_similarity: float = 0.0,
+    model: Optional[str] = None,
+) -> dict[str, Any]:
+    """Recall related project facts with a loopback-only embedding model."""
+    try:
+        validated_agent = validate_agent(agent_name)
+        data = memory_memory_recall(
+            project_key=project_key,
+            query=query,
+            limit=limit,
+            min_similarity=min_similarity,
+            model=model,
+        )
+        log_audit(
+            validated_agent,
+            "memory_recall",
+            f"project={project_key} matches={len(data['matches'])}",
+        )
+        return {"ok": True, "data": data}
+    except (ValueError, MemoryModelError, RuntimeError, sqlite3.Error) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+def memory_consolidate_preview(
+    agent_name: str,
+    project_key: str,
+    limit: int = 5,
+    min_similarity: float = 0.45,
+    embedding_model: Optional[str] = None,
+    consolidation_model: Optional[str] = None,
+) -> dict[str, Any]:
+    """Create a review-only fact consolidation proposal; never auto-apply."""
+    try:
+        validated_agent = validate_agent(agent_name)
+        data = memory_memory_consolidate_preview(
+            project_key=project_key,
+            limit=limit,
+            min_similarity=min_similarity,
+            embedding_model=embedding_model,
+            consolidation_model=consolidation_model,
+        )
+        log_audit(
+            validated_agent,
+            "memory_consolidate_preview",
+            f"project={project_key} proposal={data['proposal_id']}",
+        )
+        return {"ok": True, "data": data}
+    except (ValueError, MemoryModelError, RuntimeError, sqlite3.Error) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+def memory_consolidation_apply(
+    agent_name: str,
+    proposal_id: str,
+) -> dict[str, Any]:
+    """Explicitly apply a reviewed consolidation proposal."""
+    try:
+        validated_agent = validate_agent(agent_name)
+        data = memory_memory_consolidation_apply(proposal_id)
+        log_audit(
+            validated_agent,
+            "memory_consolidation_apply",
+            f"proposal={proposal_id} fact={data['fact_id']}",
+        )
+        return {"ok": True, "data": data}
+    except (ValueError, RuntimeError, sqlite3.Error) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+def memory_consolidation_undo(
+    agent_name: str,
+    fact_id: str,
+) -> dict[str, Any]:
+    """Undo a generated consolidation fact and restore its source facts."""
+    try:
+        validated_agent = validate_agent(agent_name)
+        data = memory_memory_consolidation_undo(fact_id)
+        log_audit(
+            validated_agent,
+            "memory_consolidation_undo",
+            f"fact={fact_id} restored={len(data['restored_source_fact_ids'])}",
+        )
+        return {"ok": True, "data": data}
+    except (ValueError, RuntimeError, sqlite3.Error) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+def memory_consolidation_list(
+    agent_name: str,
+    project_key: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+) -> dict[str, Any]:
+    """List pending or historical consolidation proposals for review."""
+    try:
+        validated_agent = validate_agent(agent_name)
+        data = memory_memory_consolidation_list(
+            project_key=project_key,
+            status=status,
+            limit=limit,
+        )
+        log_audit(
+            validated_agent,
+            "memory_consolidation_list",
+            f"project={project_key} status={status} proposals={len(data)}",
+        )
+        return {"ok": True, "data": data}
+    except (ValueError, RuntimeError, sqlite3.Error) as exc:
         return {"ok": False, "error": str(exc)}
 
 
