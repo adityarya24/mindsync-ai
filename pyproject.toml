@@ -51,6 +51,7 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "build", "twine", "ruff>=0.4,<0.16
 [project.scripts]
 mindsync = "mindsync.server:main"
 mindsync-dispatch = "mindsync.dispatch.cli:main"
+mindsync-codex-hook = "mindsync.codex_hook:main"
 
 [tool.setuptools.packages.find]
 include = ["mindsync*"]

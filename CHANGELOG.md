@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Phase 3B standalone session lifecycle with a first-party Codex native-hook adapter.
+  `SessionStart` bootstraps bounded project context and starts or resumes a mapped
+  memory episode; `Stop` records only a compact, deduplicated changed-file milestone;
+  and `SessionEnd` finalizes idempotently. Per-session private state files isolate
+  concurrent CLIs, interrupted `finalizing` states are retryable, and a bounded stale
+  reaper conservatively closes abandoned episodes. Automatic adapter data never
+  includes prompts, transcripts, assistant messages, stdout/stderr, check tails, raw
+  workspace/branch values, or durable facts. `MINDSYNC_STANDALONE_MEMORY_MODE=off`
+  disables the integration without affecting the CLI action.
 - Tier 2 semantic recall and reversible fact consolidation (session-memory schema
   v3). `memory_recall` caches local embeddings by model/text hash and ranks active
   project facts with exact `sqlite-vec` cosine distance. Consolidation is preview-first:
@@ -43,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `memory_checkpoint` accepts an optional caller-supplied checkpoint ID. Reusing that
+  ID in the same session returns the existing checkpoint, while cross-session reuse is
+  rejected; standalone terminal retries use this to avoid duplicate final markers.
 - Session memory migrates additively from schema v2 to v3 on first open. Existing
   facts and call signatures remain valid; new embedding, proposal, generated-fact,
   and `superseded_by` metadata supports traceable and reversible Tier 2 operations.

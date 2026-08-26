@@ -456,6 +456,7 @@ mindsync worker --once
 | `MINDSYNC_MEMORY_EMBEDDING_MODEL` | empty | Local model used by semantic recall |
 | `MINDSYNC_MEMORY_CONSOLIDATION_MODEL` | empty | Local model used for consolidation proposals |
 | `MINDSYNC_MEMORY_MODEL_TIMEOUT` | `60` | Local model request timeout (greater than 0, at most 300 seconds) |
+| `MINDSYNC_STANDALONE_MEMORY_MODE` | `auto` | Standalone adapter memory mode: `auto` or `off` |
 
 ## Session memory
 
@@ -497,6 +498,33 @@ MindSync provides local, structured session memory via SQLite (`session_memory.d
   hosts and credential-bearing URLs are rejected. MindSync never downloads a model.
   Only already-redacted durable-fact text is sent for consolidation—never prompts,
   transcripts, stdout, stderr, or check-output tails.
+
+### Standalone CLI lifecycle (Codex pilot)
+
+Phase 3B lets a CLI session use the same memory lifecycle without going through a
+MindSync dispatch job. The first adapter is `mindsync-codex-hook`, wired to Codex's
+native `SessionStart`, `Stop`, and `SessionEnd` hooks. It infers the same opaque Git
+project identity used by dispatch, injects bounded prior context at start/resume,
+checkpoints only a compact changed-file list, and finalizes the mapped memory session.
+Repeated terminal events and unchanged `Stop` events are idempotent. A later start
+conservatively finalizes stale or interrupted mappings before creating a new episode.
+
+The repository includes [`.codex/hooks.json`](.codex/hooks.json) as a working project
+configuration. After installing MindSync, copy that file into a trusted repository's
+`.codex` directory, review/enable it through Codex's hook trust flow, then restart the
+Codex session. Project-local hooks do not replace user-level Codex configuration.
+
+```bash
+python -m pip install mindsync-ai
+mindsync-codex-hook < codex-hook-event.json  # adapter smoke test
+```
+
+Set `MINDSYNC_STANDALONE_MEMORY_MODE=off` for an explicit opt-out. Hook and memory
+failures are reported as non-fatal warnings; they do not fail the Codex action.
+The adapter reads only the event type, external session ID, workspace, and start
+source. It deliberately ignores prompt, transcript, assistant-message, stdout,
+stderr, and check-output fields, and never promotes automatic lifecycle data into
+durable facts.
 
 ## Inspecting memory
 

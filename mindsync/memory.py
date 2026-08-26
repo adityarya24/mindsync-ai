@@ -11,6 +11,7 @@ import sqlite3
 import struct
 import threading
 import uuid
+from contextlib import contextmanager
 from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -580,7 +581,13 @@ def _record_facts(
                 )
 
 
-def _get_db() -> sqlite3.Connection:
+def _get_db(*, busy_timeout_ms: int | None = None) -> sqlite3.Connection:
+    if busy_timeout_ms is not None and (
+        isinstance(busy_timeout_ms, bool)
+        or not isinstance(busy_timeout_ms, int)
+        or busy_timeout_ms < 0
+    ):
+        raise ValueError("busy_timeout_ms must be a non-negative integer")
     settings.ensure_dirs()
     db_path = settings.memory_db_file
     connection = getattr(_local, "db", None)
@@ -592,12 +599,13 @@ def _get_db() -> sqlite3.Connection:
         connection = None
     if connection is None:
         _prepare_private_db_file(db_path)
+        timeout_ms = 5_000 if busy_timeout_ms is None else busy_timeout_ms
         connection = sqlite3.connect(
-            str(db_path), isolation_level=None, timeout=5.0
+            str(db_path), isolation_level=None, timeout=timeout_ms / 1_000
         )
         try:
             connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA busy_timeout=5000")
+            connection.execute(f"PRAGMA busy_timeout={timeout_ms}")
             connection.execute("PRAGMA foreign_keys=ON")
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=NORMAL")
@@ -608,7 +616,31 @@ def _get_db() -> sqlite3.Connection:
         _local.db = connection
         _local.db_path = db_path
         _harden_db_files(db_path)
+    elif busy_timeout_ms is not None:
+        connection.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
     return connection
+
+
+@contextmanager
+def _memory_busy_timeout(milliseconds: int):
+    """Temporarily bound SQLite lock waits on this thread's connection."""
+    if (
+        isinstance(milliseconds, bool)
+        or not isinstance(milliseconds, int)
+        or milliseconds < 0
+    ):
+        raise ValueError("milliseconds must be a non-negative integer")
+    existing = getattr(_local, "db", None)
+    previous = (
+        int(existing.execute("PRAGMA busy_timeout").fetchone()[0])
+        if existing is not None
+        else 5_000
+    )
+    connection = _get_db(busy_timeout_ms=milliseconds)
+    try:
+        yield
+    finally:
+        connection.execute(f"PRAGMA busy_timeout={previous}")
 
 
 def _close_local_db() -> None:
@@ -666,6 +698,7 @@ def memory_checkpoint(
     pending: Any = None,
     blockers: Any = None,
     durable_facts: Any = None,
+    checkpoint_id: str | None = None,
 ) -> str:
     session_id = _validate_session_id(session_id)
     status = _validate_optional_text(status, "status", _STATUS_MAX)
@@ -677,15 +710,31 @@ def memory_checkpoint(
         "blockers": _encode_structured(blockers, "blockers"),
         "durable_facts": _encode_structured(durable_facts, "durable_facts"),
     }
+    supplied_checkpoint_id = checkpoint_id is not None
+    if supplied_checkpoint_id:
+        checkpoint_id = _validate_session_id(checkpoint_id)
+    else:
+        checkpoint_id = uuid.uuid4().hex
     db = _get_db()
-    session_row = db.execute(
-        "SELECT project_key FROM sessions WHERE session_id = ?", (session_id,)
-    ).fetchone()
-    if session_row is None:
-        raise ValueError(f"Unknown session {session_id}")
-    checkpoint_id = uuid.uuid4().hex
     db.execute("BEGIN IMMEDIATE")
     try:
+        session_row = db.execute(
+            "SELECT project_key FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if session_row is None:
+            raise ValueError(f"Unknown session {session_id}")
+        if supplied_checkpoint_id:
+            existing = db.execute(
+                "SELECT session_id FROM checkpoints WHERE checkpoint_id = ?",
+                (checkpoint_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["session_id"] != session_id:
+                    raise ValueError(
+                        f"checkpoint_id {checkpoint_id} already belongs to another session"
+                    )
+                db.execute("COMMIT")
+                return checkpoint_id
         db.execute(
             """
             INSERT INTO checkpoints (
