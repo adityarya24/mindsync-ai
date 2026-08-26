@@ -662,7 +662,7 @@ def test_auto_project_key_matches_git_pattern(isolated: Path):
     assert "private-repo-name" not in result.project_key
 
 
-def test_git_probes_are_bounded_to_the_hook_budget(monkeypatch):
+def test_git_probes_are_bounded_to_the_hook_budget(monkeypatch, tmp_path):
     """Codex allows the hook 3s; the dispatch default of 15s per probe does not fit.
 
     Two probes at 15s can outlive the hook by 10x, and a killed hook can strand a
@@ -678,7 +678,9 @@ def test_git_probes_are_bounded_to_the_hook_budget(monkeypatch):
         return None
 
     monkeypatch.setattr("mindsync.dispatch.worktree._git", fake_git)
-    ml._infer_git_project_key("/tmp", git_timeout=core._GIT_TIMEOUT_SECONDS)
+    # A real directory, not "/tmp": the resolver returns before probing when the
+    # workspace does not exist, and "/tmp" does not exist on Windows.
+    ml._infer_git_project_key(str(tmp_path), git_timeout=core._GIT_TIMEOUT_SECONDS)
 
     assert seen, "no git probe ran"
     assert all(value <= 3.0 for value in seen), seen
