@@ -32,7 +32,7 @@ MindSync provides:
 - **Conflict prevention** — active file and project focus is visible before work begins.
 - **Durable local state** — focus, events, and queued facts survive restarts.
 - **Session memory** — decisions, blockers, and durable facts persist per project, and
-  bounded prior context is replayed into the next session instead of being re-explained.
+  bounded prior context is replayed into dispatch and supported standalone sessions.
 - **Safe process control** — tracked jobs, timeouts, cancellation, and process-tree cleanup.
 - **Optional durable sync** — important facts can be shared through your own SSH host.
 - **Explainable decisions** — every automatic route includes the reason and candidate scores.
@@ -100,7 +100,7 @@ one or both roles.
 
 | CLI | MCP host setup | Worker preset | Notes |
 | --- | --- | --- | --- |
-| OpenAI Codex | Native | Built in | General coding, debugging, testing, and DevOps |
+| OpenAI Codex | Native | Built in | Native standalone memory hooks plus general coding, testing, and DevOps |
 | Anthropic Claude | Native | Built in | Architecture, reasoning, review, and large-context work |
 | Google Gemini CLI | Native | Built in | Alternate backend in the Gemini/Antigravity family |
 | Antigravity (`agy`) | Via Gemini CLI host | Built in | Preferred worker backend in the Gemini/Antigravity family |
@@ -456,6 +456,7 @@ mindsync worker --once
 | `MINDSYNC_MEMORY_EMBEDDING_MODEL` | empty | Local model used by semantic recall |
 | `MINDSYNC_MEMORY_CONSOLIDATION_MODEL` | empty | Local model used for consolidation proposals |
 | `MINDSYNC_MEMORY_MODEL_TIMEOUT` | `60` | Local model request timeout (greater than 0, at most 300 seconds) |
+| `MINDSYNC_STANDALONE_MEMORY_MODE` | `auto` | Standalone adapter memory mode: `auto` or `off` |
 
 ## Session memory
 
@@ -497,6 +498,35 @@ MindSync provides local, structured session memory via SQLite (`session_memory.d
   hosts and credential-bearing URLs are rejected. MindSync never downloads a model.
   Only already-redacted durable-fact text is sent for consolidation—never prompts,
   transcripts, stdout, stderr, or check-output tails.
+
+### Standalone CLI lifecycle
+
+Supported CLI sessions can use the same memory lifecycle without going through a
+MindSync dispatch job. The first adapter is `mindsync-codex-hook`, wired to Codex's
+native `SessionStart`, `Stop`, and `SessionEnd` hooks. It infers the same opaque Git
+project identity used by dispatch, injects bounded prior context at start/resume,
+checkpoints only a compact changed-file list, and finalizes the mapped memory session.
+Repeated terminal events and unchanged `Stop` events are idempotent. A later start
+conservatively finalizes stale or interrupted mappings before creating a new episode.
+
+The repository includes [`.codex/hooks.json`](.codex/hooks.json) as a working project
+configuration. After installing MindSync, copy that file into a trusted repository's
+`.codex` directory, review/enable it through Codex's hook trust flow, then restart the
+Codex session. Project-local hooks do not replace user-level Codex configuration.
+
+```bash
+python -m pip install mindsync-ai
+mindsync-codex-hook < codex-hook-event.json  # adapter smoke test
+```
+
+Set `MINDSYNC_STANDALONE_MEMORY_MODE=off` for an explicit opt-out: no state file
+is read or written, the memory database is never opened, no stale-session reaping
+runs, and `Stop`/`SessionEnd` return without a word. Hook and memory failures are
+reported as non-fatal warnings; they do not fail the Codex action.
+The adapter reads only the event type, external session ID, workspace, and start
+source. It deliberately ignores prompt, transcript, assistant-message, stdout,
+stderr, and check-output fields, and never promotes automatic lifecycle data into
+durable facts.
 
 ## Inspecting memory
 

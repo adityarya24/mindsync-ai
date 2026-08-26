@@ -16,11 +16,20 @@ class WorktreeError(RuntimeError):
     pass
 
 
-def _git(cwd: str, *args: str, ignore_ambient_repo: bool = False) -> str | None:
+def _git(
+    cwd: str,
+    *args: str,
+    ignore_ambient_repo: bool = False,
+    timeout: float = 15.0,
+) -> str | None:
     """Run a git command, returning stdout, or None when it could not run.
 
     Callers must distinguish "git said no" from "git said nothing" — an empty
     string is a real answer, None is a failure.
+
+    ``timeout`` is the subprocess deadline. The default suits dispatch, which
+    has minutes; a caller running inside a hook with a seconds-long budget
+    must pass its own, or a slow checkout gets the *caller* killed.
 
     ``ignore_ambient_repo`` drops the discovery variables in
     ``_AMBIENT_REPO_ENV``. Ask for it when the answer is meant to describe
@@ -40,7 +49,7 @@ def _git(cwd: str, *args: str, ignore_ambient_repo: bool = False) -> str | None:
             capture_output=True,
             text=True,
             check=False,
-            timeout=15,
+            timeout=timeout,
             env=env,
         )
     except (OSError, subprocess.TimeoutExpired):

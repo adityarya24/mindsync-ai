@@ -6,8 +6,8 @@ Currently, the following versions are supported with security updates:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 1.2.x   | :white_check_mark: |
-| < 1.2   | :x:                |
+| 1.5.x   | :white_check_mark: |
+| < 1.5   | :x:                |
 
 ## Trust Boundaries and Threat Model
 

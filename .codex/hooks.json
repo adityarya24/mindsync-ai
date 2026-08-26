@@ -1,0 +1,43 @@
+{
+  "description": "Privacy-safe standalone MindSync lifecycle for Codex sessions.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mindsync-codex-hook",
+            "commandWindows": "mindsync-codex-hook",
+            "timeout": 3,
+            "additionalContextLimit": 8000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mindsync-codex-hook",
+            "commandWindows": "mindsync-codex-hook",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mindsync-codex-hook",
+            "commandWindows": "mindsync-codex-hook",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-27
+
 ### Added
 
+- Phase 3B standalone session lifecycle with a first-party Codex native-hook adapter.
+  `SessionStart` bootstraps bounded project context and starts or resumes a mapped
+  memory episode; `Stop` records only a compact, deduplicated changed-file milestone;
+  and `SessionEnd` finalizes idempotently. Per-session private state files isolate
+  concurrent CLIs, interrupted `finalizing` states are retryable, and a bounded stale
+  reaper conservatively closes abandoned episodes. Automatic adapter data never
+  includes prompts, transcripts, assistant messages, stdout/stderr, check tails, raw
+  workspace/branch values, or durable facts. `MINDSYNC_STANDALONE_MEMORY_MODE=off`
+  disables the integration without affecting the CLI action.
 - Tier 2 semantic recall and reversible fact consolidation (session-memory schema
   v3). `memory_recall` caches local embeddings by model/text hash and ranks active
   project facts with exact `sqlite-vec` cosine distance. Consolidation is preview-first:
@@ -41,8 +52,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strength signal rather than failing the read.
 - `memory_stats` reports `total_facts` and a per-project `facts` count.
 
+### Fixed
+
+- The Codex hook could outlive its own 3-second budget. Project inference ran two git
+  probes at the dispatch default of 15 seconds each, so a slow checkout or a held
+  `index.lock` got the hook killed — and a kill between `session_start()` and the state
+  file being written stranded an active session row that the state-file-driven reaper
+  can never close. `_git` now takes a timeout and the standalone caller passes one
+  second.
+- Stale-session recovery ran unguarded, so a `TimeoutError` from a concurrent finalize
+  or an `OSError` from a full disk denied an unrelated healthy session its context and
+  its memory episode. Reaping an abandoned session is now best-effort.
+- `MINDSYNC_STANDALONE_MEMORY_MODE=off` was consulted only at `SessionStart`, so later
+  turns still ran git and the core and wrote `no active session` to stderr every time.
+  `off` now short-circuits `Stop` and `SessionEnd` and returns before touching the
+  store, while still reporting an ignored `memory_project`.
+- An unrecognized `SessionStart` source token raised inside the core instead of being
+  dropped, costing that entire session its memory. Tokens are now checked against the
+  set the core accepts.
+- `explicit` was an accepted standalone mode that resolved to no project and no
+  warning — quieter than a typo. Removed, matching the documented `auto | off`.
+- The standalone bootstrap budget equalled the context cap, leaving no room for the
+  delimiters and `current_session` envelope, so a full bootstrap was truncated
+  mid-JSON. The budget reserves the framing, and the cap has one definition.
+- A retried `memory_checkpoint` with an existing caller-supplied checkpoint ID skipped
+  the session-status update, returning success while `sessions.status` never advanced.
+
 ### Changed
 
+- `memory_checkpoint` accepts an optional caller-supplied checkpoint ID. Reusing that
+  ID in the same session returns the existing checkpoint, while cross-session reuse is
+  rejected; standalone terminal retries use this to avoid duplicate final markers.
 - Session memory migrates additively from schema v2 to v3 on first open. Existing
   facts and call signatures remain valid; new embedding, proposal, generated-fact,
   and `superseded_by` metadata supports traceable and reversible Tier 2 operations.
