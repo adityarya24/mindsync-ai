@@ -119,3 +119,109 @@ def test_memory_prune_rejects_bad_age(capsys: pytest.CaptureFixture[str]):
     with pytest.raises(SystemExit) as excinfo:
         manage_main(["memory", "prune", "--older-than-days", "0"])
     assert excinfo.value.code == 2
+
+
+def test_memory_recall_cli_passes_explicit_options(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    captured: dict[str, object] = {}
+
+    def fake_recall(**kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        return {"matches": [{"text": "local memory"}]}
+
+    monkeypatch.setattr(memory_mod, "memory_recall", fake_recall)
+    assert manage_main(
+        [
+            "memory",
+            "recall",
+            "--project",
+            "alpha",
+            "--query",
+            "database",
+            "--limit",
+            "3",
+            "--min-similarity",
+            "0.7",
+            "--model",
+            "embed-local",
+        ]
+    ) == 0
+    assert captured == {
+        "project_key": "alpha",
+        "query": "database",
+        "limit": 3,
+        "min_similarity": 0.7,
+        "model": "embed-local",
+    }
+    assert json.loads(capsys.readouterr().out)["matches"][0]["text"] == "local memory"
+
+
+def test_memory_consolidation_cli_is_preview_first_and_explicit_apply(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    calls: list[tuple[str, object]] = []
+
+    def fake_preview(**kwargs: object) -> dict[str, object]:
+        calls.append(("preview", kwargs))
+        return {"proposal_id": "a" * 32, "status": "pending"}
+
+    def fake_apply(proposal_id: str) -> dict[str, object]:
+        calls.append(("apply", proposal_id))
+        return {"proposal_id": proposal_id, "status": "applied"}
+
+    monkeypatch.setattr(memory_mod, "memory_consolidate_preview", fake_preview)
+    monkeypatch.setattr(memory_mod, "memory_consolidation_apply", fake_apply)
+
+    assert manage_main(["memory", "consolidate", "--project", "alpha"]) == 0
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["status"] == "pending"
+    assert calls[0][0] == "preview"
+
+    assert manage_main(["memory", "apply", "a" * 32]) == 0
+    applied = json.loads(capsys.readouterr().out)
+    assert applied["status"] == "applied"
+    assert calls[1] == ("apply", "a" * 32)
+
+
+def test_memory_proposals_cli_lists_review_state(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    captured: dict[str, object] = {}
+
+    def fake_list(**kwargs: object) -> list[dict[str, object]]:
+        captured.update(kwargs)
+        return [{"proposal_id": "a" * 32, "status": "pending"}]
+
+    monkeypatch.setattr(memory_mod, "memory_consolidation_list", fake_list)
+    assert manage_main(
+        [
+            "memory",
+            "proposals",
+            "--project",
+            "alpha",
+            "--status",
+            "pending",
+            "--limit",
+            "7",
+        ]
+    ) == 0
+    assert captured == {"project_key": "alpha", "status": "pending", "limit": 7}
+    assert json.loads(capsys.readouterr().out)[0]["status"] == "pending"
+
+
+def test_memory_cli_surfaces_runtime_errors_without_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setattr(
+        memory_mod,
+        "memory_recall",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("sqlite-vec unavailable")),
+    )
+
+    assert manage_main(
+        ["memory", "recall", "--project", "alpha", "--query", "cue"]
+    ) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Error: sqlite-vec unavailable" in captured.err

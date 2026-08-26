@@ -254,7 +254,7 @@ def test_invalid_session_identifier_is_rejected():
 def test_restart_persistence_and_schema_version():
     session_id = session_start(project_key="restart", agent="agent")
     memory_checkpoint(session_id, decisions=["survive restart"])
-    assert _get_db().execute("PRAGMA user_version").fetchone()[0] == 2
+    assert _get_db().execute("PRAGMA user_version").fetchone()[0] == 3
     _close_local_db()
 
     result = memory_bootstrap("restart")
@@ -952,7 +952,7 @@ def test_schema_v1_database_backfills_project_facts():
     result = memory_bootstrap("legacy")
 
     assert result["project_facts"] == ["survives the migration"]
-    assert _get_db().execute("PRAGMA user_version").fetchone()[0] == 2
+    assert _get_db().execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_backfill_does_not_double_count_recorded_facts():

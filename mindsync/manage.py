@@ -119,6 +119,9 @@ def _print_memory_stats(report: dict[str, Any]) -> None:
         f"MindSync session memory — {report['total_sessions']} sessions "
         f"({report['active_sessions']} active), "
         f"{report['total_checkpoints']} checkpoints, "
+        f"{report['total_facts']} facts "
+        f"({report['generated_facts']} generated), "
+        f"{report['pending_consolidations']} pending proposals, "
         f"{_format_db_size(report['db_size_bytes'])}"
     )
     if not report["projects"]:
@@ -224,7 +227,43 @@ def _run_memory_command(args: argparse.Namespace) -> int:
             else:
                 _print_memory_prune(result)
             return 0
-    except ValueError as exc:
+        if args.memory_command == "recall":
+            result = memory_mod.memory_recall(
+                project_key=args.project,
+                query=args.query,
+                limit=args.limit,
+                min_similarity=args.min_similarity,
+                model=args.model,
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if args.memory_command == "consolidate":
+            result = memory_mod.memory_consolidate_preview(
+                project_key=args.project,
+                limit=args.limit,
+                min_similarity=args.min_similarity,
+                embedding_model=args.embedding_model,
+                consolidation_model=args.model,
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if args.memory_command == "apply":
+            result = memory_mod.memory_consolidation_apply(args.proposal_id)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if args.memory_command == "undo":
+            result = memory_mod.memory_consolidation_undo(args.fact_id)
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+        if args.memory_command == "proposals":
+            result = memory_mod.memory_consolidation_list(
+                project_key=args.project,
+                status=args.status,
+                limit=args.limit,
+            )
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+            return 0
+    except (ValueError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     except sqlite3.Error as exc:
@@ -340,6 +379,50 @@ def build_parser() -> argparse.ArgumentParser:
         help="Actually delete; without this flag the command is a dry run",
     )
     memory_prune_parser.add_argument("--json", action="store_true")
+
+    memory_recall_parser = memory_sub.add_parser(
+        "recall", help="Recall project facts related to a cue using local embeddings"
+    )
+    memory_recall_parser.add_argument("--project", required=True, help="Project key")
+    memory_recall_parser.add_argument("--query", required=True, help="Recall cue")
+    memory_recall_parser.add_argument("--limit", type=_positive_int, default=5)
+    memory_recall_parser.add_argument("--min-similarity", type=float, default=0.0)
+    memory_recall_parser.add_argument("--model", help="Override local embedding model")
+
+    memory_consolidate_parser = memory_sub.add_parser(
+        "consolidate",
+        help="Create a reviewable consolidation proposal (does not apply it)",
+    )
+    memory_consolidate_parser.add_argument("--project", required=True, help="Project key")
+    memory_consolidate_parser.add_argument("--limit", type=_positive_int, default=5)
+    memory_consolidate_parser.add_argument(
+        "--min-similarity", type=float, default=0.45
+    )
+    memory_consolidate_parser.add_argument(
+        "--embedding-model", help="Override local embedding model"
+    )
+    memory_consolidate_parser.add_argument(
+        "--model", help="Override local consolidation model"
+    )
+
+    memory_apply_parser = memory_sub.add_parser(
+        "apply", help="Apply a reviewed consolidation proposal"
+    )
+    memory_apply_parser.add_argument("proposal_id")
+
+    memory_undo_parser = memory_sub.add_parser(
+        "undo", help="Undo one generated consolidation fact"
+    )
+    memory_undo_parser.add_argument("fact_id")
+
+    memory_proposals_parser = memory_sub.add_parser(
+        "proposals", help="List consolidation proposals for review or audit"
+    )
+    memory_proposals_parser.add_argument("--project", help="Filter by project key")
+    memory_proposals_parser.add_argument(
+        "--status", choices=["pending", "applied", "undone"]
+    )
+    memory_proposals_parser.add_argument("--limit", type=_positive_int, default=50)
 
     return parser
 

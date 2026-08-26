@@ -204,7 +204,7 @@ A typical session uses:
 
 ## MCP tools
 
-MindSync exposes 24 tools.
+MindSync exposes 29 tools.
 
 ### Memory and focus
 
@@ -219,6 +219,11 @@ MindSync exposes 24 tools.
 | `session_start` | Start a tracked local memory session |
 | `memory_checkpoint` | Save structured session state locally |
 | `memory_bootstrap` | Retrieve bounded relevant context for a project |
+| `memory_recall` | Recall related project facts with local embeddings |
+| `memory_consolidate_preview` | Create a review-only consolidation proposal |
+| `memory_consolidation_apply` | Explicitly apply a reviewed proposal |
+| `memory_consolidation_undo` | Restore sources and remove a generated fact |
+| `memory_consolidation_list` | List pending and historical proposals |
 | `session_end` | Mark a session completed or failed |
 
 Note: dispatch can also drive session memory automatically. `memory_mode` (MCP) or
@@ -447,6 +452,10 @@ mindsync worker --once
 | `MINDSYNC_WORKER_CLAIM_STALE_SECS` | `300` | Stale claim threshold in seconds |
 | `MINDSYNC_WORKER_ALLOWED_ROOTS` | empty | Semicolon- or comma-separated allow-list of repository roots the worker may execute in |
 | `MINDSYNC_WORKER_ALLOW_ORCHESTRATOR` | `false` | Local opt-in required before an explicit remote orchestrator job can run |
+| `MINDSYNC_MEMORY_MODEL_URL` | `http://127.0.0.1:11434` | Loopback-only Ollama-compatible API base URL |
+| `MINDSYNC_MEMORY_EMBEDDING_MODEL` | empty | Local model used by semantic recall |
+| `MINDSYNC_MEMORY_CONSOLIDATION_MODEL` | empty | Local model used for consolidation proposals |
+| `MINDSYNC_MEMORY_MODEL_TIMEOUT` | `60` | Local model request timeout (greater than 0, at most 300 seconds) |
 
 ## Session memory
 
@@ -472,6 +481,22 @@ MindSync provides local, structured session memory via SQLite (`session_memory.d
   bounded changed-file paths, and check pass/fail summaries—not agent transcripts,
   raw prompts, or check output tails. Use explicit `memory_checkpoint` when agents
   need richer handoff detail.
+- **Semantic recall**: `memory_recall` embeds the redacted cue and active facts with
+  the configured local model, then performs exact cosine ranking through `sqlite-vec`.
+  The cue is never persisted. Embeddings are cached by model, dimension, and fact-text
+  hash. Indexing is capped at the 2,000 strongest active facts and commits bounded
+  batches independently, so a later provider failure retains completed progress.
+- **Reversible consolidation**: consolidation is deliberately two-step. Preview asks
+  a loopback-only local model to generalize a related fact cluster and stores only the
+  redacted proposal plus cited fact IDs. Apply must be requested explicitly; it links
+  every source to the generated fact and copies checkpoint provenance. Undo restores
+  the individual sources and removes the generated replacement atomically. Pending
+  proposals are capped at 100 per project and remain recoverable through
+  `memory_consolidation_list` / `mindsync memory proposals`.
+- **Local-model boundary**: model URLs must resolve explicitly to loopback; remote
+  hosts and credential-bearing URLs are rejected. MindSync never downloads a model.
+  Only already-redacted durable-fact text is sent for consolidation—never prompts,
+  transcripts, stdout, stderr, or check-output tails.
 
 ## Inspecting memory
 
@@ -482,6 +507,11 @@ mindsync memory stats                          # totals, per-project counts, db 
 mindsync memory list --project my-repo         # sessions, most recently active first
 mindsync memory show <session-id>              # one session with every checkpoint
 mindsync memory prune --older-than-days 30     # dry run: what would be deleted?
+mindsync memory recall --project my-repo --query "database decision"
+mindsync memory consolidate --project my-repo  # preview only; sources unchanged
+mindsync memory apply <proposal-id>             # explicit reviewed mutation
+mindsync memory undo <generated-fact-id>        # restore individual sources
+mindsync memory proposals --project my-repo     # recover review/audit IDs
 ```
 
 `prune` only considers ended sessions, always protects active sessions and any
@@ -490,7 +520,7 @@ to preserve the most recent N ended sessions per project (keep-last is applied b
 the age filter, so fresher sessions already satisfy it). Candidate selection and
 deletion run in one transaction, so a concurrently written durable checkpoint is never
 deleted. Nothing is deleted unless `--yes` is passed.
-All four commands accept `--json` for machine-readable output.
+The inspection and prune commands accept `--json`; Tier 2 commands always emit JSON.
 
 ## Local data
 

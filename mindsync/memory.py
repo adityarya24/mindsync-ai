@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
+import struct
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from mindsync.config import settings
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _PROJECT_KEY_MAX = 256
 _AGENT_MAX = 128
 _WORKSPACE_MAX = 4096
@@ -38,7 +41,20 @@ _BOOTSTRAP_FACTS_BUDGET_DIVISOR = 4
 _MAX_IMPORTANT_CHECKPOINTS = 3
 _MAX_LIST_LIMIT = 500
 _MAX_PRUNE_SAMPLE = 100
+_MAX_RECALL_LIMIT = 50
+_MAX_RECALL_INDEX_FACTS = 2_000
+_MAX_CONSOLIDATION_FACTS = 20
+_MAX_EMBEDDING_BATCH_SIZE = 32
+_MAX_EMBEDDING_TEXT_CHARS = 16_000
+_MAX_EMBEDDING_BATCH_CHARS = 64_000
+_MAX_EMBEDDING_DIMENSIONS = 8_192
+_MAX_RECALL_QUERY_CHARS = 16_000
+_MAX_CONSOLIDATION_INPUT_CHARS = 40_000
+_MAX_PENDING_CONSOLIDATIONS_PER_PROJECT = 100
+_FLOAT32_MAX = 3.4028235e38
 _SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
+_FACT_ID = re.compile(r"^[0-9a-f]{32}$")
+_PROPOSAL_ID = re.compile(r"^[0-9a-f]{32}$")
 _DURABLE_EXISTS_SQL = """
     EXISTS (
         SELECT 1 FROM checkpoints AS df
@@ -351,6 +367,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             )
         if version < 2:
             _init_facts_schema(conn)
+        if version < 3:
+            _init_tier2_schema(conn)
         if version < _SCHEMA_VERSION:
             conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
         conn.execute("COMMIT")
@@ -376,7 +394,9 @@ def _init_facts_schema(conn: sqlite3.Connection) -> None:
             first_seen TEXT NOT NULL,
             last_recalled TEXT,
             recall_count INTEGER NOT NULL DEFAULT 0,
-            source_count INTEGER NOT NULL DEFAULT 0
+            source_count INTEGER NOT NULL DEFAULT 0,
+            is_generated INTEGER NOT NULL DEFAULT 0,
+            superseded_by TEXT REFERENCES facts(fact_id) ON DELETE SET NULL
         )
         """
     )
@@ -399,6 +419,58 @@ def _init_facts_schema(conn: sqlite3.Connection) -> None:
         "ON fact_sources(checkpoint_id)"
     )
     _backfill_facts(conn)
+
+
+def _init_tier2_schema(conn: sqlite3.Connection) -> None:
+    """Add reversible consolidation and embedding metadata (schema v3)."""
+    fact_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(facts)").fetchall()
+    }
+    if "is_generated" not in fact_columns:
+        conn.execute(
+            "ALTER TABLE facts ADD COLUMN is_generated INTEGER NOT NULL DEFAULT 0"
+        )
+    if "superseded_by" not in fact_columns:
+        conn.execute(
+            "ALTER TABLE facts ADD COLUMN superseded_by TEXT "
+            "REFERENCES facts(fact_id) ON DELETE SET NULL"
+        )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_facts_superseded_by "
+        "ON facts(superseded_by)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fact_embeddings (
+            fact_id TEXT PRIMARY KEY
+                REFERENCES facts(fact_id) ON DELETE CASCADE,
+            model TEXT NOT NULL,
+            dimensions INTEGER NOT NULL,
+            embedding BLOB NOT NULL,
+            text_hash TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS consolidation_proposals (
+            proposal_id TEXT PRIMARY KEY,
+            project_key TEXT NOT NULL,
+            model TEXT NOT NULL,
+            source_fact_ids TEXT NOT NULL,
+            proposed_text TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            applied_fact_id TEXT,
+            applied_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_consolidation_project_status "
+        "ON consolidation_proposals(project_key, status)"
+    )
 
 
 def _backfill_facts(conn: sqlite3.Connection) -> None:
@@ -487,21 +559,25 @@ def _record_facts(
             """,
             (uuid.uuid4().hex, project_key, text, first_seen),
         )
-        fact_id = conn.execute(
-            "SELECT fact_id FROM facts WHERE project_key = ? AND text = ?",
+        fact_row = conn.execute(
+            "SELECT fact_id, superseded_by FROM facts "
+            "WHERE project_key = ? AND text = ?",
             (project_key, text),
-        ).fetchone()["fact_id"]
-        cursor = conn.execute(
-            "INSERT OR IGNORE INTO fact_sources (fact_id, checkpoint_id) "
-            "VALUES (?, ?)",
-            (fact_id, checkpoint_id),
-        )
-        if cursor.rowcount:
-            conn.execute(
-                "UPDATE facts SET source_count = source_count + 1 "
-                "WHERE fact_id = ?",
-                (fact_id,),
+        ).fetchone()
+        # A repeated observation of a consolidated source must strengthen both
+        # its original row and the generated fact currently standing in for it.
+        for fact_id in filter(None, (fact_row["fact_id"], fact_row["superseded_by"])):
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO fact_sources (fact_id, checkpoint_id) "
+                "VALUES (?, ?)",
+                (fact_id, checkpoint_id),
             )
+            if cursor.rowcount:
+                conn.execute(
+                    "UPDATE facts SET source_count = source_count + 1 "
+                    "WHERE fact_id = ?",
+                    (fact_id,),
+                )
 
 
 def _get_db() -> sqlite3.Connection:
@@ -511,6 +587,8 @@ def _get_db() -> sqlite3.Connection:
     connection_path = getattr(_local, "db_path", None)
     if connection is not None and connection_path != db_path:
         connection.close()
+        if getattr(_local, "sqlite_vec_connection", None) == id(connection):
+            delattr(_local, "sqlite_vec_connection")
         connection = None
     if connection is None:
         _prepare_private_db_file(db_path)
@@ -537,7 +615,7 @@ def _close_local_db() -> None:
     connection = getattr(_local, "db", None)
     if connection is not None:
         connection.close()
-    for attribute in ("db", "db_path"):
+    for attribute in ("db", "db_path", "sqlite_vec_connection"):
         if hasattr(_local, attribute):
             delattr(_local, attribute)
 
@@ -846,7 +924,7 @@ def _project_facts(
         """
         SELECT fact_id, text
         FROM facts
-        WHERE project_key = ?
+        WHERE project_key = ? AND superseded_by IS NULL
         ORDER BY (recall_count + source_count) DESC,
                  COALESCE(last_recalled, first_seen) DESC,
                  rowid DESC
@@ -891,6 +969,666 @@ def _bump_fact_recalls(db: sqlite3.Connection, fact_ids: list[str]) -> None:
             db.execute("ROLLBACK")
         except sqlite3.Error:
             pass
+
+
+def _validate_fact_id(fact_id: Any) -> str:
+    if not isinstance(fact_id, str) or not _FACT_ID.fullmatch(fact_id):
+        raise ValueError("fact_id must be a 32-character lowercase hex identifier")
+    return fact_id
+
+
+def _validate_proposal_id(proposal_id: Any) -> str:
+    if not isinstance(proposal_id, str) or not _PROPOSAL_ID.fullmatch(proposal_id):
+        raise ValueError(
+            "proposal_id must be a 32-character lowercase hex identifier"
+        )
+    return proposal_id
+
+
+def _validate_model(model: str | None, configured: str, kind: str) -> str:
+    selected = configured if model is None else model
+    return _validate_identifier(selected, f"{kind}_model", 256)
+
+
+def _validate_limit(value: Any, name: str, maximum: int, minimum: int = 1) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def _validate_similarity(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("min_similarity must be a number")
+    normalized = float(value)
+    if not -1.0 <= normalized <= 1.0:
+        raise ValueError("min_similarity must be between -1 and 1")
+    return normalized
+
+
+def _load_sqlite_vec(db: sqlite3.Connection) -> None:
+    if getattr(_local, "sqlite_vec_connection", None) == id(db):
+        return
+    try:
+        import sqlite_vec
+    except ImportError as exc:  # pragma: no cover - packaging guarantees this
+        raise RuntimeError("sqlite-vec is required for semantic memory recall") from exc
+    try:
+        db.enable_load_extension(True)
+    except AttributeError as exc:
+        raise RuntimeError(
+            "This Python build does not support SQLite extension loading"
+        ) from exc
+    try:
+        sqlite_vec.load(db)
+    finally:
+        db.enable_load_extension(False)
+    _local.sqlite_vec_connection = id(db)
+
+
+def _embedding_blob(vector: list[float]) -> bytes:
+    if any(not math.isfinite(value) or abs(value) > _FLOAT32_MAX for value in vector):
+        raise ValueError("embedding provider returned values outside float32 range")
+    try:
+        return struct.pack(f"{len(vector)}f", *vector)
+    except (OverflowError, struct.error) as exc:
+        raise ValueError("embedding provider returned values outside float32 range") from exc
+
+
+def _embedding_vector(blob: bytes, dimensions: int) -> list[float]:
+    return list(struct.unpack(f"{dimensions}f", blob))
+
+
+def _fact_text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _embedding_text(text: str) -> str:
+    return text[:_MAX_EMBEDDING_TEXT_CHARS]
+
+
+def _embedding_batches(
+    stale: list[tuple[sqlite3.Row, str]],
+) -> Iterator[list[tuple[sqlite3.Row, str]]]:
+    batch: list[tuple[sqlite3.Row, str]] = []
+    batch_chars = 0
+    for item in stale:
+        text_chars = len(_embedding_text(item[0]["text"]))
+        if batch and (
+            len(batch) >= _MAX_EMBEDDING_BATCH_SIZE
+            or batch_chars + text_chars > _MAX_EMBEDDING_BATCH_CHARS
+        ):
+            yield batch
+            batch = []
+            batch_chars = 0
+        batch.append(item)
+        batch_chars += text_chars
+    if batch:
+        yield batch
+
+
+def _validate_embedding_vectors(
+    vectors: list[list[float]], expected_count: int
+) -> int:
+    if len(vectors) != expected_count:
+        raise ValueError("embedding provider returned the wrong vector count")
+    dimensions = {len(vector) for vector in vectors}
+    if (
+        not dimensions
+        or 0 in dimensions
+        or len(dimensions) != 1
+        or next(iter(dimensions)) > _MAX_EMBEDDING_DIMENSIONS
+    ):
+        raise ValueError("embedding provider returned invalid dimensions")
+    for vector in vectors:
+        _embedding_blob(vector)
+    return next(iter(dimensions))
+
+
+def _ensure_fact_embeddings(
+    db: sqlite3.Connection,
+    rows: list[sqlite3.Row],
+    model: str,
+    embedder: Callable[[list[str], str], list[list[float]]],
+    expected_dimensions: int,
+) -> int:
+    """Refresh embeddings in bounded, independently committed batches."""
+    stale = []
+    for row in rows:
+        cached = db.execute(
+            "SELECT model, dimensions, text_hash FROM fact_embeddings "
+            "WHERE fact_id = ?",
+            (row["fact_id"],),
+        ).fetchone()
+        text_hash = _fact_text_hash(row["text"])
+        if (
+            cached is None
+            or cached["model"] != model
+            or cached["dimensions"] != expected_dimensions
+            or cached["text_hash"] != text_hash
+        ):
+            stale.append((row, text_hash))
+    if not stale:
+        return 0
+    indexed = 0
+    for batch in _embedding_batches(stale):
+        vectors = embedder([_embedding_text(row["text"]) for row, _ in batch], model)
+        dimensions = _validate_embedding_vectors(vectors, len(batch))
+        if dimensions != expected_dimensions:
+            raise ValueError("embedding provider changed dimensions within one operation")
+        now = _utc_now()
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            batch_indexed = 0
+            for (row, text_hash), vector in zip(batch, vectors, strict=True):
+                cursor = db.execute(
+                    """
+                    INSERT INTO fact_embeddings (
+                        fact_id, model, dimensions, embedding, text_hash, updated_at
+                    ) SELECT ?, ?, ?, ?, ?, ?
+                    WHERE EXISTS (SELECT 1 FROM facts WHERE fact_id = ?)
+                    ON CONFLICT(fact_id) DO UPDATE SET
+                        model = excluded.model,
+                        dimensions = excluded.dimensions,
+                        embedding = excluded.embedding,
+                        text_hash = excluded.text_hash,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        row["fact_id"],
+                        model,
+                        dimensions,
+                        _embedding_blob(vector),
+                        text_hash,
+                        now,
+                        row["fact_id"],
+                    ),
+                )
+                batch_indexed += max(cursor.rowcount, 0)
+            db.execute("COMMIT")
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+        indexed += batch_indexed
+    return indexed
+
+
+def _active_fact_rows(
+    db: sqlite3.Connection, project_key: str, limit: int
+) -> list[sqlite3.Row]:
+    return db.execute(
+        """
+        SELECT fact_id, text, first_seen, last_recalled, recall_count,
+               source_count, is_generated
+        FROM facts
+        WHERE project_key = ? AND superseded_by IS NULL
+        ORDER BY (recall_count + source_count) DESC,
+                 COALESCE(last_recalled, first_seen) DESC,
+                 rowid DESC
+        LIMIT ?
+        """,
+        (project_key, limit),
+    ).fetchall()
+
+
+def _semantic_rows(
+    db: sqlite3.Connection,
+    project_key: str,
+    model: str,
+    query_vector: list[float],
+    limit: int,
+    min_similarity: float,
+    fact_ids: list[str] | None = None,
+) -> list[sqlite3.Row]:
+    _load_sqlite_vec(db)
+    fact_filter = ""
+    fact_params: list[Any] = []
+    if fact_ids is not None:
+        if not fact_ids:
+            return []
+        fact_filter = f"AND f.fact_id IN ({','.join('?' * len(fact_ids))})"
+        fact_params = fact_ids
+    query_blob = _embedding_blob(query_vector)
+    return db.execute(
+        f"""
+        SELECT f.fact_id, f.text, f.source_count, f.recall_count,
+               f.is_generated,
+               1.0 - vec_distance_cosine(e.embedding, ?) AS similarity
+        FROM facts AS f
+        JOIN fact_embeddings AS e ON e.fact_id = f.fact_id
+        WHERE f.project_key = ?
+          AND f.superseded_by IS NULL
+          AND e.model = ?
+          AND e.dimensions = ?
+          {fact_filter}
+          AND 1.0 - vec_distance_cosine(e.embedding, ?) >= ?
+        ORDER BY similarity DESC,
+                 (f.recall_count + f.source_count) DESC,
+                 f.rowid DESC
+        LIMIT ?
+        """,
+        (
+            query_blob,
+            project_key,
+            model,
+            len(query_vector),
+            *fact_params,
+            query_blob,
+            min_similarity,
+            limit,
+        ),
+    ).fetchall()
+
+
+def memory_recall(
+    project_key: str,
+    query: str,
+    limit: int = 5,
+    min_similarity: float = 0.0,
+    model: str | None = None,
+    *,
+    _embedder: Callable[[list[str], str], list[list[float]]] | None = None,
+) -> dict[str, Any]:
+    """Recall active project facts by semantic similarity.
+
+    The cue is redacted before it reaches the loopback-only provider and is
+    never persisted. Only already-redacted fact text is embedded and cached.
+    """
+    project_key = _validate_identifier(project_key, "project_key", _PROJECT_KEY_MAX)
+    if not isinstance(query, str) or len(query) > _MAX_RECALL_QUERY_CHARS:
+        raise ValueError(
+            f"query must be a string up to {_MAX_RECALL_QUERY_CHARS} characters"
+        )
+    query = " ".join(query.split())
+    if not query:
+        raise ValueError("query must contain non-whitespace text")
+    limit = _validate_limit(limit, "limit", _MAX_RECALL_LIMIT)
+    min_similarity = _validate_similarity(min_similarity)
+    model = _validate_model(model, settings.memory_embedding_model, "embedding")
+    safe_query = _redact_text(query)
+    if _embedder is None:
+        from mindsync.memory_models import embed_texts
+
+        _embedder = embed_texts
+    db = _get_db()
+    rows = _active_fact_rows(db, project_key, _MAX_RECALL_INDEX_FACTS)
+    if not rows:
+        return {
+            "project_key": project_key,
+            "model": model,
+            "indexed": 0,
+            "matches": [],
+        }
+    query_vectors = _embedder([_embedding_text(safe_query)], model)
+    query_dimensions = _validate_embedding_vectors(query_vectors, 1)
+    indexed = _ensure_fact_embeddings(
+        db, rows, model, _embedder, query_dimensions
+    )
+    matches = _semantic_rows(
+        db, project_key, model, query_vectors[0], limit, min_similarity
+    )
+    fact_ids = [row["fact_id"] for row in matches]
+    if fact_ids:
+        _bump_fact_recalls(db, fact_ids)
+    recalled_counts: dict[str, int] = {}
+    if fact_ids:
+        placeholders = ",".join("?" * len(fact_ids))
+        recalled_counts = {
+            row["fact_id"]: int(row["recall_count"])
+            for row in db.execute(
+                f"SELECT fact_id, recall_count FROM facts "
+                f"WHERE fact_id IN ({placeholders})",
+                fact_ids,
+            ).fetchall()
+        }
+    return {
+        "project_key": project_key,
+        "model": model,
+        "indexed": indexed,
+        "matches": [
+            {
+                "fact_id": row["fact_id"],
+                "text": row["text"],
+                "similarity": round(float(row["similarity"]), 6),
+                "source_count": int(row["source_count"]),
+                "recall_count": recalled_counts.get(
+                    row["fact_id"], int(row["recall_count"])
+                ),
+                "generated": bool(row["is_generated"]),
+            }
+            for row in matches
+        ],
+    }
+
+
+def memory_consolidate_preview(
+    project_key: str,
+    limit: int = 5,
+    min_similarity: float = 0.45,
+    embedding_model: str | None = None,
+    consolidation_model: str | None = None,
+    *,
+    _embedder: Callable[[list[str], str], list[list[float]]] | None = None,
+    _consolidator: Callable[[list[dict[str, str]], str], dict[str, Any]]
+    | None = None,
+) -> dict[str, Any]:
+    """Create and persist a reviewable proposal without changing any fact."""
+    project_key = _validate_identifier(project_key, "project_key", _PROJECT_KEY_MAX)
+    limit = _validate_limit(limit, "limit", _MAX_CONSOLIDATION_FACTS, minimum=2)
+    min_similarity = _validate_similarity(min_similarity)
+    embedding_model = _validate_model(
+        embedding_model, settings.memory_embedding_model, "embedding"
+    )
+    consolidation_model = _validate_model(
+        consolidation_model,
+        settings.memory_consolidation_model,
+        "consolidation",
+    )
+    if _embedder is None or _consolidator is None:
+        from mindsync.memory_models import consolidate_facts, embed_texts
+
+        _embedder = _embedder or embed_texts
+        _consolidator = _consolidator or consolidate_facts
+    db = _get_db()
+    pending_count = int(
+        db.execute(
+            "SELECT COUNT(*) FROM consolidation_proposals "
+            "WHERE project_key = ? AND status = 'pending'",
+            (project_key,),
+        ).fetchone()[0]
+    )
+    if pending_count >= _MAX_PENDING_CONSOLIDATIONS_PER_PROJECT:
+        raise ValueError(
+            "project has too many pending consolidation proposals; "
+            "review existing proposals first"
+        )
+    candidates = [
+        row
+        for row in _active_fact_rows(db, project_key, _MAX_CONSOLIDATION_FACTS)
+        if not row["is_generated"]
+    ]
+    if len(candidates) < 2:
+        raise ValueError("project needs at least two unconsolidated facts")
+    dimension_probe = _embedder(
+        [_embedding_text(candidates[0]["text"])], embedding_model
+    )
+    expected_dimensions = _validate_embedding_vectors(dimension_probe, 1)
+    _ensure_fact_embeddings(
+        db, candidates, embedding_model, _embedder, expected_dimensions
+    )
+    candidate_ids = {row["fact_id"] for row in candidates}
+    clusters: list[list[sqlite3.Row]] = []
+    for candidate in candidates:
+        cached = db.execute(
+            "SELECT dimensions, embedding FROM fact_embeddings WHERE fact_id = ?",
+            (candidate["fact_id"],),
+        ).fetchone()
+        if cached is None:
+            continue
+        query_vector = _embedding_vector(cached["embedding"], cached["dimensions"])
+        related = _semantic_rows(
+            db,
+            project_key,
+            embedding_model,
+            query_vector,
+            limit,
+            min_similarity,
+            list(candidate_ids),
+        )
+        clusters.append(
+            [
+                row
+                for row in related
+                if not row["is_generated"] and row["fact_id"] in candidate_ids
+            ]
+        )
+    if not clusters:
+        raise ValueError("candidate facts changed; create a fresh preview")
+    source_rows = max(
+        clusters,
+        key=lambda cluster: (
+            len(cluster),
+            sum(float(row["similarity"]) for row in cluster),
+        ),
+    )
+    if len(source_rows) < 2:
+        raise ValueError("fewer than two related unconsolidated facts met the threshold")
+    supplied: list[dict[str, Any]] = []
+    supplied_chars = 0
+    for row in source_rows:
+        text = _embedding_text(row["text"])
+        item_chars = len(row["fact_id"]) + len(text)
+        if supplied and supplied_chars + item_chars > _MAX_CONSOLIDATION_INPUT_CHARS:
+            break
+        supplied.append(
+            {
+                "fact_id": row["fact_id"],
+                "text": text,
+                "truncated": len(text) < len(row["text"]),
+            }
+        )
+        supplied_chars += item_chars
+    if len(supplied) < 2:
+        raise ValueError("fewer than two related facts fit the model input limit")
+    model_facts = [
+        {"fact_id": item["fact_id"], "text": item["text"]} for item in supplied
+    ]
+    raw_proposal = _consolidator(model_facts, consolidation_model)
+    proposed_text = raw_proposal.get("text")
+    supporting_ids = raw_proposal.get("supporting_fact_ids")
+    if not isinstance(proposed_text, str):
+        raise ValueError("consolidation provider returned no fact text")
+    proposed_text = _redact_text(proposed_text.strip())
+    if not proposed_text or len(proposed_text) > _TEXT_MAX:
+        raise ValueError("proposed fact text must be non-empty and within the size limit")
+    allowed_ids = {item["fact_id"] for item in supplied}
+    if not isinstance(supporting_ids, list) or any(
+        not isinstance(item, str) for item in supporting_ids
+    ):
+        raise ValueError("consolidation provider returned invalid supporting fact IDs")
+    source_ids = list(dict.fromkeys(supporting_ids))
+    if len(source_ids) < 2 or not set(source_ids) <= allowed_ids:
+        raise ValueError("proposal must cite at least two supplied fact IDs")
+    source_texts = {
+        item["text"] for item in supplied if item["fact_id"] in source_ids
+    }
+    if proposed_text in source_texts:
+        raise ValueError("proposed fact must generalize rather than copy one source")
+    proposal_id = uuid.uuid4().hex
+    db.execute(
+        """
+        INSERT INTO consolidation_proposals (
+            proposal_id, project_key, model, source_fact_ids,
+            proposed_text, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        """,
+        (
+            proposal_id,
+            project_key,
+            consolidation_model,
+            json.dumps(source_ids, separators=(",", ":")),
+            proposed_text,
+            _utc_now(),
+        ),
+    )
+    return {
+        "proposal_id": proposal_id,
+        "project_key": project_key,
+        "status": "pending",
+        "proposed_text": proposed_text,
+        "sources": [item for item in supplied if item["fact_id"] in source_ids],
+        "note": "Preview only; run apply explicitly to supersede source facts.",
+    }
+
+
+def memory_consolidation_apply(proposal_id: str) -> dict[str, Any]:
+    """Apply one pending proposal atomically while retaining all provenance."""
+    proposal_id = _validate_proposal_id(proposal_id)
+    db = _get_db()
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        proposal = db.execute(
+            "SELECT * FROM consolidation_proposals WHERE proposal_id = ?",
+            (proposal_id,),
+        ).fetchone()
+        if proposal is None:
+            raise ValueError(f"Unknown consolidation proposal {proposal_id}")
+        if proposal["status"] != "pending":
+            raise ValueError(f"Proposal is already {proposal['status']}")
+        source_ids = json.loads(proposal["source_fact_ids"])
+        placeholders = ",".join("?" * len(source_ids))
+        source_rows = db.execute(
+            f"""
+            SELECT fact_id FROM facts
+            WHERE fact_id IN ({placeholders})
+              AND project_key = ? AND superseded_by IS NULL AND is_generated = 0
+            """,
+            (*source_ids, proposal["project_key"]),
+        ).fetchall()
+        if {row["fact_id"] for row in source_rows} != set(source_ids):
+            raise ValueError("Proposal sources changed; create a fresh preview")
+        duplicate = db.execute(
+            "SELECT 1 FROM facts WHERE project_key = ? AND text = ?",
+            (proposal["project_key"], proposal["proposed_text"]),
+        ).fetchone()
+        if duplicate is not None:
+            raise ValueError("Proposed fact already exists in this project")
+        fact_id = uuid.uuid4().hex
+        source_count = int(
+            db.execute(
+                f"SELECT COUNT(DISTINCT checkpoint_id) FROM fact_sources "
+                f"WHERE fact_id IN ({placeholders})",
+                source_ids,
+            ).fetchone()[0]
+        )
+        db.execute(
+            """
+            INSERT INTO facts (
+                fact_id, project_key, text, first_seen, source_count, is_generated
+            ) VALUES (?, ?, ?, ?, ?, 1)
+            """,
+            (
+                fact_id,
+                proposal["project_key"],
+                proposal["proposed_text"],
+                _utc_now(),
+                source_count,
+            ),
+        )
+        db.execute(
+            f"""
+            INSERT OR IGNORE INTO fact_sources (fact_id, checkpoint_id)
+            SELECT ?, checkpoint_id FROM fact_sources
+            WHERE fact_id IN ({placeholders})
+            """,
+            (fact_id, *source_ids),
+        )
+        db.execute(
+            f"UPDATE facts SET superseded_by = ? WHERE fact_id IN ({placeholders})",
+            (fact_id, *source_ids),
+        )
+        applied_at = _utc_now()
+        db.execute(
+            """
+            UPDATE consolidation_proposals
+            SET status = 'applied', applied_fact_id = ?, applied_at = ?
+            WHERE proposal_id = ?
+            """,
+            (fact_id, applied_at, proposal_id),
+        )
+        db.execute("COMMIT")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+    return {
+        "proposal_id": proposal_id,
+        "status": "applied",
+        "fact_id": fact_id,
+        "source_fact_ids": source_ids,
+    }
+
+
+def memory_consolidation_undo(fact_id: str) -> dict[str, Any]:
+    """Restore superseded source facts and delete their generated replacement."""
+    fact_id = _validate_fact_id(fact_id)
+    db = _get_db()
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        fact = db.execute(
+            "SELECT is_generated FROM facts WHERE fact_id = ?", (fact_id,)
+        ).fetchone()
+        if fact is None:
+            raise ValueError(f"Unknown fact {fact_id}")
+        if not fact["is_generated"]:
+            raise ValueError("Only generated consolidation facts can be undone")
+        source_ids = [
+            row["fact_id"]
+            for row in db.execute(
+                "SELECT fact_id FROM facts WHERE superseded_by = ? ORDER BY rowid",
+                (fact_id,),
+            ).fetchall()
+        ]
+        db.execute("UPDATE facts SET superseded_by = NULL WHERE superseded_by = ?", (fact_id,))
+        db.execute(
+            """
+            UPDATE consolidation_proposals
+            SET status = 'undone'
+            WHERE applied_fact_id = ? AND status = 'applied'
+            """,
+            (fact_id,),
+        )
+        db.execute("DELETE FROM facts WHERE fact_id = ?", (fact_id,))
+        db.execute("COMMIT")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+    return {
+        "fact_id": fact_id,
+        "status": "undone",
+        "restored_source_fact_ids": source_ids,
+    }
+
+
+def memory_consolidation_list(
+    project_key: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """List reviewable consolidation proposals without exposing model traces."""
+    if project_key is not None:
+        project_key = _validate_identifier(
+            project_key, "project_key", _PROJECT_KEY_MAX
+        )
+    if status is not None and status not in {"pending", "applied", "undone"}:
+        raise ValueError("status must be pending, applied, or undone")
+    limit = _validate_limit(limit, "limit", _MAX_LIST_LIMIT)
+    rows = _get_db().execute(
+        """
+        SELECT proposal_id, project_key, model, source_fact_ids,
+               proposed_text, status, created_at, applied_fact_id, applied_at
+        FROM consolidation_proposals
+        WHERE (? IS NULL OR project_key = ?)
+          AND (? IS NULL OR status = ?)
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?
+        """,
+        (project_key, project_key, status, status, limit),
+    ).fetchall()
+    return [
+        {
+            "proposal_id": row["proposal_id"],
+            "project_key": row["project_key"],
+            "model": row["model"],
+            "source_fact_ids": json.loads(row["source_fact_ids"]),
+            "proposed_text": row["proposed_text"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "applied_fact_id": row["applied_fact_id"],
+            "applied_at": row["applied_at"],
+        }
+        for row in rows
+    ]
 
 
 def _merged_durable_facts(
@@ -1012,7 +1750,10 @@ def memory_stats() -> dict[str, Any]:
             (SELECT COUNT(*) FROM sessions) AS total_sessions,
             (SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL) AS active_sessions,
             (SELECT COUNT(*) FROM checkpoints) AS total_checkpoints,
-            (SELECT COUNT(*) FROM facts) AS total_facts
+            (SELECT COUNT(*) FROM facts) AS total_facts,
+            (SELECT COUNT(*) FROM facts WHERE is_generated = 1) AS generated_facts,
+            (SELECT COUNT(*) FROM consolidation_proposals
+             WHERE status = 'pending') AS pending_consolidations
         """
     ).fetchone()
     projects = db.execute(
@@ -1038,6 +1779,8 @@ def memory_stats() -> dict[str, Any]:
         "active_sessions": int(totals["active_sessions"]),
         "total_checkpoints": int(totals["total_checkpoints"]),
         "total_facts": int(totals["total_facts"]),
+        "generated_facts": int(totals["generated_facts"]),
+        "pending_consolidations": int(totals["pending_consolidations"]),
         "projects": [
             {
                 "project_key": row["project_key"],
