@@ -1215,14 +1215,32 @@ def _ensure_fact_embeddings(
 
 
 def _active_fact_rows(
-    db: sqlite3.Connection, project_key: str, limit: int
+    db: sqlite3.Connection,
+    project_key: str,
+    limit: int,
+    *,
+    exclude_generated: bool = False,
 ) -> list[sqlite3.Row]:
+    """Strongest live facts for a project.
+
+    ``exclude_generated`` filters in SQL, before the LIMIT. Filtering a
+    generated row out afterwards silently shrinks the window: apply() seeds a
+    generated fact with the summed source_count of everything it replaced, so
+    every one of them outranks its own sources. After enough consolidations the
+    whole window is generated rows, the caller sees an empty list, and
+    consolidation reports "not enough facts" while thousands sit below the cut.
+
+    Recall wants generated facts — they are the better answer — so this is
+    opt-in rather than the default.
+    """
+    predicate = "AND is_generated = 0" if exclude_generated else ""
     return db.execute(
-        """
+        f"""
         SELECT fact_id, text, first_seen, last_recalled, recall_count,
                source_count, is_generated
         FROM facts
         WHERE project_key = ? AND superseded_by IS NULL
+        {predicate}
         ORDER BY (recall_count + source_count) DESC,
                  COALESCE(last_recalled, first_seen) DESC,
                  rowid DESC
@@ -1403,11 +1421,9 @@ def memory_consolidate_preview(
             "project has too many pending consolidation proposals; "
             "review existing proposals first"
         )
-    candidates = [
-        row
-        for row in _active_fact_rows(db, project_key, _MAX_CONSOLIDATION_FACTS)
-        if not row["is_generated"]
-    ]
+    candidates = _active_fact_rows(
+        db, project_key, _MAX_CONSOLIDATION_FACTS, exclude_generated=True
+    )
     if len(candidates) < 2:
         raise ValueError("project needs at least two unconsolidated facts")
     dimension_probe = _embedder(
@@ -1597,6 +1613,27 @@ def memory_consolidation_apply(proposal_id: str) -> dict[str, Any]:
             """,
             (fact_id, applied_at, proposal_id),
         )
+        # Every other pending proposal citing a fact just superseded can never
+        # be applied — apply() rejects stale sources. Left pending they would
+        # sit in the queue forever and still count against the per-project cap,
+        # which eventually blocks consolidation with no supported way to clear
+        # it. Retire them here, where we know exactly which facts moved.
+        stale = [
+            row["proposal_id"]
+            for row in db.execute(
+                "SELECT proposal_id, source_fact_ids FROM consolidation_proposals"
+                " WHERE project_key = ? AND status = 'pending'"
+                " AND proposal_id != ?",
+                (proposal["project_key"], proposal_id),
+            ).fetchall()
+            if set(json.loads(row["source_fact_ids"])) & set(source_ids)
+        ]
+        if stale:
+            db.execute(
+                "UPDATE consolidation_proposals SET status = 'superseded'"
+                f" WHERE proposal_id IN ({','.join('?' * len(stale))})",
+                stale,
+            )
         db.execute("COMMIT")
     except Exception:
         db.execute("ROLLBACK")
@@ -1606,6 +1643,7 @@ def memory_consolidation_apply(proposal_id: str) -> dict[str, Any]:
         "status": "applied",
         "fact_id": fact_id,
         "source_fact_ids": source_ids,
+        "superseded_proposals": stale,
     }
 
 
