@@ -471,3 +471,73 @@ def test_schema_v2_upgrade_is_additive_and_preserves_existing_fact():
         ).fetchall()
     }
     assert {"fact_embeddings", "consolidation_proposals"} <= tables
+
+
+def test_generated_facts_do_not_crowd_out_the_consolidation_window():
+    """Generated facts outrank their own sources, so filtering them after the
+    LIMIT silently empties the candidate window and wedges consolidation shut."""
+    from mindsync.memory import _MAX_CONSOLIDATION_FACTS, _active_fact_rows, _get_db, _utc_now
+
+    db = _get_db()
+    now = _utc_now()
+    for i in range(30):
+        db.execute(
+            "INSERT INTO facts (fact_id, project_key, text, first_seen,"
+            " recall_count, source_count, is_generated) VALUES (?,?,?,?,1,1,0)",
+            (f"plain{i:03d}", "wedge", f"plain fact {i}", now),
+        )
+    # apply() seeds a generated fact with the summed source_count of everything
+    # it replaced, so these sort above every plain fact.
+    for i in range(_MAX_CONSOLIDATION_FACTS):
+        db.execute(
+            "INSERT INTO facts (fact_id, project_key, text, first_seen,"
+            " recall_count, source_count, is_generated) VALUES (?,?,?,?,5,40,1)",
+            (f"gen{i:03d}", "wedge", f"generated fact {i}", now),
+        )
+
+    candidates = _active_fact_rows(
+        db, "wedge", _MAX_CONSOLIDATION_FACTS, exclude_generated=True
+    )
+    assert len(candidates) == _MAX_CONSOLIDATION_FACTS
+    assert all(row["is_generated"] == 0 for row in candidates)
+
+    # Recall must still see generated facts — they are the better answer.
+    everything = _active_fact_rows(db, "wedge", _MAX_CONSOLIDATION_FACTS)
+    assert any(row["is_generated"] for row in everything)
+
+
+def test_applying_a_proposal_retires_the_ones_it_invalidates():
+    """A proposal citing a now-superseded fact can never apply. Left pending it
+    counts against the per-project cap forever, with no way to clear it."""
+    from mindsync.memory import _get_db, _utc_now, memory_consolidation_apply
+
+    db = _get_db()
+    now = _utc_now()
+    for fid, text in (("f1", "alpha"), ("f2", "beta"), ("f3", "gamma")):
+        db.execute(
+            "INSERT INTO facts (fact_id, project_key, text, first_seen,"
+            " recall_count, source_count, is_generated) VALUES (?,?,?,?,1,1,0)",
+            (fid, "retire", text, now),
+        )
+    for pid, sources, text in (
+        ("aa" * 16, ["f1", "f2"], "alpha and beta"),
+        ("bb" * 16, ["f2", "f3"], "beta and gamma"),
+    ):
+        db.execute(
+            "INSERT INTO consolidation_proposals (proposal_id, project_key, model,"
+            " source_fact_ids, proposed_text, status, created_at)"
+            " VALUES (?,?,?,?,?,'pending',?)",
+            (pid, "retire", "test-model", json.dumps(sources), text, now),
+        )
+
+    result = memory_consolidation_apply("aa" * 16)
+    assert "bb" * 16 in result["superseded_proposals"]
+
+    status = db.execute(
+        "SELECT status FROM consolidation_proposals WHERE proposal_id = ?",
+        ("bb" * 16,),
+    ).fetchone()["status"]
+    assert status == "superseded"
+    assert db.execute(
+        "SELECT COUNT(*) FROM consolidation_proposals WHERE status = 'pending'"
+    ).fetchone()[0] == 0

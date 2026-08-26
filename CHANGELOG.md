@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Consolidation wedged shut once generated facts filled the candidate window.
+  `is_generated` was filtered after the SQL `LIMIT`, and an applied proposal seeds its
+  generated fact with the summed `source_count` of every fact it replaced — so
+  generated facts outrank their own sources. After enough consolidations the whole
+  window was generated rows and `memory_consolidate_preview` reported "not enough
+  unconsolidated facts" with thousands sitting below the cut. The predicate now lives
+  in the query; recall still sees generated facts, which are the better answer.
+- Pending consolidation proposals had no exit. Applying one supersedes its source
+  facts, which makes every other proposal citing them permanently unappliable — yet
+  they stayed `pending` and counted against the per-project cap, eventually blocking
+  consolidation with no supported way to clear the queue. Applying a proposal now
+  retires the ones it invalidates and reports them as `superseded_proposals`.
+
 ## [1.5.0] - 2026-08-27
 
 ### Added
