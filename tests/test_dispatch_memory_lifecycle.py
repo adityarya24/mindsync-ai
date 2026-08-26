@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -14,8 +16,10 @@ import mindsync.storage as storage
 from mindsync.dispatch.adapters import user_config_path
 from mindsync.dispatch.cli import parse_run_args
 from mindsync.dispatch.memory_lifecycle import (
+    _infer_git_project_key,
     _format_context_prefix,
     finalize_dispatch_memory,
+    resolve_dispatch_memory_project,
 )
 from mindsync.dispatch.runner import run_task, supervise_job
 from mindsync.dispatch import store
@@ -99,6 +103,32 @@ def _register_sleep_agent(tmp_path: Path) -> None:
     )
 
 
+def _init_git_repo(path: Path) -> None:
+    path.mkdir()
+    subprocess.run(["git", "init", str(path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.email", "test@example.invalid"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.name", "MindSync Test"],
+        check=True,
+        capture_output=True,
+    )
+    (path / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(path), "add", "tracked.txt"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-m", "base"],
+        check=True,
+        capture_output=True,
+    )
+
+
 def _session_goal(session_id: str) -> str | None:
     row = _get_db().execute(
         "SELECT goal FROM sessions WHERE session_id = ?", (session_id,)
@@ -111,6 +141,67 @@ def test_parse_run_args_memory_project_flag():
     assert opts["memory_project"] == "planner"
     assert opts["agent"] == "codex"
     assert opts["prompt"] == "do work"
+
+
+def test_parse_run_args_memory_mode_flag():
+    opts = parse_run_args(["codex", "do work", "--memory-mode", "auto"])
+    assert opts["memory_mode"] == "auto"
+
+
+def test_memory_mode_resolution_preserves_explicit_default_and_opt_out():
+    assert resolve_dispatch_memory_project(None, "explicit", None) == (
+        None,
+        None,
+        [],
+    )
+    assert resolve_dispatch_memory_project("chosen", "auto", None) == (
+        "chosen",
+        "explicit",
+        [],
+    )
+
+    project, source, warnings = resolve_dispatch_memory_project(
+        "chosen", "off", None
+    )
+    assert project is None
+    assert source is None
+    assert warnings == [
+        "session memory disabled by memory_mode='off'; memory_project ignored"
+    ]
+
+
+def test_auto_git_identity_is_opaque_and_shared_with_linked_worktree(tmp_path):
+    repo = tmp_path / "private-owner" / "secret-repository-name"
+    repo.parent.mkdir()
+    _init_git_repo(repo)
+    linked = tmp_path / "generated-worktree"
+    subprocess.run(
+        ["git", "-C", str(repo), "worktree", "add", str(linked), "-b", "test-linked"],
+        check=True,
+        capture_output=True,
+    )
+
+    repo_key = _infer_git_project_key(str(repo))
+    linked_key = _infer_git_project_key(str(linked))
+
+    assert repo_key == linked_key
+    assert re.fullmatch(r"git-[0-9a-f]{64}", repo_key or "")
+    assert "private-owner" not in repo_key
+    assert "secret-repository-name" not in repo_key
+
+
+def test_auto_git_probe_exception_fails_closed(tmp_path, monkeypatch):
+    def broken_git(*_args):
+        raise RuntimeError("git probe exploded")
+
+    monkeypatch.setattr("mindsync.dispatch.worktree._git", broken_git)
+
+    project, source, warnings = resolve_dispatch_memory_project(
+        None, "auto", str(tmp_path)
+    )
+    assert project is None
+    assert source is None
+    assert any("session memory auto disabled" in item for item in warnings)
 
 
 def test_context_framing_keeps_untrusted_newlines_inside_compact_json():
@@ -162,7 +253,146 @@ async def test_memory_disabled_preserves_create_job_prompt(tmp_path, monkeypatch
     jobs = store.list_jobs()
     assert len(jobs) == 1
     assert jobs[0].get("memorySessionId") is None
+    assert jobs[0]["memoryMode"] == "explicit"
     assert jobs[0]["prompt"] == "plain-task"
+
+
+@pytest.mark.asyncio
+async def test_auto_memory_infers_same_project_inside_dispatch_worktree(
+    tmp_path, monkeypatch
+):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    _register_pyecho(tmp_path)
+    repo = tmp_path / "repo-with-private-name"
+    _init_git_repo(repo)
+    expected_key = _infer_git_project_key(str(repo))
+
+    res = await run_task(
+        agent="pyecho",
+        prompt="auto-memory-task",
+        cwd=str(repo),
+        worktree=True,
+        memory_mode="auto",
+        background=False,
+    )
+
+    job = res["job"]
+    assert job["status"] == "done"
+    assert job["memoryMode"] == "auto"
+    assert job["memoryProjectSource"] == "git"
+    assert job["memoryProject"] == expected_key
+    assert re.fullmatch(r"git-[0-9a-f]{64}", job["memoryProject"])
+    assert "repo-with-private-name" not in job["memoryProject"]
+    assert "--- MindSync session memory" in res["result"]
+    assert "auto-memory-task" in res["result"]
+
+
+@pytest.mark.asyncio
+async def test_auto_memory_fails_closed_outside_git_with_visible_warning(
+    tmp_path, monkeypatch
+):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    _register_pyecho(tmp_path)
+
+    res = await run_task(
+        agent="pyecho",
+        prompt="plain-task",
+        cwd=str(tmp_path),
+        memory_mode="auto",
+        background=False,
+    )
+
+    job = res["job"]
+    assert job["status"] == "done"
+    assert job["memoryMode"] == "auto"
+    assert job.get("memorySessionId") is None
+    assert any("session memory auto disabled" in item for item in job["warnings"])
+    assert "--- MindSync session memory" not in res["result"]
+
+
+@pytest.mark.asyncio
+async def test_auto_inference_regression_does_not_strand_pending_job(
+    tmp_path, monkeypatch
+):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    _register_pyecho(tmp_path)
+
+    def broken_inference(_workspace):
+        raise RuntimeError("inference exploded")
+
+    monkeypatch.setattr(
+        "mindsync.dispatch.memory_lifecycle._infer_git_project_key",
+        broken_inference,
+    )
+
+    res = await run_task(
+        agent="pyecho",
+        prompt="still-runs",
+        cwd=str(tmp_path),
+        memory_mode="auto",
+        background=False,
+    )
+
+    job = res["job"]
+    assert job["status"] == "done"
+    assert job.get("memorySessionId") is None
+    assert any("session memory auto disabled" in item for item in job["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_auto_memory_explicit_project_overrides_inference(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    _register_pyecho(tmp_path)
+
+    res = await run_task(
+        agent="pyecho",
+        prompt="explicit-wins",
+        cwd=str(tmp_path),
+        memory_mode="auto",
+        memory_project="chosen-project",
+        background=False,
+    )
+
+    job = res["job"]
+    assert job["memoryProject"] == "chosen-project"
+    assert job["memoryProjectSource"] == "explicit"
+    assert not any("auto disabled" in item for item in job["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_off_mode_ignores_explicit_project_and_warns(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    _register_pyecho(tmp_path)
+
+    res = await run_task(
+        agent="pyecho",
+        prompt="memory-off",
+        memory_mode="off",
+        memory_project="ignored-project",
+        background=False,
+    )
+
+    job = res["job"]
+    assert job["status"] == "done"
+    assert job["memoryMode"] == "off"
+    assert job.get("memorySessionId") is None
+    assert any("memory_project ignored" in item for item in job["warnings"])
+    assert "--- MindSync session memory" not in res["result"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_memory_mode_is_rejected_before_job_creation(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="memory_mode must be one of"):
+        await run_task(
+            agent="not-needed",
+            prompt="invalid-mode",
+            memory_mode="sometimes",
+            background=False,
+        )
+
+    assert store.list_jobs() == []
 
 
 @pytest.mark.asyncio
@@ -385,3 +615,38 @@ async def test_supervisor_validation_failure_finalizes_memory(tmp_path, monkeypa
     fresh = store.get_job(meta["id"])
     assert fresh is not None
     assert fresh["memoryFinalized"] is True
+
+
+def test_inference_ignores_an_ambient_git_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A workspace must key to itself, not to whatever repo GIT_DIR points at.
+
+    ``git -C`` does not override GIT_DIR for repository discovery, and
+    ``--is-inside-work-tree`` still answers "true", so without scrubbing the
+    environment a job launched from a git hook, ``git rebase --exec``, or a CI
+    step that exports GIT_DIR would silently read and write another project's
+    session memory.
+    """
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    _init_git_repo(repo_a)
+    _init_git_repo(repo_b)
+
+    key_a = _infer_git_project_key(str(repo_a))
+    key_b = _infer_git_project_key(str(repo_b))
+    assert key_a and key_b and key_a != key_b
+
+    monkeypatch.setenv("GIT_DIR", str(repo_b / ".git"))
+    assert _infer_git_project_key(str(repo_a)) == key_a
+
+    monkeypatch.setenv("GIT_WORK_TREE", str(repo_b))
+    monkeypatch.setenv("GIT_COMMON_DIR", str(repo_b / ".git"))
+    assert _infer_git_project_key(str(repo_a)) == key_a
+
+
+def test_memory_mode_flag_without_a_value_is_a_usage_error():
+    """`--memory-mode` with no argument must say so, not fail validation later."""
+    with pytest.raises(SystemExit) as excinfo:
+        parse_run_args(["codex", "a task", "--memory-mode"])
+    assert "--memory-mode" in str(excinfo.value)

@@ -646,6 +646,7 @@ async def delegate_task(
     required_capabilities: list[str] | None = None,
     exclude_agents: list[str] | None = None,
     memory_project: str | None = None,
+    memory_mode: str = "explicit",
     agent_name: str = "default_agent",
     ctx: Context | None = None,
 ) -> str:
@@ -658,8 +659,10 @@ async def delegate_task(
     If worktree is True, the agent runs in an isolated git worktree branching from cwd.
     checks are shell commands run after the agent finishes (for example a test command);
     read their outcome with job_review before spending anything on the job's output.
-    Optional memory_project enables automatic local session-memory bootstrap and
-    finalization for the given project key without storing raw prompts in memory.
+    memory_mode controls dispatch memory: explicit (the compatibility default)
+    requires memory_project, auto infers an opaque Git checkout identity when no
+    project is supplied, and off disables memory. An explicit project overrides
+    inference. Raw prompts are never stored in memory.
     """
     settings.ensure_dirs()
     if is_worker_process():
@@ -694,6 +697,7 @@ async def delegate_task(
             required_capabilities=required_capabilities,
             exclude_agents=exclusions,
             memory_project=memory_project,
+            memory_mode=memory_mode,
         )
     except AutoDelegationSuggestion as exc:
         log_audit(agent_name, "delegate_task", f"suggested={exc.decision['agent']}")

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Phase 3A dispatch memory rollout modes: `explicit` remains the compatibility
+  default, `auto` infers a privacy-safe opaque identity shared by a Git checkout
+  and its linked worktrees, and `off` is an explicit opt-out. A supplied
+  `memory_project` overrides inference; failed or untrustworthy inference disables
+  memory with a visible non-fatal job warning instead of guessing from a path or
+  repository name. CLI callers use `--memory-mode`; MCP callers use `memory_mode`.
 - Project-scoped fact store (session-memory schema v2). Durable facts are still written
   to their checkpoint exactly as before, and are now also promoted into `facts` /
   `fact_sources` keyed by project, so the same lesson recorded in twenty sessions becomes
