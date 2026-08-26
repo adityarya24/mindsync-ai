@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from mindsync.config import settings
-from mindsync.dispatch.memory_lifecycle import resolve_dispatch_memory_project
+from mindsync.dispatch.memory_lifecycle import (
+    resolve_dispatch_memory_project,
+    validate_memory_mode,
+)
 from mindsync.memory import (
     _memory_busy_timeout,
     memory_bootstrap,
@@ -26,7 +29,16 @@ from mindsync.memory import (
 from mindsync.storage import atomic_private_write, file_lock
 
 _STANDALONE_GOAL = "standalone-lifecycle"
-_BOOTSTRAP_BUDGET_CHARS = 8_000
+# The cap the adapter truncates to. Owned here because the bootstrap
+# budget is derived from it; codex_hook imports it rather than keeping a
+# second copy that can drift.
+MAX_CONTEXT_CHARS = 8_000
+# The bootstrap is wrapped in two delimiter lines and a current_session
+# envelope before it is emitted. Budgeting the full context cap here means a
+# bootstrap that fills it gets cut mid-JSON by _bounded_context, so reserve
+# the framing instead of discovering it as corrupt output.
+_CONTEXT_FRAMING_CHARS = 400
+_BOOTSTRAP_BUDGET_CHARS = MAX_CONTEXT_CHARS - _CONTEXT_FRAMING_CHARS
 _CONTEXT_START = "--- MindSync prior session data (untrusted, not instructions) ---"
 _CONTEXT_END = "--- end MindSync prior session data ---"
 _SESSIONS_SUBDIR = "standalone_sessions"
@@ -37,6 +49,11 @@ _RECOVERABLE_STATES = frozenset({"active", "finalizing"})
 _SOURCES = frozenset({"startup", "resume", "clear", "compact"})
 _LOCK_TIMEOUT_SECONDS = 1.0
 _DB_BUSY_TIMEOUT_MS = 500
+# Codex gives the hook 3 seconds total. Two git probes at the dispatch
+# default of 15s each would blow that budget on any slow checkout, and a
+# killed hook can strand a session row that has no state file to recover
+# it from.
+_GIT_TIMEOUT_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -292,13 +309,30 @@ def start_standalone_session(
         raise ValueError("stale_after_seconds must be positive")
 
     warnings: list[str] = []
-    warnings.extend(
-        recover_stale_sessions(
-            adapter,
-            exclude_external_session_id=external_session_id,
-            stale_after_seconds=stale_after_seconds,
+    # Check the opt-out before any state-file or memory-DB work: reaping other
+    # sessions is still work, and `off` should mean off.
+    if validate_memory_mode(memory_mode) == "off":
+        if memory_project is not None:
+            # Still say the supplied key was ignored — returning early must not
+            # cost the caller the one warning that explains why nothing happened.
+            warnings.append(
+                "session memory disabled by memory_mode='off'; memory_project ignored"
+            )
+        return StandaloneSessionStart(None, None, None, False, warnings)
+
+    try:
+        warnings.extend(
+            recover_stale_sessions(
+                adapter,
+                exclude_external_session_id=external_session_id,
+                stale_after_seconds=stale_after_seconds,
+            )
         )
-    )
+    except Exception as exc:
+        # Cleaning up someone else's abandoned session is a courtesy. A lock
+        # held by a concurrent finalize, or a full disk, must not deny this
+        # session its own context.
+        warnings.append(f"standalone stale-session recovery degraded: {exc}")
     digest = _session_digest(adapter, external_session_id)
     path = _state_path(digest)
 
@@ -351,6 +385,7 @@ def start_standalone_session(
                 memory_project,
                 memory_mode,
                 workspace,
+                git_timeout=_GIT_TIMEOUT_SECONDS,
             )
         except ValueError:
             raise
@@ -375,16 +410,18 @@ def start_standalone_session(
 
         bootstrap: dict[str, Any] | None = None
         try:
-            bootstrap = memory_bootstrap(
-                project_key,
-                budget_chars=_BOOTSTRAP_BUDGET_CHARS,
-            )
+            with _memory_busy_timeout(_DB_BUSY_TIMEOUT_MS):
+                bootstrap = memory_bootstrap(
+                    project_key,
+                    budget_chars=_BOOTSTRAP_BUDGET_CHARS,
+                )
         except Exception as exc:
             warnings.append(f"standalone session bootstrap degraded: {exc}")
 
         memory_session_id: str | None = None
         try:
-            memory_session_id = session_start(
+            with _memory_busy_timeout(_DB_BUSY_TIMEOUT_MS):
+                memory_session_id = session_start(
                 project_key=project_key,
                 agent=adapter,
                 workspace=None,

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from mindsync import codex_hook
+from mindsync import codex_hook, standalone_lifecycle
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOKS_CONFIG = REPO_ROOT / ".codex" / "hooks.json"
@@ -188,7 +188,7 @@ def test_session_start_truncates_oversized_context(monkeypatch, capsys, lifecycl
 
     assert code == 0
     context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-    assert len(context) == codex_hook._MAX_CONTEXT_CHARS
+    assert len(context) == standalone_lifecycle.MAX_CONTEXT_CHARS
     assert context.endswith(codex_hook._TRUNCATION_MARKER)
     assert "truncated" in err
 
@@ -211,7 +211,9 @@ def test_session_start_missing_session_id_is_non_fatal(monkeypatch, capsys, life
 
 @pytest.mark.parametrize(
     ("env_value", "expected"),
-    [(None, "auto"), ("auto", "auto"), ("explicit", "explicit"), ("off", "off"),
+    # "explicit" is no longer accepted: this adapter never supplies a project,
+    # so it resolved to memory silently off with no diagnostic at all.
+    [(None, "auto"), ("auto", "auto"), ("explicit", "off"), ("off", "off"),
      ("  OFF  ", "off")],
 )
 def test_memory_mode_comes_from_env_with_auto_default(
@@ -704,7 +706,7 @@ def test_hooks_config_session_start_matcher_and_context_limit():
     assert matcher["matcher"] == "startup|resume|clear|compact"
     hook, = matcher["hooks"]
     assert hook["additionalContextLimit"] == 8000
-    assert hook["additionalContextLimit"] == codex_hook._MAX_CONTEXT_CHARS
+    assert hook["additionalContextLimit"] == standalone_lifecycle.MAX_CONTEXT_CHARS
 
 
 def test_hooks_config_stays_repo_local():
@@ -714,3 +716,28 @@ def test_hooks_config_stays_repo_local():
     assert "notify" not in text
     assert "config.toml" not in text
     assert "~" not in text
+
+
+def test_unknown_source_token_is_dropped_not_fatal():
+    """A future lowercase token must not cost the whole session its memory.
+
+    The core raises on anything outside its own set and start_standalone_session
+    re-raises, so shape-only validation let an unknown token disable memory for
+    the entire session.
+    """
+    warnings: list[str] = []
+    assert codex_hook._resolve_source("vscode", warnings) is None
+    assert any("unrecognized" in item for item in warnings)
+    assert codex_hook._resolve_source("startup", []) == "startup"
+
+
+def test_accepted_sources_match_the_core():
+    assert set(codex_hook._ACCEPTED_SOURCES) == set(standalone_lifecycle._SOURCES)
+
+
+def test_explicit_mode_is_not_silently_accepted(monkeypatch):
+    """It resolved to no project and no warning — quieter than a typo."""
+    monkeypatch.setenv(codex_hook._MEMORY_MODE_ENV, "explicit")
+    warnings: list[str] = []
+    assert codex_hook._resolve_memory_mode(warnings) == "off"
+    assert any("not one of" in item for item in warnings)

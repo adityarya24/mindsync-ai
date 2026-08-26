@@ -40,7 +40,9 @@ def validate_memory_mode(memory_mode: str) -> str:
     return memory_mode
 
 
-def _infer_git_project_key(workspace: str | None) -> str | None:
+def _infer_git_project_key(
+    workspace: str | None, *, git_timeout: float | None = None
+) -> str | None:
     """Return an opaque identity shared by one Git checkout and its worktrees.
 
     Git's common directory is stable across linked worktrees. Hashing its resolved
@@ -64,18 +66,11 @@ def _infer_git_project_key(workspace: str | None) -> str | None:
         # key also partitions the fact store, and a fact written under the
         # wrong key is served at the top of every later bootstrap for that
         # project with nothing left to mark it as misattributed.
-        inside = _git(
-            str(workspace_path),
-            "rev-parse",
-            "--is-inside-work-tree",
-            ignore_ambient_repo=True,
-        )
-        common = _git(
-            str(workspace_path),
-            "rev-parse",
-            "--git-common-dir",
-            ignore_ambient_repo=True,
-        )
+        probe = {"ignore_ambient_repo": True}
+        if git_timeout is not None:
+            probe["timeout"] = git_timeout
+        inside = _git(str(workspace_path), "rev-parse", "--is-inside-work-tree", **probe)
+        common = _git(str(workspace_path), "rev-parse", "--git-common-dir", **probe)
     except Exception:
         # Memory is optional. Even a surprising Git/helper failure must degrade
         # to memory-off rather than escape after the dispatch job was created.
@@ -102,6 +97,8 @@ def resolve_dispatch_memory_project(
     memory_project: str | None,
     memory_mode: str,
     workspace: str | None,
+    *,
+    git_timeout: float | None = None,
 ) -> tuple[str | None, str | None, list[str]]:
     """Resolve an explicit or inferred project without ever guessing a raw key.
 
@@ -123,7 +120,7 @@ def resolve_dispatch_memory_project(
         return None, None, []
 
     try:
-        inferred = _infer_git_project_key(workspace)
+        inferred = _infer_git_project_key(workspace, git_timeout=git_timeout)
     except Exception:
         # Keep the resolver fail-closed even if the inference helper regresses
         # or a caller replaces it with a failing implementation.

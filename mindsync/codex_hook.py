@@ -35,14 +35,16 @@ ADAPTER = "codex"
 _ALLOWED_KEYS = ("session_id", "cwd", "hook_event_name", "source")
 
 _MEMORY_MODE_ENV = "MINDSYNC_STANDALONE_MEMORY_MODE"
-_MEMORY_MODES = ("auto", "explicit", "off")
+# "explicit" is deliberately absent: this adapter never supplies a
+# memory_project, so the core would resolve it to no project and no
+# warning — memory silently off, with less feedback than a typo gets.
+_MEMORY_MODES = ("auto", "off")
 _DEFAULT_MEMORY_MODE = "auto"
 
 _MAX_STDIN_BYTES = 1 << 20
 _MAX_STDOUT_BYTES = 32_000
 # Mirrors additionalContextLimit in .codex/hooks.json — Codex truncates past this
 # anyway, and truncating here keeps the warning visible to the user.
-_MAX_CONTEXT_CHARS = 8_000
 _MAX_WARNING_CHARS = 600
 _MAX_SESSION_ID_CHARS = 200
 _MAX_CWD_CHARS = 4_096
@@ -147,11 +149,20 @@ def _resolve_memory_mode(warnings: list[str]) -> str:
     return mode
 
 
+_ACCEPTED_SOURCES = ("startup", "resume", "clear", "compact")
+
+
 def _resolve_source(value: str | None, warnings: list[str]) -> str | None:
-    """Accept only Codex's lowercase source tokens (startup|resume|clear|compact)."""
+    """Accept only the source tokens the core accepts.
+
+    Shape alone is not enough. The core raises on anything outside its own set,
+    and start_standalone_session re-raises rather than degrading — so a new
+    lowercase token from a future Codex would cost that whole session its
+    memory. Drop what we do not recognise, the same as a malformed value.
+    """
     if value is None:
         return None
-    if not _SOURCE_RE.match(value):
+    if not _SOURCE_RE.match(value) or value not in _ACCEPTED_SOURCES:
         warnings.append("ignored unrecognized SessionStart source")
         return None
     return value
@@ -250,14 +261,27 @@ def _changed_files(cwd: str | None, warnings: list[str]) -> list[str] | None:
     return paths or None
 
 
+def _context_cap() -> int:
+    """The cap the core budgets its bootstrap against.
+
+    Read from the core rather than duplicated here: two copies of this number
+    drift, and the failure that causes is a context blob cut mid-JSON.
+    """
+    try:
+        return int(_lifecycle().MAX_CONTEXT_CHARS)
+    except Exception:
+        return 8_000
+
+
 def _bounded_context(context: Any, warnings: list[str]) -> str | None:
     """Bound the core's context blob to what Codex will accept."""
     if not isinstance(context, str) or not context.strip():
         return None
-    if len(context) <= _MAX_CONTEXT_CHARS:
+    cap = _context_cap()
+    if len(context) <= cap:
         return context
     warnings.append("session memory context truncated to fit the Codex hook limit")
-    keep = _MAX_CONTEXT_CHARS - len(_TRUNCATION_MARKER)
+    keep = cap - len(_TRUNCATION_MARKER)
     return context[:keep] + _TRUNCATION_MARKER
 
 
@@ -320,6 +344,8 @@ def _handle_stop(fields: Mapping[str, str | None], warnings: list[str]) -> str:
     if not session_id:
         warnings.append("Stop checkpoint skipped: payload had no session_id")
         return _STOP_OUTPUT
+    if _resolve_memory_mode([]) == "off":
+        return _STOP_OUTPUT
 
     try:
         files_changed = _changed_files(fields["cwd"], warnings)
@@ -342,6 +368,8 @@ def _handle_session_end(fields: Mapping[str, str | None], warnings: list[str]) -
     session_id = fields["session_id"]
     if not session_id:
         warnings.append("SessionEnd ignored: payload had no session_id")
+        return ""
+    if _resolve_memory_mode([]) == "off":
         return ""
     try:
         result = _lifecycle().end_standalone_session(

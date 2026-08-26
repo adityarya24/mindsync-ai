@@ -660,3 +660,69 @@ def test_auto_project_key_matches_git_pattern(isolated: Path):
     assert result.project_key is not None
     assert re.fullmatch(r"git-[0-9a-f]{64}", result.project_key)
     assert "private-repo-name" not in result.project_key
+
+
+def test_git_probes_are_bounded_to_the_hook_budget(monkeypatch):
+    """Codex allows the hook 3s; the dispatch default of 15s per probe does not fit.
+
+    Two probes at 15s can outlive the hook by 10x, and a killed hook can strand a
+    session row whose state file was never written.
+    """
+    from mindsync.dispatch import memory_lifecycle as ml
+    from mindsync import standalone_lifecycle as core
+
+    seen: list[float | None] = []
+
+    def fake_git(cwd, *args, ignore_ambient_repo=False, timeout=15.0):
+        seen.append(timeout)
+        return None
+
+    monkeypatch.setattr("mindsync.dispatch.worktree._git", fake_git)
+    ml._infer_git_project_key("/tmp", git_timeout=core._GIT_TIMEOUT_SECONDS)
+
+    assert seen, "no git probe ran"
+    assert all(value <= 3.0 for value in seen), seen
+
+
+def test_stale_recovery_failure_does_not_deny_this_session(monkeypatch, tmp_path):
+    """Reaping someone else's abandoned session is a courtesy, not a precondition."""
+    from mindsync import standalone_lifecycle as core
+
+    def boom(*args, **kwargs):
+        raise TimeoutError("another process is finalizing that mapping")
+
+    monkeypatch.setattr(core, "recover_stale_sessions", boom)
+    result = core.start_standalone_session(
+        "codex", "sess-recovery", str(tmp_path), memory_mode="off"
+    )
+    # Reached the end rather than propagating the TimeoutError.
+    assert result.memory_session_id is None
+    assert isinstance(result.warnings, list)
+
+
+def test_mode_off_touches_nothing(monkeypatch, tmp_path):
+    """`off` is documented as an opt-out, so it must not reap, bootstrap or write."""
+    from mindsync import standalone_lifecycle as core
+
+    called: list[str] = []
+    monkeypatch.setattr(
+        core, "recover_stale_sessions", lambda *a, **k: called.append("reaper") or []
+    )
+    monkeypatch.setattr(
+        core, "session_start", lambda **k: called.append("session_start") or "x"
+    )
+
+    result = core.start_standalone_session(
+        "codex", "sess-off", str(tmp_path), memory_mode="off"
+    )
+    assert result.memory_session_id is None
+    assert called == [], f"off still did work: {called}"
+
+
+def test_mode_off_still_reports_an_ignored_project():
+    from mindsync import standalone_lifecycle as core
+
+    result = core.start_standalone_session(
+        "codex", "sess-off-2", None, memory_mode="off", memory_project="planner"
+    )
+    assert any("memory_project ignored" in item for item in result.warnings)

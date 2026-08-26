@@ -519,8 +519,10 @@ python -m pip install mindsync-ai
 mindsync-codex-hook < codex-hook-event.json  # adapter smoke test
 ```
 
-Set `MINDSYNC_STANDALONE_MEMORY_MODE=off` for an explicit opt-out. Hook and memory
-failures are reported as non-fatal warnings; they do not fail the Codex action.
+Set `MINDSYNC_STANDALONE_MEMORY_MODE=off` for an explicit opt-out: no state file
+is read or written, the memory database is never opened, no stale-session reaping
+runs, and `Stop`/`SessionEnd` return without a word. Hook and memory failures are
+reported as non-fatal warnings; they do not fail the Codex action.
 The adapter reads only the event type, external session ID, workspace, and start
 source. It deliberately ignores prompt, transcript, assistant-message, stdout,
 stderr, and check-output fields, and never promotes automatic lifecycle data into

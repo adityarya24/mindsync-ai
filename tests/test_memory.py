@@ -1067,3 +1067,23 @@ def test_relinking_a_fact_does_not_rewrite_first_seen():
     ).fetchone()
     assert row["first_seen"] == original
     assert row["source_count"] == 2
+
+
+def test_retried_checkpoint_applies_the_status_it_carries():
+    """A retry after a crash must still advance the session status.
+
+    The idempotent early return skipped the UPDATE, so a caller retrying with
+    the same checkpoint_id got a success return while sessions.status never
+    moved — silent, and only masked because session_end happens to set it.
+    """
+    session_id = session_start(project_key="retry", agent="agent")
+    memory_checkpoint(session_id, status="working", checkpoint_id="a1b2c3d4e5f600112233445566778899")
+    memory_checkpoint(session_id, status="done", checkpoint_id="a1b2c3d4e5f600112233445566778899")
+
+    db = _get_db()
+    assert db.execute(
+        "SELECT status FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()["status"] == "done"
+    assert db.execute(
+        "SELECT COUNT(*) FROM checkpoints WHERE checkpoint_id = 'a1b2c3d4e5f600112233445566778899'"
+    ).fetchone()[0] == 1

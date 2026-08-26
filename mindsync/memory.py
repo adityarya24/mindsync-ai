@@ -733,7 +733,18 @@ def memory_checkpoint(
                     raise ValueError(
                         f"checkpoint_id {checkpoint_id} already belongs to another session"
                     )
+                # The checkpoint row is already there, but the caller's status
+                # may not have been applied — a crash between the insert and
+                # the caller's own bookkeeping leaves exactly that state. Apply
+                # it on the retry, or the caller gets a success return while
+                # sessions.status never advances.
+                if status is not None:
+                    db.execute(
+                        "UPDATE sessions SET status = ? WHERE session_id = ?",
+                        (status, session_id),
+                    )
                 db.execute("COMMIT")
+                _harden_db_files(settings.memory_db_file)
                 return checkpoint_id
         db.execute(
             """
