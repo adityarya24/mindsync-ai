@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- GitHub Pages landing matches 1.5.3: OpenCode is listed, copy-paste commands
+  are real (`mindsync-dispatch run auto`, `mindsync agents`), and setup no
+  longer claims every MCP harness is auto-onboarded.
+
 ## [1.5.3] - 2026-08-27
 
 ### Fixed
