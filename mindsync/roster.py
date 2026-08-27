@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from mindsync.onboarding import (
     _run_command,
     _text_has_mindsync,
     cli_status,
+    configure_json_host,
     generic_mcp_registration_args,
     registration_args,
 )
@@ -290,6 +292,14 @@ def _ensure_mcp(
     if status["configured"] and not force:
         return {"action": "already_configured", "cli": cli_name}
     spec = CLI_SPECS[cli_name]
+    if spec.add_style in {"cursor-json", "opencode-json"}:
+        return configure_json_host(
+            cli_name,
+            user_home=user_home or Path.home(),
+            force=force,
+            dry_run=dry_run,
+            python_exe=python_exe or sys.executable,
+        )
     resolved = resolver(spec.bin)
     args = registration_args(cli_name, python_exe)
     if dry_run:

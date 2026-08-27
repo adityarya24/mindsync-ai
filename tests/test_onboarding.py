@@ -62,9 +62,9 @@ def test_registration_commands_identify_caller_and_use_module_entrypoint():
         assert "mindsync" in args
         assert f"MINDSYNC_CALLER_CLI={cli}" in args
         assert args[-3:] == ["python-test", "-m", "mindsync.server"]
-    generic = onboarding.registration_args("opencode", "python-test")
+    generic = onboarding.registration_args("windsurf", "python-test")
     assert generic[:4] == ["mcp", "add", "--scope", "user"]
-    assert "MINDSYNC_CALLER_CLI=opencode" in generic
+    assert "MINDSYNC_CALLER_CLI=windsurf" in generic
     assert generic[-3:] == ["python-test", "-m", "mindsync.server"]
 
 
@@ -107,6 +107,59 @@ def test_setup_dry_run_is_non_mutating_and_reports_unsupported(tmp_path, monkeyp
     assert result["actions"][2]["cli"] == "codex-hook"
     assert not (tmp_path / "user" / ".codex" / "hooks.json").exists()
     assert not any(args[:2] == ["mcp", "add"] for _, args in runner.calls)
+
+
+def test_setup_writes_opencode_jsonc_without_guessing_mcp_add(tmp_path, monkeypatch):
+    settings = _isolate(tmp_path, monkeypatch)
+    user_home = tmp_path / "user"
+    config = onboarding.opencode_config_path(user_home)
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        json.dumps(
+            {
+                "$schema": "https://opencode.ai/config.json",
+                "default_agent": "vidur",
+                "mcp": {
+                    "gws-marketing": {
+                        "type": "local",
+                        "command": ["gws"],
+                        "enabled": True,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    runner = FakeCliRunner()
+    result = onboarding.setup(
+        cli_names=["opencode"],
+        runner=runner,
+        resolver=_resolver,
+        user_home=user_home,
+        policy_file=settings.orchestration_file,
+        python_exe="python-test",
+        install_hooks=False,
+    )
+    assert result["actions"][0]["action"] == "configured"
+    data = json.loads(config.read_text(encoding="utf-8"))
+    assert data["default_agent"] == "vidur"
+    assert data["mcp"]["gws-marketing"]["command"] == ["gws"]
+    mindsync = data["mcp"]["mindsync"]
+    assert mindsync["type"] == "local"
+    assert mindsync["command"] == ["python-test", "-m", "mindsync.server"]
+    assert mindsync["environment"]["MINDSYNC_CALLER_CLI"] == "opencode"
+    assert not any(args[:2] == ["mcp", "add"] for _, args in runner.calls)
+
+    again = onboarding.setup(
+        cli_names=["opencode"],
+        runner=runner,
+        resolver=_resolver,
+        user_home=user_home,
+        policy_file=settings.orchestration_file,
+        python_exe="python-test",
+        install_hooks=False,
+    )
+    assert again["actions"][0]["action"] == "already_configured"
 
 
 def test_setup_registers_command_cli_and_cursor_idempotently(tmp_path, monkeypatch):

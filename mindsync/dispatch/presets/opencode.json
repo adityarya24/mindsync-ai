@@ -1,0 +1,11 @@
+{
+  "name": "opencode",
+  "displayName": "OpenCode",
+  "bin": "opencode",
+  "input": "stdin",
+  "loginHint": "opencode auth login",
+  "installHint": "npm install -g opencode-ai",
+  "capabilities": ["general", "coding", "review", "repository"],
+  "capabilityWeights": {"coding": 80, "review": 70, "repository": 70},
+  "routingPriority": 55
+}

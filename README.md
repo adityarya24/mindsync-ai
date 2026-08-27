@@ -124,6 +124,7 @@ one or both roles.
 | Antigravity (`agy`) | Via Gemini CLI host | Built in | Preferred worker backend in the Gemini/Antigravity family |
 | Grok CLI | Native | Built in | Research, reasoning, review, and security-oriented work |
 | Cursor Agent | JSON setup | Built in | Coding and repository work |
+| OpenCode | JSON setup | Built in | Writes `~/.config/opencode/opencode.jsonc`; `mcp add` is interactive |
 | Aider | — | Built in | Focused code editing worker |
 
 Antigravity and Gemini CLI are two execution backends in one logical

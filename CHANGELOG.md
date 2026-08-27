@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.2] - 2026-08-27
 
+### Added
+
+- OpenCode is a first-party MCP host. `mindsync setup` writes MindSync into
+  `~/.config/opencode/opencode.jsonc` (or `opencode.json`) the same way it
+  writes Cursor's JSON config, because `opencode mcp add` is interactive and
+  cannot be scripted.
+
 ### Changed
 
 - Dispatch roster and jobs now live under `~/.mindsync/dispatch/` instead of
