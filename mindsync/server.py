@@ -781,19 +781,26 @@ def get_orchestration_policy(
 
 @mcp.tool()
 def list_agents(agent_name: str = "default_agent") -> list[dict[str, Any]]:
-    """List dispatch agents with live binary availability and routing capabilities."""
+    """List dispatch agents with live binary, MCP, and routable status."""
     from mindsync.dispatch.adapters import load_adapters
-    from mindsync.dispatch.proc import resolve_bin
+    from mindsync.roster import describe_agents
 
+    by_name = {adapter.name: adapter for adapter in load_adapters().values()}
     agents = []
-    for adapter in load_adapters().values():
+    for row in describe_agents():
+        adapter = by_name[row["name"]]
         agents.append({
-            "name": adapter.name,
-            "display_name": adapter.displayName or adapter.name,
-            "family": adapter.family or adapter.name,
-            "available": bool(resolve_bin(adapter.bin)),
-            "capabilities": adapter.capabilities or ["general"],
-            "routing_priority": adapter.routingPriority,
+            "name": row["name"],
+            "display_name": row["display_name"],
+            "family": row["family"],
+            "available": row["binary_present"],
+            "binary_present": row["binary_present"],
+            "mcp_installed": row["mcp_installed"],
+            "mcp_detail": row["mcp_detail"],
+            "routable": row["routable"],
+            "source": row["source"],
+            "capabilities": row["capabilities"],
+            "routing_priority": row["routing_priority"],
             "default_model": adapter.defaultModel,
             "efforts": adapter.efforts,
         })

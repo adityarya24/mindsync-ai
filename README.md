@@ -167,7 +167,19 @@ preventing duplicate edits.
 
 ### Custom workers
 
-Add custom adapters to `~/.claude/agent-dispatch/agents.json`:
+Register a local CLI so MindSync can dispatch to it and, when that CLI has an MCP
+management command, so the CLI can use MindSync:
+
+```bash
+mindsync register --name vidur --bin opencode --capability coding --capability review
+mindsync agents
+```
+
+`--capability security` (and `large-context`, `multimodal`) requires `--confirm`.
+If the CLI has no MCP-management command, register still writes the dispatch roster
+and says so. Re-running is safe.
+
+Or add custom adapters to `~/.claude/agent-dispatch/agents.json`:
 
 ```json
 {

@@ -9,6 +9,25 @@ from mindsync.dispatch.adapters import AdapterConfig, load_adapters
 from mindsync.dispatch.proc import resolve_bin
 
 
+KNOWN_CAPABILITIES = frozenset({
+    "architecture",
+    "coding",
+    "debugging",
+    "devops",
+    "general",
+    "large-context",
+    "multimodal",
+    "reasoning",
+    "refactoring",
+    "repository",
+    "research",
+    "review",
+    "security",
+    "testing",
+    "writing",
+})
+HEAVY_CAPABILITIES = frozenset({"security", "large-context", "multimodal"})
+
 _CAPABILITY_KEYWORDS: dict[str, tuple[str, ...]] = {
     "architecture": ("architecture", "architect", "design", "system design"),
     "coding": ("code", "coding", "implement", "build", "feature", "fix", "bug"),

@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
+
+from mindsync.storage import atomic_private_write
 
 SAFE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$")
 
@@ -147,6 +151,90 @@ def dispatch_home() -> Path:
 
 def user_config_path() -> Path:
     return dispatch_home() / "agents.json"
+
+
+def _read_user_config(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"agents": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Your agents.json at {path} is invalid: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Your agents.json at {path} is not an object")
+    agents = data.get("agents")
+    if agents is None:
+        data["agents"] = []
+    elif not isinstance(agents, list):
+        raise ValueError(f"agents in {path} is not an array")
+    return data
+
+
+def upsert_user_agent(
+    entry: dict[str, Any],
+    *,
+    force: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Insert or update a user roster entry in agents.json.
+
+    Bundled presets are not rewritten. A same-name user overlay is updated in
+    place; ``force`` is required to change bin or capabilities of an existing
+    overlay.
+    """
+    name = str(entry.get("name") or "").strip()
+    if not name:
+        raise ValueError("agent name is required")
+    path = user_config_path()
+    original = path.read_text(encoding="utf-8") if path.is_file() else None
+    data = _read_user_config(path)
+    agents = list(data.get("agents") or [])
+    index = next(
+        (i for i, item in enumerate(agents) if isinstance(item, dict) and item.get("name") == name),
+        None,
+    )
+    existing = agents[index] if index is not None else None
+    if existing is not None and not force:
+        same_bin = existing.get("bin") == entry.get("bin")
+        same_caps = list(existing.get("capabilities") or []) == list(entry.get("capabilities") or [])
+        if same_bin and same_caps:
+            return {
+                "action": "already_configured",
+                "path": str(path),
+                "agent": {**existing},
+            }
+        raise ValueError(
+            f"Agent '{name}' is already in {path}. Re-run with --force to update it."
+        )
+    if dry_run:
+        return {
+            "action": "would_configure" if existing is None else "would_update",
+            "path": str(path),
+            "agent": {**(existing or {}), **entry},
+        }
+
+    merged = {**(existing or {}), **entry, "name": name}
+    _validate_raw(merged)
+    if index is None:
+        agents.append(merged)
+        action = "configured"
+    else:
+        agents[index] = merged
+        action = "updated"
+    data["agents"] = agents
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.chmod(0o700)
+    except OSError:
+        pass
+    backup = None
+    if original is not None:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        backup_path = path.with_name(f"agents.{stamp}.{secrets.token_hex(3)}.json.bak")
+        atomic_private_write(backup_path, original)
+        backup = str(backup_path)
+    atomic_private_write(path, json.dumps(data, indent=2) + "\n")
+    return {"action": action, "path": str(path), "agent": merged, "backup": backup}
 
 
 def presets_dir() -> Path:
