@@ -152,9 +152,10 @@ def _validate_project_key(project_key: str) -> str:
 
 def _format_context_prefix(bootstrap: dict[str, Any]) -> str:
     # Security invariant: keep untrusted memory inside one compact JSON line so
-    # embedded newlines stay escaped and cannot manufacture delimiter lines.
+    # embedded newlines and Unicode line separators stay escaped and cannot
+    # manufacture delimiter lines for line-oriented consumers.
     # Do not pretty-print this payload without replacing that framing guarantee.
-    compact = json.dumps(bootstrap, ensure_ascii=False, separators=(",", ":"))
+    compact = json.dumps(bootstrap, ensure_ascii=True, separators=(",", ":"))
     return f"{_CONTEXT_START}\n{compact}\n{_CONTEXT_END}\n\n"
 
 
