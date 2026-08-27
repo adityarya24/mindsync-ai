@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Pages landing matches 1.5.3: OpenCode is listed, copy-paste commands
   are real (`mindsync-dispatch run auto`, `mindsync agents`), and setup no
   longer claims every MCP harness is auto-onboarded.
+- README is a front door again: quick start, supported CLIs, and pointers.
+  Tool catalogs, remote-worker internals, and memory-engine detail live in
+  [`SECURITY.md`](SECURITY.md), [`examples/remote/`](examples/remote/), and
+  the MCP server itself.
 
 ## [1.5.3] - 2026-08-27
 
