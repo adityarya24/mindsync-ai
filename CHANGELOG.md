@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-08-27
+
 ### Fixed
 
 - Ended memory sessions stay terminal: a late dispatch checkpoint cannot
@@ -14,11 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dispatch memory finalization is retryable. A degraded first attempt no
   longer marks the job finalized forever; the terminal checkpoint id is
   stable across retries, and replayed session context is labeled untrusted.
+- Replayed dispatch context ASCII-escapes Unicode line separators (`U+0085`,
+  `U+2028`, and `U+2029`), so untrusted checkpoint text cannot forge framing
+  delimiters.
 - Legacy `~/.claude/agent-dispatch` migration runs once under a lock and
   writes a completion marker, so later files in the old folder cannot leak
   into `~/.mindsync/dispatch`.
-- Release tagging now requires the commit to be on `origin/master` with a
-  successful **push** CI run on that SHA, not merely any completed CI check.
+- Release tagging now requires the tag to match the package version and the
+  commit to be on `origin/master` with a successful **push** CI run on that
+  SHA, not merely any completed CI check.
 
 ## [1.5.2] - 2026-08-27
 

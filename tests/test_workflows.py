@@ -6,11 +6,14 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 
 
-def test_release_gate_checks_master_ancestry_and_push_ci():
+def test_release_gate_checks_tag_version_master_ancestry_and_push_ci():
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
         encoding="utf-8"
     )
 
+    assert 'pathlib.Path("mindsync/__init__.py")' in workflow
+    assert 'expected_tag="v${package_version}"' in workflow
+    assert '"${GITHUB_REF_NAME}" != "$expected_tag"' in workflow
     assert "git fetch --no-tags origin master" in workflow
     assert 'git merge-base --is-ancestor "$sha" origin/master' in workflow
     assert "branch=master" in workflow

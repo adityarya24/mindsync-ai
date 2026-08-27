@@ -18,6 +18,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify tag matches package version
+        run: |
+          package_version=$(python -c 'import ast, pathlib; tree = ast.parse(pathlib.Path("mindsync/__init__.py").read_text(encoding="utf-8")); print(next(node.value.value for node in tree.body if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)))')
+          expected_tag="v${package_version}"
+          if [ "${GITHUB_REF_NAME}" != "$expected_tag" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package version ${package_version}. Expected ${expected_tag}."
+            exit 1
+          fi
+
       - name: Verify tagged commit belongs to master
         run: |
           sha="${GITHUB_SHA}"

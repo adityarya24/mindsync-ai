@@ -43,5 +43,6 @@ Releases are automated via GitHub Actions on tag pushes. To release a new versio
 1. Update `__version__` in `mindsync/__init__.py`.
 2. Update `CHANGELOG.md` with the release notes.
 3. Commit and PR the changes.
-4. Once merged, create a tag (e.g., `v1.0.1`) and push it.
-5. The `Release` workflow will build the wheel/sdist, generate checksums, create a GitHub Release, and publish to PyPI using Trusted Publishing (OIDC).
+4. Once merged, wait for successful push CI on the exact `master` commit.
+5. Tag that verified commit (e.g., `v1.0.1`) and push the tag.
+6. The `Release` workflow will build the wheel/sdist, generate checksums, create a GitHub Release, and publish to PyPI using Trusted Publishing (OIDC).
