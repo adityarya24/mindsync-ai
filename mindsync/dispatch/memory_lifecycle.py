@@ -273,7 +273,7 @@ def prepare_dispatch_memory(
 
 
 def finalize_dispatch_memory(job_id: str) -> list[str]:
-    """Finalize dispatch memory exactly once; safe to call from cancel/supervise races."""
+    """Finalize dispatch memory idempotently; safe across retries and races."""
     store.job_paths(job_id)  # validate before deriving a lock name from caller input
     warnings: list[str] = []
     lock_name = f"dispatch-job-{job_id}"
