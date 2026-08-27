@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import secrets
 import subprocess
@@ -13,6 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from mindsync.config import dispatch_home
 from mindsync.storage import atomic_private_write
 
 SAFE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$")
@@ -142,13 +142,6 @@ class AdapterConfig(BaseModel):
         return self
 
 
-def dispatch_home() -> Path:
-    env = os.environ.get("AGENT_DISPATCH_HOME")
-    if env:
-        return Path(env)
-    return Path.home() / ".claude" / "agent-dispatch"
-
-
 def user_config_path() -> Path:
     return dispatch_home() / "agents.json"
 
@@ -249,7 +242,7 @@ def _validate_raw(data: dict[str, Any]) -> AdapterConfig:
 
 
 def load_adapters() -> dict[str, AdapterConfig]:
-    """Load bundled presets then merge ~/.claude/agent-dispatch/agents.json."""
+    """Load bundled presets then merge ~/.mindsync/dispatch/agents.json."""
     out: dict[str, AdapterConfig] = {}
     pdir = presets_dir()
     if pdir.is_dir():

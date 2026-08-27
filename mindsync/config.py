@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 
 
@@ -35,6 +36,68 @@ def _default_home() -> Path:
     if override:
         return Path(override).expanduser()
     return Path.home() / ".mindsync"
+
+
+def legacy_dispatch_home() -> Path:
+    return Path.home() / ".claude" / "agent-dispatch"
+
+
+def _copy_missing(src: Path, dest: Path) -> None:
+    """Copy files and dirs from src into dest without replacing existing ones."""
+    if src.is_symlink() or src.is_file():
+        if dest.exists():
+            return
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest, follow_symlinks=True)
+        return
+    if not src.is_dir():
+        return
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        dest.chmod(0o700)
+    except OSError:
+        pass
+    for item in src.iterdir():
+        _copy_missing(item, dest / item.name)
+
+
+def migrate_legacy_dispatch_home(target: Path, *, legacy: Path | None = None) -> bool:
+    """Copy a Claude-era dispatch home into the MindSync dispatch home once.
+
+    Existing files in ``target`` win. Returns True if the legacy tree existed
+    and at least the copy walk ran.
+    """
+    source = legacy if legacy is not None else legacy_dispatch_home()
+    if not source.is_dir():
+        return False
+    try:
+        if source.resolve() == target.resolve():
+            return False
+    except OSError:
+        return False
+    _copy_missing(source, target)
+    return True
+
+
+def dispatch_home() -> Path:
+    """Roster and job directory. Default is ``~/.mindsync/dispatch``.
+
+    ``AGENT_DISPATCH_HOME`` still wins for tests and explicit overrides. When
+    using the default MindSync home, a one-time copy from the legacy
+    ``~/.claude/agent-dispatch`` path fills any missing files.
+    """
+    override = _env("AGENT_DISPATCH_HOME")
+    if override:
+        return Path(override).expanduser()
+    target = _default_home() / "dispatch"
+    default_target = Path.home() / ".mindsync" / "dispatch"
+    try:
+        migrate = target.resolve() == default_target.resolve()
+    except OSError:
+        migrate = False
+    if migrate:
+        migrate_legacy_dispatch_home(target)
+    return target
 
 
 def chmod_tree_0600(path: Path) -> None:

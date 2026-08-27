@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.2] - 2026-08-27
 
+### Added
+
+- OpenCode is a first-party MCP host. `mindsync setup` writes MindSync into
+  `~/.config/opencode/opencode.jsonc` (or `opencode.json`) the same way it
+  writes Cursor's JSON config, because `opencode mcp add` is interactive and
+  cannot be scripted.
+- `mindsync setup` scans PATH for recognised coding-agent CLIs beyond the
+  first-party host list and adds them to the user dispatch roster with
+  `coding` capability. Discovery is on by default, off when `--cli` is passed,
+  and skippable with `--no-discover`. System directories and a denylist of
+  ordinary tools are ignored. Heavy capability tags are never auto-assigned.
+  A binary MindSync cannot name is reported as a suggestion rather than
+  registered, because confirming what it is would mean executing it.
+- `mindsync register` lands an agent in the user dispatch roster and, when the
+  CLI is a known MCP host, installs MindSync as its MCP server. It verifies
+  `--version` / `mcp list` (or the host JSON file), is idempotent, and refuses
+  heavy capability tags (`security`, `large-context`, `multimodal`) without
+  `--confirm`.
+- `mindsync agents` (and `mindsync-dispatch agents`) report binary present, MCP
+  installed, and routable for every roster entry.
+
+### Changed
+
+- Dispatch roster and jobs now live under `~/.mindsync/dispatch/` instead of
+  `~/.claude/agent-dispatch/`. On first use of the default home, existing
+  files are copied from the old path and never overwritten.
+  `AGENT_DISPATCH_HOME` still overrides the location.
+- Codex and Cursor presets now advertise `refactoring`, so `--capability refactoring`
+  no longer depends on Aider being installed.
+
 ### Fixed
 
 - PATH discovery no longer executes unrecognised binaries. It decided a name
@@ -19,30 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   probed and registered now, unknown ones are reported for the operator to add,
   and the `amp`/`gpt`/`llm` hints are anchored to name segments so `uclampset`
   and `sg_timestamp` no longer match.
-
-### Added
-
-- `mindsync setup` scans PATH for coding-agent CLIs beyond the first-party host
-  list. Recognised agent CLIs are added to the user dispatch roster with
-  `coding` capability. If a discovered CLI exposes `mcp add`, MindSync is
-  registered with a generic `mcp add --scope user` command. Discovery is on by
-  default, off when `--cli` is passed, and skippable with `--no-discover`.
-  System directories and a denylist of ordinary tools are ignored. Heavy
-  capability tags are never auto-assigned. A binary MindSync cannot name is
-  reported as a suggestion rather than registered, because confirming what it
-  is would mean executing it.
-- `mindsync register` lands an agent in the user dispatch roster and, when the CLI
-  exposes an MCP-management command, installs MindSync as its MCP server. It verifies
-  `--version` and `mcp list`, is idempotent, and refuses heavy capability tags
-  (`security`, `large-context`, `multimodal`) without `--confirm`. Unknown CLIs
-  get the same generic MCP registration attempt as PATH discovery.
-- `mindsync agents` (and `mindsync-dispatch agents`) report binary present, MCP
-  installed, and routable for every roster entry.
-
-### Changed
-
-- Codex and Cursor presets now advertise `refactoring`, so `--capability refactoring`
-  no longer depends on Aider being installed.
 
 ## [1.5.1] - 2026-08-27
 

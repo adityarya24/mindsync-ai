@@ -89,7 +89,7 @@ def test_register_unknown_cli_lands_in_roster_and_skips_mcp(tmp_path, monkeypatc
 
     first = register_agent(
         name="vidur",
-        bin_name="opencode",
+        bin_name="amp",
         capabilities=["coding", "review"],
         runner=runner,
         resolver=_resolver,
@@ -104,13 +104,13 @@ def test_register_unknown_cli_lands_in_roster_and_skips_mcp(tmp_path, monkeypatc
     assert first["verify"]["routable"] is True
     saved = json.loads(Path(first["path"]).read_text(encoding="utf-8"))
     vidur = next(item for item in saved["agents"] if item["name"] == "vidur")
-    assert vidur["bin"] == "opencode"
+    assert vidur["bin"] == "amp"
     assert vidur["capabilities"] == ["general", "coding", "review"]
-    assert load_adapters()["vidur"].bin == "opencode"
+    assert load_adapters()["vidur"].bin == "amp"
 
     second = register_agent(
         name="vidur",
-        bin_name="opencode",
+        bin_name="amp",
         capabilities=["coding", "review"],
         runner=runner,
         resolver=_resolver,
@@ -123,7 +123,7 @@ def test_register_dry_run_does_not_write(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     result = register_agent(
         name="vidur",
-        bin_name="opencode",
+        bin_name="amp",
         capabilities=["coding"],
         dry_run=True,
         runner=RegisterRunner(),
@@ -137,7 +137,7 @@ def test_register_updates_with_force(tmp_path, monkeypatch):
     user_home = _isolate(tmp_path, monkeypatch)
     register_agent(
         name="vidur",
-        bin_name="opencode",
+        bin_name="amp",
         capabilities=["coding"],
         runner=RegisterRunner(),
         resolver=_resolver,
@@ -146,7 +146,7 @@ def test_register_updates_with_force(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="--force"):
         register_agent(
             name="vidur",
-            bin_name="opencode",
+            bin_name="amp",
             capabilities=["coding", "review"],
             runner=RegisterRunner(),
             resolver=_resolver,
@@ -154,7 +154,7 @@ def test_register_updates_with_force(tmp_path, monkeypatch):
         )
     updated = register_agent(
         name="vidur",
-        bin_name="opencode",
+        bin_name="amp",
         capabilities=["coding", "review"],
         force=True,
         runner=RegisterRunner(),
@@ -186,7 +186,7 @@ def test_describe_agents_reports_three_columns(tmp_path, monkeypatch):
     user_home = _isolate(tmp_path, monkeypatch)
     register_agent(
         name="vidur",
-        bin_name="opencode",
+        bin_name="amp",
         capabilities=["coding"],
         runner=RegisterRunner(),
         resolver=_resolver,
@@ -259,7 +259,7 @@ def test_discover_agent_clis_registers_only_known_agent_clis(tmp_path, monkeypat
     names = {item["name"] for item in found}
     # 'my-agent' looks agent-ish but is unrecognised, so it is suggested, not
     # registered — proving it would mean executing it.
-    assert names == {"opencode", "pi"}
+    assert names == {"pi"}
     assert all(item["mcp_capable"] is False for item in found)
 
 
@@ -320,10 +320,10 @@ def test_generic_substrings_do_not_look_like_agent_clis():
 
 def test_register_unknown_mcp_capable_cli_uses_generic_add(tmp_path, monkeypatch):
     user_home = _isolate(tmp_path, monkeypatch)
-    runner = RegisterRunner(mcp_bins={"opencode"})
+    runner = RegisterRunner(mcp_bins={"amp"})
     result = register_agent(
         name="vidur",
-        bin_name="opencode",
+        bin_name="amp",
         capabilities=["coding"],
         runner=runner,
         resolver=_resolver,
@@ -333,7 +333,7 @@ def test_register_unknown_mcp_capable_cli_uses_generic_add(tmp_path, monkeypatch
     assert result["mcp"]["action"] == "configured"
     assert result["verify"]["mcp_installed"] is True
     assert any(
-        name == "opencode" and args[:2] == ["mcp", "add"] and "--scope" in args
+        name == "amp" and args[:2] == ["mcp", "add"] and "--scope" in args
         for name, args in runner.calls
     )
     assert "MINDSYNC_CALLER_CLI=vidur" in next(
@@ -356,25 +356,25 @@ def test_setup_discovers_unknown_path_cli(tmp_path, monkeypatch):
     result = onboarding.setup(
         mode="auto",
         runner=runner,
-        resolver=_selective_resolver("opencode"),
+        resolver=_selective_resolver("pi"),
         user_home=user_home,
         policy_file=tmp_path / "orchestration.json",
         python_exe="python-test",
         install_hooks=False,
         path_bins={
-            "opencode": str(Path("fake-bin") / "opencode"),
+            "pi": str(Path("fake-bin") / "pi"),
             "git": str(Path("fake-bin") / "git"),
             "ffmpeg": str(Path("fake-bin") / "ffmpeg"),
         },
     )
     names = {item["cli"] for item in result["actions"]}
-    assert "opencode" in names
+    assert "pi" in names
     assert "git" not in names
     assert "ffmpeg" not in names
-    discovered = next(item for item in result["actions"] if item["cli"] == "opencode")
+    discovered = next(item for item in result["actions"] if item["cli"] == "pi")
     assert discovered["action"] == "configured"
     assert "PATH discovery" in discovered["detail"]
-    assert load_adapters()["opencode"].bin == "opencode"
+    assert load_adapters()["pi"].bin == "pi"
 
 
 def test_setup_with_cli_skips_path_discovery(tmp_path, monkeypatch):

@@ -14,10 +14,10 @@ CLI already working with you into the lead orchestrator: MindSync discovers avai
 workers, routes tasks by capability, supervises execution, and keeps every session
 aligned through shared focus, events, and durable memory.
 
-Use Codex, Claude, Antigravity/Gemini, Grok, Cursor, and Aider as one coordinated
-system—without introducing another hosted control plane. MindSync works locally by
-default, requires no MindSync account, and makes remote synchronization entirely
-optional.
+Use Codex, Claude, Antigravity/Gemini, Grok, Cursor, OpenCode, and Aider as one
+coordinated system—without introducing another hosted control plane. MindSync
+works locally by default, requires no MindSync account, and makes remote
+synchronization entirely optional.
 
 ## Why MindSync?
 
@@ -47,7 +47,7 @@ Human-facing CLI (orchestrator)
  │  MCP
  ▼
 MindSync AI
- ├── capability router ──────► Codex / Claude / AGY / Gemini / Grok / Cursor / Aider
+ ├── capability router ──────► Codex / Claude / AGY / Gemini / Grok / Cursor / OpenCode / Aider
  ├── focus + conflict map
  ├── event bus + job records
  ├── session memory (SQLite) ──► bounded context replayed on the next run
@@ -74,17 +74,16 @@ mindsync doctor
 mindsync agents
 ```
 
-`setup` registers known MCP hosts **and** scans PATH for other coding-agent
-CLIs (OpenCode, Windsurf, Amp, and the rest of the recognised agent names).
-Those land in the dispatch roster, and if one exposes `mcp add`, MindSync is
-installed as its MCP server. Heavy capability tags are never auto-assigned.
+`setup` registers known MCP hosts (Codex, Claude, Gemini, Grok, Cursor,
+OpenCode) **and** scans PATH for other **recognised** agent CLIs (seed names
+such as Windsurf, Amp, Hermes). Those land in the dispatch roster. MCP is
+installed only when MindSync has a real recipe for that CLI — it will not
+guess `mcp add` flags. Heavy capability tags are never auto-assigned.
 
-A binary MindSync does not recognise is **reported, not registered**. Deciding
-what an unknown binary is would mean running it, and discovery will not run a
-binary it cannot name: on an ordinary Linux host the name shapes alone also
-match `ssh-agent`, `pkttyagent` and local `*-fleet-restart` scripts. Anything
-that looks agent-ish but is unrecognised is listed as a suggestion, for you to
-add deliberately with `mindsync register <name>`.
+A binary MindSync does not recognise is **reported, not registered, and never
+executed**. Name shapes alone also match `ssh-agent`, `pkttyagent`, and local
+`*-fleet-restart` scripts. Suggestions are listed for you to add deliberately
+with `mindsync register`.
 
 Restart the configured CLI sessions. From then on, the CLI can use MindSync
 automatically; the user does not need to name a worker for every task. Session
@@ -124,6 +123,7 @@ one or both roles.
 | Antigravity (`agy`) | Via Gemini CLI host | Built in | Preferred worker backend in the Gemini/Antigravity family |
 | Grok CLI | Native | Built in | Research, reasoning, review, and security-oriented work |
 | Cursor Agent | JSON setup | Built in | Coding and repository work |
+| OpenCode | JSON setup | Built in | Writes `~/.config/opencode/opencode.jsonc`; `mcp add` is interactive |
 | Aider | — | Built in | Focused code editing worker |
 
 Antigravity and Gemini CLI are two execution backends in one logical
@@ -131,10 +131,11 @@ Antigravity and Gemini CLI are two execution backends in one logical
 the human-facing orchestrator, MindSync excludes both from automatic worker selection
 to prevent self-delegation.
 
-The table is the first-party preset list, not the full universe of CLIs.
-`mindsync setup` also picks up other PATH-installed coding-agent binaries.
-Detected known hosts without a supported registration surface are reported but
-never modified through guessed or undocumented configuration.
+The table is the first-party list. `mindsync setup` also picks up other
+PATH-installed CLIs **whose names it already knows**. Unknown binaries are
+suggested, not registered, and never executed. Detected known hosts without a
+supported registration surface are reported but never modified through guessed
+or undocumented configuration.
 
 ## Automatic orchestration
 
@@ -185,9 +186,9 @@ preventing duplicate edits.
 ### Custom workers
 
 `mindsync setup` is the usual onboarding path: install MindSync, run setup, and
-every PATH-installed agent CLI that looks like a coding agent should appear in
-`mindsync agents`. Use `register` when setup cannot see a binary (unusual name,
-not on PATH, or you want a custom roster name / extra capabilities):
+recognised agent CLIs on PATH appear in `mindsync agents`. Use `register` for
+an unusual name, a custom roster name, extra capabilities, or a CLI setup
+could not name:
 
 ```bash
 mindsync register --name vidur --bin opencode --capability coding --capability review
@@ -198,7 +199,7 @@ mindsync agents
 If the CLI has no MCP-management command, register still writes the dispatch roster
 and says so. Re-running is safe.
 
-Or add custom adapters to `~/.claude/agent-dispatch/agents.json`:
+Or add custom adapters to `~/.mindsync/dispatch/agents.json`:
 
 ```json
 {
@@ -335,8 +336,10 @@ mindsync-dispatch result <job-id>
 mindsync-dispatch cancel <job-id>
 ```
 
-Jobs live under `~/.claude/agent-dispatch/jobs/`; override this with
-`AGENT_DISPATCH_HOME`.
+Jobs live under `~/.mindsync/dispatch/jobs/`; override this with
+`AGENT_DISPATCH_HOME`. A one-time copy from the older
+`~/.claude/agent-dispatch` path runs automatically if that folder still
+exists.
 
 `--worktree` provides advisory isolation. Agents still run with the permissions of
 the current user, so task wording and working-directory boundaries must agree.
@@ -351,6 +354,21 @@ If native setup is unavailable, register the server manually:
     "mindsync": {
       "command": "python",
       "args": ["-m", "mindsync.server"]
+    }
+  }
+}
+```
+
+OpenCode uses `~/.config/opencode/opencode.jsonc` instead of `mcpServers`:
+
+```json
+{
+  "mcp": {
+    "mindsync": {
+      "type": "local",
+      "command": ["python", "-m", "mindsync.server"],
+      "enabled": true,
+      "environment": { "MINDSYNC_CALLER_CLI": "opencode" }
     }
   }
 }

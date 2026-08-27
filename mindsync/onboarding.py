@@ -35,6 +35,8 @@ CLI_SPECS: dict[str, CliSpec] = {
     "gemini": CliSpec("gemini", "gemini", ("mcp", "list"), "gemini", ("mcp", "remove", "mindsync")),
     "grok": CliSpec("grok", "grok", ("mcp", "list", "--json"), "grok", ("mcp", "remove", "mindsync")),
     "cursor": CliSpec("cursor", "cursor-agent", ("mcp", "list"), "cursor-json"),
+    # OpenCode's `mcp add` is interactive; we write ~/.config/opencode/opencode.jsonc.
+    "opencode": CliSpec("opencode", "opencode", None, "opencode-json"),
     # Antigravity and Gemini CLI are backends in one Google/Gemini family. The
     # current AGY CLI has no MCP-management command, so Gemini CLI is the host.
     "agy": CliSpec("agy", "agy", None, None),
@@ -148,6 +150,36 @@ def cursor_config_path(user_home: Path | None = None) -> Path:
     return (user_home or Path.home()) / ".cursor" / "mcp.json"
 
 
+def opencode_config_dir(user_home: Path | None = None) -> Path:
+    return (user_home or Path.home()) / ".config" / "opencode"
+
+
+def opencode_config_path(user_home: Path | None = None) -> Path:
+    directory = opencode_config_dir(user_home)
+    jsonc = directory / "opencode.jsonc"
+    json_file = directory / "opencode.json"
+    if jsonc.is_file():
+        return jsonc
+    if json_file.is_file():
+        return json_file
+    return jsonc
+
+
+def _opencode_mcp_map(data: dict[str, Any]) -> dict[str, Any] | None:
+    mcp = data.get("mcp")
+    if not isinstance(mcp, dict):
+        return None
+    servers = mcp.get("servers")
+    if isinstance(servers, dict):
+        return servers
+    return mcp
+
+
+def _opencode_has_mindsync(data: dict[str, Any]) -> bool:
+    bucket = _opencode_mcp_map(data)
+    return bool(bucket) and "mindsync" in bucket
+
+
 def cursor_is_configured(user_home: Path | None = None) -> bool:
     path = cursor_config_path(user_home)
     if not path.is_file():
@@ -171,6 +203,22 @@ def _cursor_config_state(user_home: Path | None = None) -> tuple[bool, str | Non
     if servers is not None and not isinstance(servers, dict):
         return False, f"mcpServers in {path} is not an object"
     return "mindsync" in (servers or {}), None
+
+
+def _opencode_config_state(user_home: Path | None = None) -> tuple[bool, str | None]:
+    path = opencode_config_path(user_home)
+    if not path.is_file():
+        return False, None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return False, f"Invalid JSON at {path}: {exc}"
+    if not isinstance(data, dict):
+        return False, f"OpenCode config {path} is not an object"
+    mcp = data.get("mcp")
+    if mcp is not None and not isinstance(mcp, dict):
+        return False, f"mcp in {path} is not an object"
+    return _opencode_has_mindsync(data), None
 
 
 def cli_status(
@@ -203,6 +251,15 @@ def cli_status(
         }
     if spec.add_style == "cursor-json":
         configured, detail = _cursor_config_state(user_home)
+        return {
+            "cli": cli_name,
+            "installed": True,
+            "supported": True,
+            "configured": configured,
+            "detail": detail,
+        }
+    if spec.add_style == "opencode-json":
+        configured, detail = _opencode_config_state(user_home)
         return {
             "cli": cli_name,
             "installed": True,
@@ -269,6 +326,71 @@ def _write_cursor_config(
     }
     atomic_private_write(path, json.dumps(data, indent=2) + "\n")
     return {"cli": "cursor", "action": "configured", "path": str(path), "backup": backup}
+
+
+def _write_opencode_config(
+    *,
+    user_home: Path,
+    force: bool,
+    dry_run: bool,
+    python_exe: str,
+) -> dict[str, Any]:
+    path = opencode_config_path(user_home)
+    data: dict[str, Any] = {}
+    original_text: str | None = None
+    if path.is_file():
+        try:
+            original_text = path.read_text(encoding="utf-8")
+            parsed = json.loads(original_text)
+        except json.JSONDecodeError as exc:
+            return {"cli": "opencode", "action": "error", "detail": f"Invalid JSON at {path}: {exc}"}
+        if not isinstance(parsed, dict):
+            return {"cli": "opencode", "action": "error", "detail": f"{path} is not an object"}
+        data = parsed
+        if _opencode_has_mindsync(data) and not force:
+            return {"cli": "opencode", "action": "already_configured", "path": str(path)}
+    if dry_run:
+        return {"cli": "opencode", "action": "would_configure", "path": str(path)}
+
+    mcp = data.setdefault("mcp", {})
+    if not isinstance(mcp, dict):
+        return {"cli": "opencode", "action": "error", "detail": f"mcp in {path} is not an object"}
+    bucket = mcp["servers"] if isinstance(mcp.get("servers"), dict) else mcp
+    bucket["mindsync"] = {
+        "type": "local",
+        "command": [python_exe, "-m", "mindsync.server"],
+        "enabled": True,
+        "environment": _server_env("opencode"),
+    }
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup = None
+    if path.is_file():
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        backup_path = path.with_name(f"{path.stem}.{stamp}.{secrets.token_hex(3)}{path.suffix}.bak")
+        atomic_private_write(backup_path, original_text or "")
+        backup = str(backup_path)
+    atomic_private_write(path, json.dumps(data, indent=2) + "\n")
+    return {"cli": "opencode", "action": "configured", "path": str(path), "backup": backup}
+
+
+def configure_json_host(
+    cli_name: str,
+    *,
+    user_home: Path,
+    force: bool,
+    dry_run: bool,
+    python_exe: str,
+) -> dict[str, Any]:
+    if cli_name == "cursor":
+        return _write_cursor_config(
+            user_home=user_home, force=force, dry_run=dry_run, python_exe=python_exe
+        )
+    if cli_name == "opencode":
+        return _write_opencode_config(
+            user_home=user_home, force=force, dry_run=dry_run, python_exe=python_exe
+        )
+    raise ValueError(f"CLI '{cli_name}' has no JSON host writer")
 
 
 CODEX_HOOK_COMMAND = "mindsync-codex-hook"
@@ -497,9 +619,11 @@ def setup(
             action = "worker_only" if status.get("worker_only") else "unsupported"
             actions.append({"cli": name, "action": action, "detail": status.get("detail")})
             continue
-        if name == "cursor":
+        spec = CLI_SPECS[name]
+        if spec.add_style in {"cursor-json", "opencode-json"}:
             actions.append(
-                _write_cursor_config(
+                configure_json_host(
+                    name,
                     user_home=home,
                     force=force,
                     dry_run=dry_run,
@@ -513,7 +637,6 @@ def setup(
         if status["configured"] and not force:
             actions.append({"cli": name, "action": "already_configured"})
             continue
-        spec = CLI_SPECS[name]
         resolved = resolver(spec.bin)
         if dry_run:
             actions.append({"cli": name, "action": "would_configure", "command": registration_args(name, python)})

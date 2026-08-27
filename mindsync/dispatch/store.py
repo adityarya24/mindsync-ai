@@ -1,15 +1,15 @@
-"""Job store under ~/.claude/agent-dispatch/jobs/ with PID reconciliation."""
+"""Job store under ~/.mindsync/dispatch/jobs/ with PID reconciliation."""
 
 from __future__ import annotations
 
 import json
-import os
 import re
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from mindsync.config import dispatch_home
 from mindsync.dispatch.proc import is_alive, names_match, process_name
 from mindsync.storage import atomic_private_write, file_lock
 
@@ -17,9 +17,7 @@ _JOB_ID_RE = re.compile(r"^[0-9a-z]+-[0-9a-f]+$", re.I)
 
 
 def jobs_root() -> Path:
-    env = os.environ.get("AGENT_DISPATCH_HOME")
-    home = Path(env) if env else Path.home() / ".claude" / "agent-dispatch"
-    return home / "jobs"
+    return dispatch_home() / "jobs"
 
 
 def _active_auto_root() -> Path:
