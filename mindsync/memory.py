@@ -719,7 +719,8 @@ def memory_checkpoint(
     db.execute("BEGIN IMMEDIATE")
     try:
         session_row = db.execute(
-            "SELECT project_key FROM sessions WHERE session_id = ?", (session_id,)
+            "SELECT project_key, ended_at FROM sessions WHERE session_id = ?",
+            (session_id,),
         ).fetchone()
         if session_row is None:
             raise ValueError(f"Unknown session {session_id}")
@@ -733,6 +734,12 @@ def memory_checkpoint(
                     raise ValueError(
                         f"checkpoint_id {checkpoint_id} already belongs to another session"
                     )
+                if session_row["ended_at"] is not None:
+                    # A dispatch retry can arrive after session_end committed.
+                    # The existing checkpoint is already durable, so a retry
+                    # must not resurrect the terminal session or add facts.
+                    db.execute("COMMIT")
+                    return checkpoint_id
                 # The checkpoint row is already there, but the caller's status
                 # may not have been applied — a crash between the insert and
                 # the caller's own bookkeeping leaves exactly that state. Apply
@@ -746,6 +753,8 @@ def memory_checkpoint(
                 db.execute("COMMIT")
                 _harden_db_files(settings.memory_db_file)
                 return checkpoint_id
+        if session_row["ended_at"] is not None:
+            raise ValueError(f"Session {session_id} has already ended")
         db.execute(
             """
             INSERT INTO checkpoints (
@@ -790,12 +799,26 @@ def memory_checkpoint(
 def session_end(session_id: str, status: str = "completed") -> None:
     session_id = _validate_session_id(session_id)
     status = _redact_text(_validate_identifier(status, "status", _STATUS_MAX))
-    cursor = _get_db().execute(
-        "UPDATE sessions SET status = ?, ended_at = ? WHERE session_id = ?",
-        (status, _utc_now(), session_id),
-    )
-    if cursor.rowcount == 0:
-        raise ValueError(f"Unknown session {session_id}")
+    db = _get_db()
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        session_row = db.execute(
+            "SELECT ended_at FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        if session_row is None:
+            raise ValueError(f"Unknown session {session_id}")
+        if session_row["ended_at"] is not None:
+            db.execute("COMMIT")
+            return
+        db.execute(
+            "UPDATE sessions SET status = ?, ended_at = ? "
+            "WHERE session_id = ? AND ended_at IS NULL",
+            (status, _utc_now(), session_id),
+        )
+        db.execute("COMMIT")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
     _harden_db_files(settings.memory_db_file)
 
 
