@@ -6,12 +6,12 @@
   <title>MindSync AI — One orchestrator. Your coding agents. Shared context.</title>
   <meta name="description" content="MindSync AI is a local-first MCP orchestration layer for coding agents. Route tasks by capability, prevent file conflicts, and keep session memory across runs. MIT licensed, no account required." />
   <meta property="og:title" content="MindSync AI — One orchestrator. Your coding agents. Shared context." />
-  <meta property="og:description" content="A local-first MCP orchestration layer for coding agents. Codex, Claude, Gemini, Grok, Cursor and Aider as one coordinated system." />
+  <meta property="og:description" content="A local-first MCP orchestration layer for coding agents. Codex, Claude, Gemini, Grok, Cursor, OpenCode and Aider as one coordinated system." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://adityarya24.github.io/mindsync-ai/" />
   <meta property="og:image" content="https://avatars.githubusercontent.com/u/82873763?v=4" />
   <meta name="twitter:card" content="summary" />
-  <meta name="generator" content="MindSync landing v2.1" />
+  <meta name="generator" content="MindSync landing v2.2" />
   <link rel="canonical" href="https://adityarya24.github.io/mindsync-ai/" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%2309090b'/><text x='32' y='44' font-family='monospace' font-size='30' font-weight='700' fill='%2334d399' text-anchor='middle'>ms</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -543,7 +543,7 @@
         </p>
         <div class="trust">
           <div><b id="stat-downloads">469</b><span>installs · last 30 days</span></div>
-          <div><b id="stat-clis">7+</b><span>CLIs wired · any harness works</span></div>
+          <div><b id="stat-clis">8</b><span>first-party CLIs · more via register</span></div>
           <div><b>0</b><span>servers · runs on your machine</span></div>
         </div>
         <div class="cta">
@@ -554,12 +554,13 @@
       <div class="install-card">
         <div class="bar">
           <span class="ttl">terminal</span>
-          <button class="copy-btn" data-copy="pip install mindsync-ai&#10;mindsync setup --mode auto&#10;mindsync doctor">copy</button>
+          <button class="copy-btn" data-copy="pip install mindsync-ai&#10;mindsync setup --mode auto&#10;mindsync doctor&#10;mindsync agents">copy</button>
         </div>
         <pre><div class="cmd-row"><span><span class="prompt-char">$</span> pip install mindsync-ai</span></div>
 <div class="cmd-row"><span><span class="prompt-char">$</span> mindsync setup <span style="color:var(--accent)">--mode</span> auto</span></div>
 <div class="cmd-row"><span><span class="prompt-char">$</span> mindsync doctor</span></div>
-<div class="cmd-row"><span class="t-ok" id="install-status">✓ 3 CLIs detected · 2 registered as workers</span></div></pre>
+<div class="cmd-row"><span><span class="prompt-char">$</span> mindsync agents</span></div>
+<div class="cmd-row"><span class="t-ok" id="install-status">✓ known hosts configured · recognised workers on PATH</span></div></pre>
         <p class="install-note">Idempotent setup — existing MCP registrations preserved unless <code>--force</code>.</p>
       </div>
     </div>
@@ -576,7 +577,7 @@
         <div class="bar">
           <div class="dots"><i></i><i></i><i></i></div>
           <span class="ttl">mindsync — dispatch</span>
-          <button class="copy-btn" data-copy='mindsync dispatch "fix the auth token refresh bug in src/auth/"'>copy command</button>
+          <button class="copy-btn" data-copy='mindsync-dispatch run auto "fix the auth token refresh bug in src/auth/"'>copy command</button>
         </div>
         <div class="term-body" id="demo-terminal"></div>
       </div>
@@ -606,12 +607,12 @@ and the memory. for every task.</span></pre>
       </div>
       <div class="ba good">
         <div class="head"><span>with mindsync</span><span>orchestrated</span></div>
-        <pre><span class="g-ok">$ mindsync dispatch "fix auth bug"</span>
+        <pre><span class="g-ok">$ mindsync-dispatch run auto "fix auth bug"</span>
 <span class="g-route">◆ routed → codex (fit 0.92)</span>
 <span class="g-info">◆ focus lock: src/auth.py held</span>
 <span class="g-dim">  …worker implements…</span>
 <span class="g-ok">✓ done · decision saved to memory</span>
-<span class="g-ok">$ mindsync dispatch "add auth tests"</span>
+<span class="g-ok">$ mindsync-dispatch run auto "add auth tests"</span>
 <span class="g-info">◆ conflict avoided → routed to claude,
   waits on codex's lock release</span>
 <span class="g-ok">✓ done · context replayed, not re-explained</span>
@@ -656,7 +657,7 @@ keeps its own state.</span></pre>
       <div class="flow-arrow">▼ routes by capability</div>
       <div>
         <div class="workers-chips">
-          <span class="chip">Codex</span><span class="chip">Claude</span><span class="chip">Gemini CLI</span><span class="chip">Antigravity (agy)</span><span class="chip">Grok</span><span class="chip">Cursor Agent</span><span class="chip">Aider</span>
+          <span class="chip">Codex</span><span class="chip">Claude</span><span class="chip">Gemini CLI</span><span class="chip">Antigravity (agy)</span><span class="chip">Grok</span><span class="chip">Cursor Agent</span><span class="chip">OpenCode</span><span class="chip">Aider</span>
         </div>
       </div>
     </div>
@@ -692,7 +693,7 @@ keeps its own state.</span></pre>
 <span class="t-dim">project   facts  blockers  decisions</span>
 my-repo      47         2         12
 
-<span class="t-prompt">$</span> <span class="t-cmd">mindsync dispatch "continue the migration"</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mindsync-dispatch run auto "continue the migration"</span>
 <span class="t-info">◆ replaying context (bounded, priority-ordered)</span>
 <span class="t-dim">  · 3 durable facts packed</span>
 <span class="t-dim">  · 1 unresolved blocker surfaced</span>
@@ -707,7 +708,7 @@ my-repo      47         2         12
   <div class="wrap">
     <div class="label">// Supported workers</div>
     <h2>Use them as one system.</h2>
-    <p class="lede">MindSync separates the MCP host from the worker backend. A CLI may act as either, or both — without locking you into a single model or provider. These seven are the ones we run daily — <strong>any agent harness with an MCP-compatible registration surface works as a worker</strong>, and unsupported clients are detected and reported, never guessed at.</p>
+    <p class="lede">MindSync separates the MCP host from the worker backend. A CLI may act as either, or both — without locking you into a single model or provider. These eight are first-party. Setup also picks up other PATH-installed CLIs <strong>whose names it already knows</strong>. Unknown binaries are suggested, not registered, and never executed.</p>
     <div class="table-scroll">
       <table>
         <thead>
@@ -720,12 +721,13 @@ my-repo      47         2         12
           <tr><td>Antigravity (<code>agy</code>)</td><td class="w">Via Gemini CLI host</td><td class="w">Preferred backend in that family</td></tr>
           <tr><td>Grok CLI</td><td class="w">Native</td><td class="w">Research, reasoning, review, security work</td></tr>
           <tr><td>Cursor Agent</td><td class="w">JSON setup</td><td class="w">Coding and repository work</td></tr>
+          <tr><td>OpenCode</td><td class="w">JSON setup</td><td class="w">Coding, review, repository work</td></tr>
           <tr><td>Aider</td><td class="w">—</td><td class="w">Focused code editing</td></tr>
         </tbody>
       </table>
     </div>
     <p class="lede" style="margin-top:1.5rem; font-size:0.9rem">
-      The seven above are first-class and battle-tested daily — but they are not a whitelist. Any harness that exposes a documented registration surface can be onboarded; detected-but-unsupported clients are reported, never modified through guessed configuration.
+      First-party hosts get a real MCP recipe (native <code>mcp add</code> or a known JSON file). A new CLI with an unusual name lands via <code>mindsync register</code>. Setup will not guess <code>mcp add</code> flags or run a binary it cannot name.
     </p>
   </div>
 </section>
@@ -744,14 +746,14 @@ my-repo      47         2         12
       <div class="step">
         <span class="sn">step 2</span>
         <h3>Onboard your CLIs</h3>
-        <p>Detects installed agents, registers workers. Idempotent and previewable.</p>
+        <p>Registers known MCP hosts and recognised PATH workers. Idempotent and previewable.</p>
         <code class="cmd">mindsync setup --mode auto</code>
       </div>
       <div class="step">
         <span class="sn">step 3</span>
         <h3>Verify &amp; dispatch</h3>
-        <p>Check health, then hand out your first task.</p>
-        <code class="cmd">mindsync doctor &amp;&amp; mindsync dispatch "…"</code>
+        <p>Check health, inspect the roster, then hand out a task.</p>
+        <code class="cmd">mindsync doctor &amp;&amp; mindsync agents</code>
       </div>
     </div>
     <p class="lede" style="margin-top:1.5rem">
@@ -774,11 +776,15 @@ my-repo      47         2         12
     </details>
     <details>
       <summary>Does it modify my CLI installations?<span class="pm">+</span></summary>
-      <p>Only through each CLI's official, documented registration surface (native MCP setup or JSON config). Setup is idempotent — existing registrations are preserved unless you pass <code>--force</code>, and <code>--dry-run</code> previews everything first. Unsupported clients are reported, never guessed at.</p>
+      <p>Only through each CLI's official, documented registration surface (native <code>mcp add</code> or a known JSON config, including OpenCode's <code>opencode.jsonc</code>). Setup is idempotent — existing registrations are preserved unless you pass <code>--force</code>, and <code>--dry-run</code> previews everything first. Unknown binaries are listed as suggestions and never executed. Unusual names use <code>mindsync register</code>.</p>
     </details>
     <details>
       <summary>Can workers talk to each other?<span class="pm">+</span></summary>
       <p>No — deliberately. Delegated workers receive bounded tasks and cannot recursively delegate. Planning, authorization, integration, and the final answer stay with your human-facing CLI, so there is always one accountable chain of command.</p>
+    </details>
+    <details>
+      <summary>I installed a new CLI. Will setup pick it up?<span class="pm">+</span></summary>
+      <p>If MindSync already knows the name (Codex, Claude, Gemini, Grok, Cursor, OpenCode, Aider, and a short seed list), <code>mindsync setup</code> will register it. An unusual binary is listed as a suggestion — add it with <code>mindsync register --name … --bin …</code>, then confirm in <code>mindsync agents</code>. Do not trust an agent that only says it registered.</p>
     </details>
   </div>
 </section>
@@ -836,7 +842,7 @@ my-repo      47         2         12
     if (!el) return;
 
     var LINES = [
-      { cls: '',           parts: [['t-prompt', '$ '], ['t-cmd', 'mindsync dispatch "fix the auth token refresh bug in src/auth/"']] },
+      { cls: '',           parts: [['t-prompt', '$ '], ['t-cmd', 'mindsync-dispatch run auto "fix the auth token refresh bug in src/auth/"']] },
       { cls: '',           parts: [['t-dim', '  analyzing task…']] },
       { cls: '',           parts: [['t-route', ''], ['g-route', '◆ routing: 3 workers eligible']] },
       { cls: '',           parts: [['g-dim', '    codex   fit 0.92  available  ← selected']] },
@@ -955,7 +961,7 @@ my-repo      47         2         12
     var el = document.getElementById('install-status');
     if (!el) return;
     var msgs = [
-      ['t-ok', '✓ 3 CLIs detected · 2 registered as workers'],
+      ['t-ok', '✓ known hosts configured · recognised workers on PATH'],
       ['t-info', '◆ focus map ready · 0 conflicts'],
       ['t-ok', '✓ memory online · 12 facts from last session'],
       ['g-route', '◆ router armed · dispatch when ready']
