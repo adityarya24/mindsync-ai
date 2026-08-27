@@ -63,6 +63,14 @@ def _print_setup(result: dict[str, Any]) -> None:
     else:
         print(f"Policy: {result['policy_file']}")
         print("Restart configured CLIs so they load MindSync and its orchestration instructions.")
+        if any(
+            action.get("cli") == "codex-hook" and action.get("action") == "configured"
+            for action in result["actions"]
+        ):
+            print(
+                "Codex standalone memory hooks were registered at ~/.codex/hooks.json. "
+                "Trust them in Codex if prompted, then restart the session."
+            )
 
 
 def _print_doctor(report: dict[str, Any]) -> None:
@@ -103,6 +111,27 @@ def _print_doctor(report: dict[str, Any]) -> None:
         for family, backends in families.items()
     ]
     print(f"  workers  {', '.join(available) if available else 'none available'}")
+    memory = report.get("memory") or {}
+    if memory.get("db_error"):
+        print(f"  memory   FAIL — {memory['db_error']}")
+    else:
+        git_bit = (
+            f"git identity {memory['git_project']}"
+            if memory.get("git_project")
+            else "no git identity in this directory (dispatch memory stays off here)"
+        )
+        print(
+            f"  memory   OK — {memory.get('sessions', 0)} sessions, "
+            f"{memory.get('facts', 0)} facts, {git_bit}"
+        )
+    hooks = memory.get("codex_hooks") or {}
+    if hooks.get("configured"):
+        shown = ", ".join(hooks.get("paths") or [])
+        print(f"  hooks    configured — {shown}")
+    else:
+        print(
+            "  hooks    missing — Codex standalone memory is off until you run mindsync setup"
+        )
     for issue in report["issues"]:
         print(f"  issue    {issue}")
 
@@ -282,8 +311,13 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser.add_argument("--cli", action="append", choices=sorted(CLI_SPECS))
     setup_parser.add_argument("--dry-run", action="store_true")
     setup_parser.add_argument("--force", action="store_true")
+    setup_parser.add_argument(
+        "--no-hooks",
+        action="store_true",
+        help="Skip Codex standalone memory hook registration",
+    )
 
-    doctor_parser = sub.add_parser("doctor", help="Diagnose policy, CLI registration, and workers")
+    doctor_parser = sub.add_parser("doctor", help="Diagnose policy, CLI registration, workers, and memory")
     doctor_parser.add_argument("--json", action="store_true")
 
     config_parser = sub.add_parser("config", help="Read or change orchestration policy")
@@ -443,6 +477,7 @@ def main(argv: list[str] | None = None) -> int:
                 cli_names=args.cli,
                 dry_run=args.dry_run,
                 force=args.force,
+                install_hooks=not args.no_hooks,
             )
         except (OSError, TimeoutError, ValueError) as exc:
             print(f"Setup failed: {exc}", file=sys.stderr)

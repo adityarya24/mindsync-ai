@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import mindsync.config as config_mod
+import mindsync.memory as memory_mod
 import mindsync.onboarding as onboarding
 import mindsync.orchestration as orchestration
 import mindsync.storage as storage
@@ -49,6 +50,8 @@ def _isolate(tmp_path, monkeypatch):
     config_mod.settings = settings
     storage.settings = settings
     orchestration.settings = settings
+    memory_mod.settings = settings
+    memory_mod._close_local_db()
     settings.ensure_dirs()
     return settings
 
@@ -96,6 +99,9 @@ def test_setup_dry_run_is_non_mutating_and_reports_unsupported(tmp_path, monkeyp
     assert result["actions"][0]["action"] == "would_configure"
     assert result["actions"][1]["action"] == "worker_only"
     assert "Gemini/Antigravity family" in result["actions"][1]["detail"]
+    assert result["actions"][2]["action"] == "would_configure"
+    assert result["actions"][2]["cli"] == "codex-hook"
+    assert not (tmp_path / "user" / ".codex" / "hooks.json").exists()
     assert not any(args[:2] == ["mcp", "add"] for _, args in runner.calls)
 
 
@@ -115,7 +121,14 @@ def test_setup_registers_command_cli_and_cursor_idempotently(tmp_path, monkeypat
     )
     assert first["ok"] is True
     assert orchestration.load_policy().mode == "suggest"
-    assert [item["action"] for item in first["actions"]] == ["configured", "configured"]
+    assert [item["action"] for item in first["actions"]] == [
+        "configured",
+        "configured",
+        "configured",
+    ]
+    assert first["actions"][2]["cli"] == "codex-hook"
+    hooks = json.loads(Path(first["actions"][2]["path"]).read_text(encoding="utf-8"))
+    assert onboarding._hooks_cover_mindsync(hooks)
     cursor_data = json.loads(
         onboarding.cursor_config_path(user_home).read_text(encoding="utf-8")
     )
@@ -133,6 +146,7 @@ def test_setup_registers_command_cli_and_cursor_idempotently(tmp_path, monkeypat
         python_exe="python-test",
     )
     assert [item["action"] for item in second["actions"]] == [
+        "already_configured",
         "already_configured",
         "already_configured",
     ]
@@ -192,12 +206,15 @@ def test_setup_stops_when_list_command_fails(tmp_path, monkeypatch):
         cli_names=["codex"],
         runner=failed_list,
         resolver=_resolver,
+        user_home=tmp_path / "user",
         policy_file=settings.orchestration_file,
     )
     assert result["ok"] is False
-    assert result["actions"] == [
-        {"cli": "codex", "action": "error", "detail": "cannot inspect config"}
-    ]
+    assert result["actions"][0] == {
+        "cli": "codex",
+        "action": "error",
+        "detail": "cannot inspect config",
+    }
 
 
 def test_doctor_reports_hosts_policy_and_worker_inventory(tmp_path, monkeypatch):
@@ -248,3 +265,117 @@ def test_doctor_reports_invalid_cursor_json(tmp_path):
     )
     assert status["configured"] is False
     assert "Invalid JSON" in status["detail"]
+
+
+def test_setup_skips_codex_hooks_when_disabled_or_codex_missing(tmp_path, monkeypatch):
+    settings = _isolate(tmp_path, monkeypatch)
+    user_home = tmp_path / "user"
+
+    skipped = onboarding.setup(
+        cli_names=["cursor"],
+        runner=FakeCliRunner(),
+        resolver=_resolver,
+        user_home=user_home,
+        policy_file=settings.orchestration_file,
+        python_exe="python-test",
+        install_hooks=True,
+    )
+    assert all(item["cli"] != "codex-hook" for item in skipped["actions"])
+    assert not onboarding.codex_hooks_path(user_home).exists()
+
+    opted_out = onboarding.setup(
+        cli_names=["codex"],
+        runner=FakeCliRunner(),
+        resolver=_resolver,
+        user_home=user_home,
+        policy_file=settings.orchestration_file,
+        python_exe="python-test",
+        install_hooks=False,
+    )
+    assert all(item["cli"] != "codex-hook" for item in opted_out["actions"])
+    assert not onboarding.codex_hooks_path(user_home).exists()
+
+
+def test_codex_hooks_merge_preserves_existing_entries(tmp_path):
+    user_home = tmp_path / "user"
+    path = onboarding.codex_hooks_path(user_home)
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {"type": "command", "command": "echo keep-me"}
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = onboarding._write_codex_hooks(
+        user_home=user_home, force=False, dry_run=False
+    )
+    assert result["action"] == "configured"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert onboarding._hooks_cover_mindsync(data)
+    assert any(
+        hook.get("command") == "echo keep-me"
+        for group in data["hooks"]["Stop"]
+        for hook in group.get("hooks", [])
+    )
+    assert result["backup"] and Path(result["backup"]).is_file()
+
+
+def test_bundled_codex_hooks_match_repo_example():
+    example = json.loads(
+        (Path(__file__).resolve().parents[1] / ".codex" / "hooks.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert example == onboarding.bundled_codex_hooks_config()
+
+
+def test_doctor_reports_memory_and_missing_hooks(tmp_path, monkeypatch):
+    settings = _isolate(tmp_path, monkeypatch)
+    orchestration.save_policy(orchestration.OrchestrationPolicy(mode="auto"))
+    runner = FakeCliRunner()
+    runner.configured.add("mindsync")
+    workspace = tmp_path / "not-a-git-repo"
+    workspace.mkdir()
+
+    report = onboarding.doctor(
+        runner=runner,
+        resolver=_resolver,
+        user_home=tmp_path / "user",
+        policy_file=settings.orchestration_file,
+        cwd=workspace,
+    )
+
+    assert report["ok"] is True
+    assert report["memory"]["db_open"] is True
+    assert report["memory"]["sessions"] == 0
+    assert report["memory"]["git_project"] is None
+    assert report["memory"]["codex_hooks"]["configured"] is False
+
+
+def test_doctor_sees_user_level_codex_hooks(tmp_path, monkeypatch):
+    settings = _isolate(tmp_path, monkeypatch)
+    user_home = tmp_path / "user"
+    onboarding._write_codex_hooks(user_home=user_home, force=False, dry_run=False)
+
+    report = onboarding.doctor(
+        runner=FakeCliRunner(),
+        resolver=_resolver,
+        user_home=user_home,
+        policy_file=settings.orchestration_file,
+        cwd=tmp_path,
+    )
+    assert report["memory"]["codex_hooks"]["configured"] is True
+    assert report["memory"]["codex_hooks"]["user_path"] == str(
+        onboarding.codex_hooks_path(user_home)
+    )
