@@ -558,21 +558,22 @@ def test_prune_protects_durable_fact_in_any_checkpoint():
     assert remaining == {durable_mid}
 
 
-def test_prune_rechecks_protection_at_deletion_time():
+def test_prune_ignores_rejected_post_end_checkpoint():
     target = session_start(project_key="prune-recheck", agent="agent")
     session_end(target)
 
     dry = memory_prune(project_key="prune-recheck", dry_run=True)
     assert dry["candidates"] == 1
 
-    # A durable checkpoint lands after the dry run saw the candidate.
-    memory_checkpoint(target, durable_facts=["arrived late"])
+    # Terminal sessions cannot be protected by a late checkpoint.
+    with pytest.raises(ValueError, match="already ended"):
+        memory_checkpoint(target, durable_facts=["arrived late"])
 
     result = memory_prune(project_key="prune-recheck", dry_run=False)
-    assert result["deleted"] == 0
-    assert result["protected_durable"] == 1
+    assert result["deleted"] == 1
+    assert result["protected_durable"] == 0
     stats = memory_stats()
-    assert stats["total_sessions"] == 1
+    assert stats["total_sessions"] == 0
 
 
 def test_memory_prune_rejects_non_bool_dry_run():
@@ -1087,3 +1088,113 @@ def test_retried_checkpoint_applies_the_status_it_carries():
     assert db.execute(
         "SELECT COUNT(*) FROM checkpoints WHERE checkpoint_id = 'a1b2c3d4e5f600112233445566778899'"
     ).fetchone()[0] == 1
+
+
+def test_new_checkpoint_after_session_end_is_rejected_without_mutation():
+    session_id = session_start(project_key="terminal", agent="agent")
+    memory_checkpoint(session_id, durable_facts=["before end"])
+    session_end(session_id, status="completed")
+
+    db = _get_db()
+    before = db.execute(
+        "SELECT status, ended_at FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    before_checkpoints = db.execute(
+        "SELECT COUNT(*) FROM checkpoints WHERE session_id = ?", (session_id,)
+    ).fetchone()[0]
+    before_facts = db.execute(
+        "SELECT COUNT(*) FROM facts WHERE project_key = 'terminal'"
+    ).fetchone()[0]
+
+    with pytest.raises(ValueError, match="already ended"):
+        memory_checkpoint(
+            session_id,
+            status="resurrected",
+            decisions=["must not be stored"],
+            durable_facts=["after end"],
+            checkpoint_id="c" * 32,
+        )
+
+    after = db.execute(
+        "SELECT status, ended_at FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    assert dict(after) == dict(before)
+    assert db.execute(
+        "SELECT COUNT(*) FROM checkpoints WHERE session_id = ?", (session_id,)
+    ).fetchone()[0] == before_checkpoints
+    assert db.execute(
+        "SELECT COUNT(*) FROM facts WHERE project_key = 'terminal'"
+    ).fetchone()[0] == before_facts
+    assert db.execute(
+        "SELECT 1 FROM facts WHERE project_key = 'terminal' AND text = 'after end'"
+    ).fetchone() is None
+
+
+def test_existing_checkpoint_retry_after_session_end_is_a_terminal_noop():
+    session_id = session_start(project_key="terminal-retry", agent="agent")
+    checkpoint_id = "d" * 32
+    memory_checkpoint(
+        session_id,
+        status="working",
+        decisions=["durable checkpoint"],
+        durable_facts=["before terminal retry"],
+        checkpoint_id=checkpoint_id,
+    )
+    session_end(session_id, status="completed")
+
+    db = _get_db()
+    before_session = db.execute(
+        "SELECT status, ended_at FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    before_checkpoint = db.execute(
+        "SELECT * FROM checkpoints WHERE checkpoint_id = ?", (checkpoint_id,)
+    ).fetchone()
+    before_facts = db.execute(
+        "SELECT fact_id, source_count FROM facts "
+        "WHERE project_key = 'terminal-retry' ORDER BY fact_id"
+    ).fetchall()
+
+    assert (
+        memory_checkpoint(
+            session_id,
+            status="should not overwrite",
+            decisions=["retry payload must not mutate"],
+            durable_facts=["must not add on retry"],
+            checkpoint_id=checkpoint_id,
+        )
+        == checkpoint_id
+    )
+
+    after_session = db.execute(
+        "SELECT status, ended_at FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    after_checkpoint = db.execute(
+        "SELECT * FROM checkpoints WHERE checkpoint_id = ?", (checkpoint_id,)
+    ).fetchone()
+    after_facts = db.execute(
+        "SELECT fact_id, source_count FROM facts "
+        "WHERE project_key = 'terminal-retry' ORDER BY fact_id"
+    ).fetchall()
+    assert dict(after_session) == dict(before_session)
+    assert dict(after_checkpoint) == dict(before_checkpoint)
+    assert [dict(row) for row in after_facts] == [dict(row) for row in before_facts]
+    assert db.execute(
+        "SELECT 1 FROM facts "
+        "WHERE project_key = 'terminal-retry' AND text = 'must not add on retry'"
+    ).fetchone() is None
+
+
+def test_session_end_is_idempotent_and_preserves_original_terminal_values():
+    session_id = session_start(project_key="terminal-end", agent="agent")
+    session_end(session_id, status="completed")
+    db = _get_db()
+    before = db.execute(
+        "SELECT status, ended_at FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+
+    session_end(session_id, status="failed")
+
+    after = db.execute(
+        "SELECT status, ended_at FROM sessions WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    assert dict(after) == dict(before)

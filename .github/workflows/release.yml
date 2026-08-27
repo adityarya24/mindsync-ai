@@ -11,19 +11,34 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: read
+      contents: read
     steps:
+      - name: Checkout repository history
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+
+      - name: Verify tagged commit belongs to master
+        run: |
+          sha="${GITHUB_SHA}"
+          git fetch --no-tags origin master
+          if ! git merge-base --is-ancestor "$sha" origin/master; then
+            echo "::error::Tagged commit $sha is not reachable from origin/master. Refusing to release."
+            exit 1
+          fi
+
       - name: Check CI workflow conclusion for this commit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           sha="${{ github.sha }}"
           repo="${{ github.repository }}"
-          echo "Checking CI (ci.yml) status for tagged commit $sha"
-          conclusion=$(gh api "repos/${repo}/actions/workflows/ci.yml/runs?head_sha=${sha}&status=completed&per_page=1" \
-            --jq '.workflow_runs[0].conclusion // "missing"')
-          echo "CI conclusion: $conclusion"
-          if [ "$conclusion" != "success" ]; then
-            echo "::error::CI has not succeeded for commit $sha (conclusion: $conclusion). Refusing to release."
+          echo "Checking successful push CI (ci.yml) for master commit $sha"
+          successful_runs=$(gh api "repos/${repo}/actions/workflows/ci.yml/runs?head_sha=${sha}&branch=master&event=push&status=completed&per_page=100" \
+            --jq "[.workflow_runs[] | select(.head_sha == \"${sha}\" and .event == \"push\" and .head_branch == \"master\" and .conclusion == \"success\")] | length")
+          echo "Successful master push CI runs: $successful_runs"
+          if [ "$successful_runs" -lt 1 ]; then
+            echo "::error::Successful push CI on master is missing for commit $sha. Refusing to release."
             exit 1
           fi
 

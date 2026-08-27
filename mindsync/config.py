@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import threading
 from pathlib import Path
 
 
@@ -42,6 +43,11 @@ def legacy_dispatch_home() -> Path:
     return Path.home() / ".claude" / "agent-dispatch"
 
 
+_LEGACY_MIGRATION_MARKER = ".legacy-migration-complete"
+_LEGACY_MIGRATION_LOCK = "dispatch-legacy-migration"
+_LEGACY_MIGRATION_THREAD_LOCK = threading.Lock()
+
+
 def _copy_missing(src: Path, dest: Path) -> None:
     """Copy files and dirs from src into dest without replacing existing ones."""
     if src.is_symlink() or src.is_file():
@@ -65,17 +71,31 @@ def migrate_legacy_dispatch_home(target: Path, *, legacy: Path | None = None) ->
     """Copy a Claude-era dispatch home into the MindSync dispatch home once.
 
     Existing files in ``target`` win. Returns True if the legacy tree existed
-    and at least the copy walk ran.
+    and the copy walk completed. A marker prevents later legacy files from
+    being copied after the migration has completed.
     """
     source = legacy if legacy is not None else legacy_dispatch_home()
-    if not source.is_dir():
-        return False
     try:
         if source.resolve() == target.resolve():
             return False
     except OSError:
         return False
-    _copy_missing(source, target)
+
+    # Import lazily to avoid the config -> storage -> config import cycle.
+    from mindsync.storage import atomic_private_write, file_lock
+
+    marker = target / _LEGACY_MIGRATION_MARKER
+    # The OS lock coordinates separate processes. On Windows, ``msvcrt``
+    # locking does not reliably contend between threads in one process, so a
+    # process-local lock closes that remaining check-then-copy race.
+    with _LEGACY_MIGRATION_THREAD_LOCK:
+        with file_lock(_LEGACY_MIGRATION_LOCK):
+            if marker.exists():
+                return False
+            if not source.is_dir():
+                return False
+            _copy_missing(source, target)
+            atomic_private_write(marker, "legacy dispatch migration complete\n")
     return True
 
 
