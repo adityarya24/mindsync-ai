@@ -538,6 +538,8 @@ def test_applying_a_proposal_retires_the_ones_it_invalidates():
         ("bb" * 16,),
     ).fetchone()["status"]
     assert status == "superseded"
+    audit = memory_consolidation_list(project_key="retire", status="superseded")
+    assert [proposal["proposal_id"] for proposal in audit] == ["bb" * 16]
     assert db.execute(
         "SELECT COUNT(*) FROM consolidation_proposals WHERE status = 'pending'"
     ).fetchone()[0] == 0

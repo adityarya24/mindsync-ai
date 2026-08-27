@@ -7,21 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- Consolidation wedged shut once generated facts filled the candidate window.
-  `is_generated` was filtered after the SQL `LIMIT`, and an applied proposal seeds its
-  generated fact with the summed `source_count` of every fact it replaced — so
-  generated facts outrank their own sources. After enough consolidations the whole
-  window was generated rows and `memory_consolidate_preview` reported "not enough
-  unconsolidated facts" with thousands sitting below the cut. The predicate now lives
-  in the query; recall still sees generated facts, which are the better answer.
-- Pending consolidation proposals had no exit. Applying one supersedes its source
-  facts, which makes every other proposal citing them permanently unappliable — yet
-  they stayed `pending` and counted against the per-project cap, eventually blocking
-  consolidation with no supported way to clear the queue. Applying a proposal now
-  retires the ones it invalidates and reports them as `superseded_proposals`.
-
 ## [1.5.0] - 2026-08-27
 
 ### Added
@@ -69,6 +54,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Consolidation wedged shut once generated facts filled the candidate window.
+  `is_generated` was filtered after the SQL `LIMIT`, and an applied proposal seeds its
+  generated fact with the summed `source_count` of every fact it replaced — so
+  generated facts outrank their own sources. After enough consolidations the whole
+  window was generated rows and `memory_consolidate_preview` reported "not enough
+  unconsolidated facts" with thousands sitting below the cut. The predicate now lives
+  in the query; recall still sees generated facts, which are the better answer.
+- Pending consolidation proposals had no exit. Applying one supersedes its source
+  facts, which makes every other proposal citing them permanently unappliable — yet
+  they stayed `pending` and counted against the per-project cap, eventually blocking
+  consolidation with no supported way to clear the queue. Applying a proposal now
+  retires the ones it invalidates and reports them as `superseded_proposals`.
+- Codex lifecycle hooks now share one operation-wide deadline across Git, session
+  locks, and SQLite waits, preserving headroom inside Codex's three-second hook limit.
+- Superseded consolidation proposals can be audited explicitly through the Python API
+  and `mindsync memory proposals --status superseded`.
 - The Codex hook could outlive its own 3-second budget. Project inference ran two git
   probes at the dispatch default of 15 seconds each, so a slow checkout or a held
   `index.lock` got the hook killed — and a kill between `session_start()` and the state

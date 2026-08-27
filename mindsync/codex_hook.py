@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,9 @@ _MAX_FILES = 50
 _MAX_PATH_CHARS = 512
 
 _GIT_TIMEOUT_SECONDS = 2.0
+# Leave headroom inside the 3-second Codex hook timeout for JSON I/O and process
+# startup/teardown. Every blocking operation shares this one deadline.
+_HOOK_WORK_BUDGET_SECONDS = 2.5
 # git -C does not override these; leaving them set would describe whatever
 # repository invoked Codex instead of the session's own workspace.
 _AMBIENT_REPO_ENV = ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE")
@@ -168,9 +172,19 @@ def _resolve_source(value: str | None, warnings: list[str]) -> str | None:
     return value
 
 
-def _git(cwd: str, *args: str) -> str | None:
+def _remaining_seconds(deadline: float, cap: float | None = None) -> float:
+    remaining = max(0.0, deadline - time.monotonic())
+    return remaining if cap is None else min(remaining, cap)
+
+
+def _git(cwd: str, *args: str, timeout_seconds: float | None = None) -> str | None:
     """Run one git command by argv (never a shell), returning stdout or None."""
     env = {k: v for k, v in os.environ.items() if k not in _AMBIENT_REPO_ENV}
+    timeout = (
+        _GIT_TIMEOUT_SECONDS
+        if timeout_seconds is None
+        else min(_GIT_TIMEOUT_SECONDS, max(0.0, timeout_seconds))
+    )
     try:
         result = subprocess.run(
             ["git", "--no-optional-locks", "-C", cwd, *args],
@@ -181,7 +195,7 @@ def _git(cwd: str, *args: str) -> str | None:
             errors="replace",
             check=False,
             shell=False,
-            timeout=_GIT_TIMEOUT_SECONDS,
+            timeout=timeout,
             env=env,
         )
     except (OSError, ValueError, subprocess.SubprocessError):
@@ -235,7 +249,9 @@ def _parse_porcelain_z(output: str) -> list[str]:
     return paths
 
 
-def _changed_files(cwd: str | None, warnings: list[str]) -> list[str] | None:
+def _changed_files(
+    cwd: str | None, warnings: list[str], *, deadline: float
+) -> list[str] | None:
     """Return bounded repo-relative changed paths, or None when git cannot answer."""
     if not cwd:
         return None
@@ -245,7 +261,12 @@ def _changed_files(cwd: str | None, warnings: list[str]) -> list[str] | None:
     except (OSError, ValueError):
         return None
 
-    inside = _git(cwd, "rev-parse", "--is-inside-work-tree")
+    inside = _git(
+        cwd,
+        "rev-parse",
+        "--is-inside-work-tree",
+        timeout_seconds=_remaining_seconds(deadline, _GIT_TIMEOUT_SECONDS),
+    )
     if inside is None or inside.strip() != "true":
         # Not a repo, or no git on PATH. Checkpointing without a file list is
         # still useful, so this is not worth a warning line.
@@ -253,7 +274,14 @@ def _changed_files(cwd: str | None, warnings: list[str]) -> list[str] | None:
 
     # --untracked-files=normal keeps a brand-new build/ directory from costing a
     # full walk on every Stop; git reports it as one "build/" entry.
-    status = _git(cwd, "status", "--porcelain", "-z", "--untracked-files=normal")
+    status = _git(
+        cwd,
+        "status",
+        "--porcelain",
+        "-z",
+        "--untracked-files=normal",
+        timeout_seconds=_remaining_seconds(deadline, _GIT_TIMEOUT_SECONDS),
+    )
     if status is None:
         warnings.append("changed-file detection degraded: git status failed")
         return None
@@ -295,7 +323,9 @@ def _collect_warnings(source: Any, warnings: list[str]) -> None:
             warnings.append(text)
 
 
-def _handle_session_start(fields: Mapping[str, str | None], warnings: list[str]) -> str:
+def _handle_session_start(
+    fields: Mapping[str, str | None], warnings: list[str], deadline: float
+) -> str:
     """Start the standalone session and hand Codex the memory context."""
     session_id = fields["session_id"]
     if not session_id:
@@ -317,6 +347,7 @@ def _handle_session_start(fields: Mapping[str, str | None], warnings: list[str])
             ADAPTER,
             session_id,
             fields["cwd"],
+            timeout_seconds=_remaining_seconds(deadline),
             **kwargs,
         )
     except Exception as exc:
@@ -338,7 +369,9 @@ def _handle_session_start(fields: Mapping[str, str | None], warnings: list[str])
     )
 
 
-def _handle_stop(fields: Mapping[str, str | None], warnings: list[str]) -> str:
+def _handle_stop(
+    fields: Mapping[str, str | None], warnings: list[str], deadline: float
+) -> str:
     """Checkpoint mid-session progress. Stop must always answer with JSON."""
     session_id = fields["session_id"]
     if not session_id:
@@ -348,12 +381,13 @@ def _handle_stop(fields: Mapping[str, str | None], warnings: list[str]) -> str:
         return _STOP_OUTPUT
 
     try:
-        files_changed = _changed_files(fields["cwd"], warnings)
+        files_changed = _changed_files(fields["cwd"], warnings, deadline=deadline)
         result = _lifecycle().checkpoint_standalone_session(
             ADAPTER,
             session_id,
             status="active",
             files_changed=files_changed,
+            timeout_seconds=_remaining_seconds(deadline),
         )
         _collect_warnings(result, warnings)
     except Exception as exc:
@@ -363,7 +397,9 @@ def _handle_stop(fields: Mapping[str, str | None], warnings: list[str]) -> str:
     return _STOP_OUTPUT
 
 
-def _handle_session_end(fields: Mapping[str, str | None], warnings: list[str]) -> str:
+def _handle_session_end(
+    fields: Mapping[str, str | None], warnings: list[str], deadline: float
+) -> str:
     """Close the session. Codex blocks on this event, so it does no I/O of its own."""
     session_id = fields["session_id"]
     if not session_id:
@@ -373,7 +409,10 @@ def _handle_session_end(fields: Mapping[str, str | None], warnings: list[str]) -
         return ""
     try:
         result = _lifecycle().end_standalone_session(
-            ADAPTER, session_id, status="completed"
+            ADAPTER,
+            session_id,
+            status="completed",
+            timeout_seconds=_remaining_seconds(deadline),
         )
         _collect_warnings(result, warnings)
     except Exception as exc:
@@ -416,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
     warnings: list[str] = []
     stdout_text = ""
     event: str | None = None
+    deadline = time.monotonic() + _HOOK_WORK_BUDGET_SECONDS
     try:
         fields = _allowlisted_fields(_read_payload())
         event = fields["hook_event_name"]
@@ -423,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
         if handler is None:
             warnings.append(f"ignored unsupported hook event: {event or 'missing'}")
         else:
-            stdout_text = handler(fields, warnings)
+            stdout_text = handler(fields, warnings, deadline)
     except _PayloadError as exc:
         warnings.append(str(exc))
     except Exception as exc:  # last resort: a defect here must not break Codex

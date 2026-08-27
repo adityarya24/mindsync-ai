@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -67,9 +68,13 @@ def _infer_git_project_key(
         # wrong key is served at the top of every later bootstrap for that
         # project with nothing left to mark it as misattributed.
         probe = {"ignore_ambient_repo": True}
+        deadline = None
         if git_timeout is not None:
-            probe["timeout"] = git_timeout
+            deadline = time.monotonic() + max(0.0, git_timeout)
+            probe["timeout"] = max(0.0, deadline - time.monotonic())
         inside = _git(str(workspace_path), "rev-parse", "--is-inside-work-tree", **probe)
+        if deadline is not None:
+            probe["timeout"] = max(0.0, deadline - time.monotonic())
         common = _git(str(workspace_path), "rev-parse", "--git-common-dir", **probe)
     except Exception:
         # Memory is optional. Even a surprising Git/helper failure must degrade

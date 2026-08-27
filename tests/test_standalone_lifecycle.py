@@ -631,6 +631,26 @@ def test_checkpoint_updates_active_session(isolated: Path):
     assert row["status"] == "working"
 
 
+def test_checkpoint_zero_budget_stops_before_database(
+    isolated: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo = isolated / "repo"
+    _init_git_repo(repo)
+    start_standalone_session("cursor", "deadline", str(repo), memory_mode="auto")
+
+    def unexpected_checkpoint(*args, **kwargs):
+        raise AssertionError("database checkpoint must not start after the deadline")
+
+    monkeypatch.setattr(lifecycle_mod, "memory_checkpoint", unexpected_checkpoint)
+    with pytest.raises(TimeoutError, match="deadline exhausted"):
+        checkpoint_standalone_session(
+            "cursor",
+            "deadline",
+            decisions=["too late"],
+            timeout_seconds=0,
+        )
+
+
 def test_checkpoint_skips_empty_and_duplicate_heartbeats(isolated: Path):
     repo = isolated / "repo"
     _init_git_repo(repo)
@@ -684,6 +704,7 @@ def test_git_probes_are_bounded_to_the_hook_budget(monkeypatch, tmp_path):
 
     assert seen, "no git probe ran"
     assert all(value <= 3.0 for value in seen), seen
+    assert seen == sorted(seen, reverse=True), seen
 
 
 def test_stale_recovery_failure_does_not_deny_this_session(monkeypatch, tmp_path):

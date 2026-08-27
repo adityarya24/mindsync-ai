@@ -191,7 +191,7 @@ def test_memory_proposals_cli_lists_review_state(
 
     def fake_list(**kwargs: object) -> list[dict[str, object]]:
         captured.update(kwargs)
-        return [{"proposal_id": "a" * 32, "status": "pending"}]
+        return [{"proposal_id": "a" * 32, "status": "superseded"}]
 
     monkeypatch.setattr(memory_mod, "memory_consolidation_list", fake_list)
     assert manage_main(
@@ -201,13 +201,17 @@ def test_memory_proposals_cli_lists_review_state(
             "--project",
             "alpha",
             "--status",
-            "pending",
+            "superseded",
             "--limit",
             "7",
         ]
     ) == 0
-    assert captured == {"project_key": "alpha", "status": "pending", "limit": 7}
-    assert json.loads(capsys.readouterr().out)[0]["status"] == "pending"
+    assert captured == {
+        "project_key": "alpha",
+        "status": "superseded",
+        "limit": 7,
+    }
+    assert json.loads(capsys.readouterr().out)[0]["status"] == "superseded"
 
 
 def test_memory_cli_surfaces_runtime_errors_without_traceback(

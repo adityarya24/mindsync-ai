@@ -1698,8 +1698,13 @@ def memory_consolidation_list(
         project_key = _validate_identifier(
             project_key, "project_key", _PROJECT_KEY_MAX
         )
-    if status is not None and status not in {"pending", "applied", "undone"}:
-        raise ValueError("status must be pending, applied, or undone")
+    if status is not None and status not in {
+        "pending",
+        "applied",
+        "superseded",
+        "undone",
+    }:
+        raise ValueError("status must be pending, applied, superseded, or undone")
     limit = _validate_limit(limit, "limit", _MAX_LIST_LIMIT)
     rows = _get_db().execute(
         """

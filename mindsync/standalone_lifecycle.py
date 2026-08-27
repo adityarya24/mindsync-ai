@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -63,6 +65,37 @@ class StandaloneSessionStart:
     context: str | None
     resumed: bool
     warnings: list[str] = field(default_factory=list)
+
+
+def _operation_deadline(timeout_seconds: float | None) -> float | None:
+    if timeout_seconds is None:
+        return None
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds < 0
+    ):
+        raise ValueError("timeout_seconds must be a non-negative number or None")
+    return time.monotonic() + float(timeout_seconds)
+
+
+def _remaining_timeout(deadline: float | None, cap: float) -> float:
+    if deadline is None:
+        return cap
+    return min(cap, max(0.0, deadline - time.monotonic()))
+
+
+def _remaining_db_timeout_ms(deadline: float | None) -> int:
+    return min(
+        _DB_BUSY_TIMEOUT_MS,
+        int(_remaining_timeout(deadline, _DB_BUSY_TIMEOUT_MS / 1_000) * 1_000),
+    )
+
+
+def _require_budget(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError("standalone lifecycle operation deadline exhausted")
 
 
 def _utc_now() -> str:
@@ -237,6 +270,8 @@ def _finalize_state(
     digest: str,
     end_status: str,
     warnings: list[str],
+    *,
+    deadline: float | None = None,
 ) -> list[str]:
     lifecycle_state = state.get("lifecycle_state")
     if lifecycle_state == "finalized":
@@ -256,26 +291,29 @@ def _finalize_state(
     _save_state(_state_path(digest), state)
 
     try:
-        with _memory_busy_timeout(_DB_BUSY_TIMEOUT_MS):
-            checkpoint_status = _checkpoint_end_status(end_status)
-            terminal_id = _terminal_checkpoint_id(digest, memory_session_id)
-            try:
+        checkpoint_status = _checkpoint_end_status(end_status)
+        terminal_id = _terminal_checkpoint_id(digest, memory_session_id)
+        try:
+            _require_budget(deadline)
+            with _memory_busy_timeout(_remaining_db_timeout_ms(deadline)):
                 memory_checkpoint(
                     memory_session_id,
                     status=checkpoint_status,
                     checkpoint_id=terminal_id,
                 )
-            except Exception as exc:
-                warnings.append(
-                    f"standalone session terminal checkpoint degraded: {exc}"
-                )
-                return warnings
+        except Exception as exc:
+            warnings.append(
+                f"standalone session terminal checkpoint degraded: {exc}"
+            )
+            return warnings
 
-            try:
+        try:
+            _require_budget(deadline)
+            with _memory_busy_timeout(_remaining_db_timeout_ms(deadline)):
                 session_end(memory_session_id, status=end_status)
-            except Exception as exc:
-                warnings.append(f"standalone session end degraded: {exc}")
-                return warnings
+        except Exception as exc:
+            warnings.append(f"standalone session end degraded: {exc}")
+            return warnings
     except Exception as exc:
         warnings.append(f"standalone session database degraded: {exc}")
         return warnings
@@ -295,6 +333,7 @@ def start_standalone_session(
     memory_mode: str = "auto",
     memory_project: str | None = None,
     stale_after_seconds: int = 86_400,
+    timeout_seconds: float | None = None,
 ) -> StandaloneSessionStart:
     """Begin or resume a standalone memory session for an external adapter id."""
     adapter = _validate_adapter(adapter)
@@ -308,6 +347,7 @@ def start_standalone_session(
     if stale_after_seconds <= 0:
         raise ValueError("stale_after_seconds must be positive")
 
+    deadline = _operation_deadline(timeout_seconds)
     warnings: list[str] = []
     # Check the opt-out before any state-file or memory-DB work: reaping other
     # sessions is still work, and `off` should mean off.
@@ -326,6 +366,11 @@ def start_standalone_session(
                 adapter,
                 exclude_external_session_id=external_session_id,
                 stale_after_seconds=stale_after_seconds,
+                timeout_seconds=(
+                    None
+                    if deadline is None
+                    else _remaining_timeout(deadline, float(timeout_seconds or 0.0))
+                ),
             )
         )
     except Exception as exc:
@@ -336,7 +381,11 @@ def start_standalone_session(
     digest = _session_digest(adapter, external_session_id)
     path = _state_path(digest)
 
-    with file_lock(_lock_name(digest), timeout=_LOCK_TIMEOUT_SECONDS):
+    _require_budget(deadline)
+    with file_lock(
+        _lock_name(digest),
+        timeout=_remaining_timeout(deadline, _LOCK_TIMEOUT_SECONDS),
+    ):
         state = _load_state(path)
         if state is not None and not _state_matches(
             state, adapter, external_session_id
@@ -348,7 +397,9 @@ def start_standalone_session(
             retry_status = state.get("terminal_status")
             if not isinstance(retry_status, str) or not retry_status:
                 retry_status = "stale"
-            _finalize_state(state, digest, retry_status, warnings)
+            _finalize_state(
+                state, digest, retry_status, warnings, deadline=deadline
+            )
             if state.get("lifecycle_state") != "finalized":
                 return StandaloneSessionStart(None, None, None, False, warnings)
 
@@ -358,10 +409,12 @@ def start_standalone_session(
             bootstrap: dict[str, Any] = {}
             if isinstance(project_key, str) and project_key:
                 try:
-                    bootstrap = memory_bootstrap(
-                        project_key,
-                        budget_chars=_BOOTSTRAP_BUDGET_CHARS,
-                    )
+                    _require_budget(deadline)
+                    with _memory_busy_timeout(_remaining_db_timeout_ms(deadline)):
+                        bootstrap = memory_bootstrap(
+                            project_key,
+                            budget_chars=_BOOTSTRAP_BUDGET_CHARS,
+                        )
                 except Exception as exc:
                     warnings.append(f"standalone session bootstrap degraded: {exc}")
             state["source"] = source
@@ -385,7 +438,7 @@ def start_standalone_session(
                 memory_project,
                 memory_mode,
                 workspace,
-                git_timeout=_GIT_TIMEOUT_SECONDS,
+                git_timeout=_remaining_timeout(deadline, _GIT_TIMEOUT_SECONDS),
             )
         except ValueError:
             raise
@@ -410,7 +463,8 @@ def start_standalone_session(
 
         bootstrap: dict[str, Any] | None = None
         try:
-            with _memory_busy_timeout(_DB_BUSY_TIMEOUT_MS):
+            _require_budget(deadline)
+            with _memory_busy_timeout(_remaining_db_timeout_ms(deadline)):
                 bootstrap = memory_bootstrap(
                     project_key,
                     budget_chars=_BOOTSTRAP_BUDGET_CHARS,
@@ -420,7 +474,8 @@ def start_standalone_session(
 
         memory_session_id: str | None = None
         try:
-            with _memory_busy_timeout(_DB_BUSY_TIMEOUT_MS):
+            _require_budget(deadline)
+            with _memory_busy_timeout(_remaining_db_timeout_ms(deadline)):
                 memory_session_id = session_start(
                 project_key=project_key,
                 agent=adapter,
@@ -488,15 +543,21 @@ def checkpoint_standalone_session(
     tests: Any = None,
     pending: Any = None,
     blockers: Any = None,
+    timeout_seconds: float | None = None,
 ) -> list[str]:
     """Record structured progress for an active standalone session."""
     adapter = _validate_adapter(adapter)
     external_session_id = _validate_external_session_id(external_session_id)
+    deadline = _operation_deadline(timeout_seconds)
     digest = _session_digest(adapter, external_session_id)
     path = _state_path(digest)
     warnings: list[str] = []
 
-    with file_lock(_lock_name(digest), timeout=_LOCK_TIMEOUT_SECONDS):
+    _require_budget(deadline)
+    with file_lock(
+        _lock_name(digest),
+        timeout=_remaining_timeout(deadline, _LOCK_TIMEOUT_SECONDS),
+    ):
         state = _load_state(path)
         if state is None or state.get("lifecycle_state") != "active":
             warnings.append("standalone session checkpoint skipped: no active session")
@@ -522,15 +583,17 @@ def checkpoint_standalone_session(
         )
         if should_write:
             try:
-                memory_checkpoint(
-                    memory_session_id,
-                    status=status,
-                    files_changed=files_changed,
-                    decisions=decisions,
-                    tests=tests,
-                    pending=pending,
-                    blockers=blockers,
-                )
+                _require_budget(deadline)
+                with _memory_busy_timeout(_remaining_db_timeout_ms(deadline)):
+                    memory_checkpoint(
+                        memory_session_id,
+                        status=status,
+                        files_changed=files_changed,
+                        decisions=decisions,
+                        tests=tests,
+                        pending=pending,
+                        blockers=blockers,
+                    )
             except Exception as exc:
                 warnings.append(f"standalone session checkpoint degraded: {exc}")
             else:
@@ -549,15 +612,21 @@ def end_standalone_session(
     external_session_id: str,
     *,
     status: str = "completed",
+    timeout_seconds: float | None = None,
 ) -> list[str]:
     """Finalize a standalone session exactly once."""
     adapter = _validate_adapter(adapter)
     external_session_id = _validate_external_session_id(external_session_id)
+    deadline = _operation_deadline(timeout_seconds)
     digest = _session_digest(adapter, external_session_id)
     path = _state_path(digest)
     warnings: list[str] = []
 
-    with file_lock(_lock_name(digest), timeout=_LOCK_TIMEOUT_SECONDS):
+    _require_budget(deadline)
+    with file_lock(
+        _lock_name(digest),
+        timeout=_remaining_timeout(deadline, _LOCK_TIMEOUT_SECONDS),
+    ):
         state = _load_state(path)
         if state is None:
             warnings.append("standalone session end skipped: no mapping found")
@@ -569,7 +638,7 @@ def end_standalone_session(
             stored_status = state.get("terminal_status")
             if isinstance(stored_status, str) and stored_status:
                 status = stored_status
-        return _finalize_state(state, digest, status, warnings)
+        return _finalize_state(state, digest, status, warnings, deadline=deadline)
 
 
 def recover_stale_sessions(
@@ -578,6 +647,7 @@ def recover_stale_sessions(
     exclude_external_session_id: str | None = None,
     stale_after_seconds: int = 86_400,
     limit: int = 5,
+    timeout_seconds: float | None = None,
 ) -> list[str]:
     """Finalize at most ``limit`` stale active sessions for one adapter."""
     adapter = _validate_adapter(adapter)
@@ -596,6 +666,7 @@ def recover_stale_sessions(
     if limit <= 0:
         raise ValueError("limit must be positive")
 
+    deadline = _operation_deadline(timeout_seconds)
     warnings: list[str] = []
     sessions_dir = settings.home / _SESSIONS_SUBDIR
     if not sessions_dir.is_dir():
@@ -605,6 +676,7 @@ def recover_stale_sessions(
     candidates: list[tuple[datetime, str, dict[str, Any]]] = []
 
     for path in sessions_dir.glob("*.json"):
+        _require_budget(deadline)
         state = _load_state(path)
         if state is None:
             continue
@@ -636,10 +708,14 @@ def recover_stale_sessions(
 
     candidates.sort(key=lambda item: item[0])
     for _, external_id, _state in candidates[:limit]:
+        _require_budget(deadline)
         digest = _session_digest(adapter, external_id)
         path = _state_path(digest)
         stale_warnings: list[str] = []
-        with file_lock(_lock_name(digest), timeout=_LOCK_TIMEOUT_SECONDS):
+        with file_lock(
+            _lock_name(digest),
+            timeout=_remaining_timeout(deadline, _LOCK_TIMEOUT_SECONDS),
+        ):
             current = _load_state(path)
             if current is None or not _state_matches(current, adapter, external_id):
                 continue
@@ -659,7 +735,13 @@ def recover_stale_sessions(
                 stored_status = current.get("terminal_status")
                 if isinstance(stored_status, str) and stored_status:
                     end_status = stored_status
-            _finalize_state(current, digest, end_status, stale_warnings)
+            _finalize_state(
+                current,
+                digest,
+                end_status,
+                stale_warnings,
+                deadline=deadline,
+            )
         for item in stale_warnings:
             if item not in warnings:
                 warnings.append(item)
