@@ -75,10 +75,16 @@ mindsync agents
 ```
 
 `setup` registers known MCP hosts **and** scans PATH for other coding-agent
-CLIs (OpenCode, Windsurf, Amp, and anything whose name looks like an agent).
-Matching binaries land in the dispatch roster. If a discovered CLI exposes
-`mcp add`, MindSync is installed as its MCP server. Heavy capability tags are
-never auto-assigned.
+CLIs (OpenCode, Windsurf, Amp, and the rest of the recognised agent names).
+Those land in the dispatch roster, and if one exposes `mcp add`, MindSync is
+installed as its MCP server. Heavy capability tags are never auto-assigned.
+
+A binary MindSync does not recognise is **reported, not registered**. Deciding
+what an unknown binary is would mean running it, and discovery will not run a
+binary it cannot name: on an ordinary Linux host the name shapes alone also
+match `ssh-agent`, `pkttyagent` and local `*-fleet-restart` scripts. Anything
+that looks agent-ish but is unrecognised is listed as a suggestion, for you to
+add deliberately with `mindsync register <name>`.
 
 Restart the configured CLI sessions. From then on, the CLI can use MindSync
 automatically; the user does not need to name a worker for every task. Session

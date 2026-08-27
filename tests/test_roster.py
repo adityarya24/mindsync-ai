@@ -17,6 +17,7 @@ from mindsync.onboarding import CommandResult
 from mindsync.roster import (
     describe_agents,
     discover_agent_clis,
+    suggest_unknown_clis,
     looks_like_agent_cli,
     path_cli_names,
     register_agent,
@@ -238,23 +239,83 @@ def test_path_cli_names_skips_denylist_and_system_dirs(tmp_path, monkeypatch):
     assert "my-agent" not in found
 
 
-def test_discover_agent_clis_keeps_agentish_unknowns(tmp_path, monkeypatch):
+PATH_SAMPLE = {
+    "opencode": str(Path("fake-bin") / "opencode"),
+    "ffmpeg": str(Path("fake-bin") / "ffmpeg"),
+    "git": str(Path("fake-bin") / "git"),
+    "my-agent": str(Path("fake-bin") / "my-agent"),
+    "codex": str(Path("fake-bin") / "codex"),
+    "pi": str(Path("fake-bin") / "pi"),
+}
+
+
+def test_discover_agent_clis_registers_only_known_agent_clis(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     found = discover_agent_clis(
         resolver=lambda name: str(Path("fake-bin") / name),
         runner=RegisterRunner(),
-        path_bins={
-            "opencode": str(Path("fake-bin") / "opencode"),
-            "ffmpeg": str(Path("fake-bin") / "ffmpeg"),
-            "git": str(Path("fake-bin") / "git"),
-            "my-agent": str(Path("fake-bin") / "my-agent"),
-            "codex": str(Path("fake-bin") / "codex"),
-            "pi": str(Path("fake-bin") / "pi"),
-        },
+        path_bins=PATH_SAMPLE,
     )
     names = {item["name"] for item in found}
-    assert names == {"opencode", "my-agent", "pi"}
+    # 'my-agent' looks agent-ish but is unrecognised, so it is suggested, not
+    # registered — proving it would mean executing it.
+    assert names == {"opencode", "pi"}
     assert all(item["mcp_capable"] is False for item in found)
+
+
+def test_agentish_unknowns_are_suggested_not_registered(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    assert suggest_unknown_clis(
+        resolver=lambda name: str(Path("fake-bin") / name),
+        path_bins=PATH_SAMPLE,
+    ) == ["my-agent"]
+
+
+def test_discovery_never_executes_an_unrecognised_binary(tmp_path, monkeypatch):
+    """The bug this guards: probing ran '<bin> mcp list' on anything whose name
+    matched, which on a real Linux host meant spawning ssh-agent, blocking on
+    pkttyagent, and running a *-fleet-restart script."""
+    _isolate(tmp_path, monkeypatch)
+    executed: list[str] = []
+
+    def recording_runner(resolved_bin, args):
+        executed.append(Path(resolved_bin).name)
+        return RegisterRunner()(resolved_bin, args)
+
+    dangerous = {
+        name: str(Path("fake-bin") / name)
+        for name in (
+            "ssh-agent",
+            "gpg-agent",
+            "pkttyagent",
+            "systemd-tty-ask-password-agent",
+            "fail2ban-client",
+            "hermes-fleet-restart",
+            "apport-cli",
+            "mmcli",
+        )
+    }
+    found = discover_agent_clis(
+        resolver=lambda name: str(Path("fake-bin") / name),
+        runner=recording_runner,
+        path_bins=dangerous,
+    )
+    assert found == []
+    assert executed == []
+
+    # Named daemons stay out of the roster entirely; only the fleet-restart
+    # script is agent-ish enough to be worth telling the operator about.
+    assert suggest_unknown_clis(
+        resolver=lambda name: str(Path("fake-bin") / name),
+        path_bins=dangerous,
+    ) == ["hermes-fleet-restart"]
+
+
+def test_generic_substrings_do_not_look_like_agent_clis():
+    for name in ("uclampset", "wamp", "sample", "sg_timestamp", "apport-cli", "mmcli"):
+        assert looks_like_agent_cli(name) is False, name
+    for name in ("amp", "amp-cli", "gpt-cli", "my-agent", "opencode"):
+        assert looks_like_agent_cli(name) is True, name
 
 
 def test_register_unknown_mcp_capable_cli_uses_generic_add(tmp_path, monkeypatch):

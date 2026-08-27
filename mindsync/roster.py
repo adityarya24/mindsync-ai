@@ -30,11 +30,14 @@ from mindsync.onboarding import (
 
 _AGENT_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 _CLI_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,40}$")
+# Distinctive enough to match anywhere in a name.
 _NAME_HINT = re.compile(
-    r"(agent|aider|amp|claude|cli|codex|continue|copilot|crush|cursor|"
-    r"droid|gemini|goose|gpt|grok|hermes|llm|opencode|openclaw|qwen|"
-    r"windsurf)"
+    r"(agent|aider|claude|codex|continue|copilot|crush|cursor|"
+    r"droid|gemini|goose|grok|hermes|opencode|openclaw|qwen|windsurf)"
 )
+# Short, generic tokens that are real CLI names but common substrings. Anchored
+# to name segments so 'amp' matches amp and amp-cli, not uclampset or sg_timestamp.
+_NAME_HINT_WORD = re.compile(r"(?:^|[-_])(amp|gpt|llm)(?:$|[-_])")
 _SEED_BINS = frozenset({
     "aider",
     "amp",
@@ -66,6 +69,12 @@ _DENYLIST = frozenset({
     "ruff", "rustc", "scoop", "scp", "sh", "ssh", "tar", "taskkill", "tasklist",
     "uv", "uvx", "vim", "wget", "where", "which", "winget", "zsh", "zip",
     "unzip",
+    # System daemons and tools whose names end in -agent/-client. Never probe
+    # these: several are password prompters or spawn a background daemon, and
+    # one of them restarts a fleet of services.
+    "dirmngr-client", "fail2ban-client", "gpg-agent", "gpg-connect-agent",
+    "gpg-wks-client", "pam_timestamp_check", "pkttyagent", "ssh-agent",
+    "systemd-tty-ask-password-agent",
 })
 _SKIP_DIR_PARTS = ("system32", "syswow64", "windowsapps", "systemapps")
 _MAX_DISCOVERED = 40
@@ -113,7 +122,7 @@ def looks_like_agent_cli(name: str) -> bool:
         return False
     if name in _SEED_BINS:
         return True
-    return bool(_NAME_HINT.search(name))
+    return bool(_NAME_HINT.search(name) or _NAME_HINT_WORD.search(name))
 
 
 def probe_mcp_capable(bin_name: str, runner: CommandRunner, resolver: Resolver) -> bool:
@@ -133,13 +142,12 @@ def probe_mcp_capable(bin_name: str, runner: CommandRunner, resolver: Resolver) 
     return False
 
 
-def discover_agent_clis(
+def _candidate_clis(
     *,
-    resolver: Resolver = resolve_bin,
-    runner: CommandRunner = _run_command,
-    path_bins: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
-    """Find coding-agent CLIs on PATH that are not already bundled presets."""
+    resolver: Resolver,
+    path_bins: dict[str, str] | None,
+) -> list[tuple[str, str]]:
+    """PATH names that look like an agent CLI and are not already known."""
     adapters = load_adapters()
     known_bins = {adapter.bin.lower() for adapter in adapters.values()}
     known_names = {adapter.name.lower() for adapter in adapters.values()}
@@ -154,10 +162,8 @@ def discover_agent_clis(
     else:
         names = dict(path_bins)
 
-    discovered: list[dict[str, Any]] = []
+    candidates: list[tuple[str, str]] = []
     for name, bin_name in sorted(names.items()):
-        if len(discovered) >= _MAX_DISCOVERED:
-            break
         if name in known_names or name in known_bins:
             continue
         if not looks_like_agent_cli(name):
@@ -165,17 +171,55 @@ def discover_agent_clis(
         if not resolver(name) and not resolver(bin_name):
             continue
         use_bin = name if resolver(name) else bin_name
-        roster_name = name.replace("_", "-")
-        if not _AGENT_NAME_RE.fullmatch(roster_name):
+        if not _AGENT_NAME_RE.fullmatch(name.replace("_", "-")):
+            continue
+        candidates.append((name, use_bin))
+    return candidates
+
+
+def discover_agent_clis(
+    *,
+    resolver: Resolver = resolve_bin,
+    runner: CommandRunner = _run_command,
+    path_bins: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Find known agent CLIs on PATH that are not already bundled presets.
+
+    Only names on the seed allowlist are returned, because deciding what a
+    binary is requires running it, and running an unrecognised binary is not a
+    safe probe. On a plain Linux host the name shapes alone match things like
+    ssh-agent, pkttyagent and *-fleet-restart scripts; probing those spawns
+    daemons, blocks on a TTY password prompt, or restarts live services.
+    Everything else that merely looks agent-ish is reported by
+    suggest_unknown_clis() for the operator to add deliberately.
+    """
+    discovered: list[dict[str, Any]] = []
+    for name, use_bin in _candidate_clis(resolver=resolver, path_bins=path_bins):
+        if len(discovered) >= _MAX_DISCOVERED:
+            break
+        if name not in _SEED_BINS:
             continue
         discovered.append(
             {
-                "name": roster_name,
-                "bin": name if resolver(name) else Path(bin_name).stem.lower(),
+                "name": name.replace("_", "-"),
+                "bin": name if resolver(name) else Path(use_bin).stem.lower(),
                 "mcp_capable": probe_mcp_capable(use_bin, runner, resolver),
             }
         )
     return discovered
+
+
+def suggest_unknown_clis(
+    *,
+    resolver: Resolver = resolve_bin,
+    path_bins: dict[str, str] | None = None,
+) -> list[str]:
+    """Agent-ish PATH names that are not recognised, never executed."""
+    return [
+        name.replace("_", "-")
+        for name, _ in _candidate_clis(resolver=resolver, path_bins=path_bins)
+        if name not in _SEED_BINS
+    ][:_MAX_DISCOVERED]
 
 
 def resolve_register_capabilities(
@@ -566,6 +610,19 @@ def register_discovered_clis(
                 "cli": item["name"],
                 "action": result["roster"]["action"],
                 "detail": detail,
+            }
+        )
+    # Surface rather than guess: an unrecognised binary is only a name until
+    # something runs it, and setup is not the place to run it.
+    for name in suggest_unknown_clis(resolver=resolver, path_bins=path_bins):
+        actions.append(
+            {
+                "cli": name,
+                "action": "suggested",
+                "detail": (
+                    f"looks like an agent CLI but is not recognised; "
+                    f"add it with 'mindsync register {name}'"
+                ),
             }
         )
     return actions

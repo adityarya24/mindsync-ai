@@ -7,16 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- PATH discovery no longer executes unrecognised binaries. It decided a name
+  looked agent-ish, then confirmed it by running `<bin> mcp list` — but on an
+  ordinary Linux host those name shapes also match `ssh-agent`, `gpg-agent`,
+  `pkttyagent`, `systemd-tty-ask-password-agent` and local `*-fleet-restart`
+  scripts. Running them spawned background daemons, blocked on a TTY password
+  prompt, and restarted live services; with a 30s timeout on two probes each,
+  `setup` could also stall for many minutes. Only recognised agent CLIs are
+  probed and registered now, unknown ones are reported for the operator to add,
+  and the `amp`/`gpt`/`llm` hints are anchored to name segments so `uclampset`
+  and `sg_timestamp` no longer match.
+
 ### Added
 
 - `mindsync setup` scans PATH for coding-agent CLIs beyond the first-party host
-  list. Matching binaries (seed names plus name heuristics such as `agent`,
-  `cli`, `codex`, `opencode`) are added to the user dispatch roster with
+  list. Recognised agent CLIs are added to the user dispatch roster with
   `coding` capability. If a discovered CLI exposes `mcp add`, MindSync is
   registered with a generic `mcp add --scope user` command. Discovery is on by
   default, off when `--cli` is passed, and skippable with `--no-discover`.
   System directories and a denylist of ordinary tools are ignored. Heavy
-  capability tags are never auto-assigned.
+  capability tags are never auto-assigned. A binary MindSync cannot name is
+  reported as a suggestion rather than registered, because confirming what it
+  is would mean executing it.
 - `mindsync register` lands an agent in the user dispatch roster and, when the CLI
   exposes an MCP-management command, installs MindSync as its MCP server. It verifies
   `--version` and `mcp list`, is idempotent, and refuses heavy capability tags
