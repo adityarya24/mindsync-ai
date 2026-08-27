@@ -345,7 +345,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mindsync")
     sub = parser.add_subparsers(dest="command")
 
-    setup_parser = sub.add_parser("setup", help="Detect CLIs and register the MindSync MCP server")
+    setup_parser = sub.add_parser(
+        "setup",
+        help="Detect installed CLIs, register MCP hosts, and add PATH agent CLIs to the roster",
+    )
     setup_parser.add_argument("--mode", choices=["auto", "suggest", "off"])
     setup_parser.add_argument("--cli", action="append", choices=sorted(CLI_SPECS))
     setup_parser.add_argument("--dry-run", action="store_true")
@@ -354,6 +357,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-hooks",
         action="store_true",
         help="Skip Codex standalone memory hook registration",
+    )
+    setup_parser.add_argument(
+        "--no-discover",
+        action="store_true",
+        help="Do not scan PATH for extra coding-agent CLIs",
     )
 
     doctor_parser = sub.add_parser("doctor", help="Diagnose policy, CLI registration, workers, and memory")
@@ -547,6 +555,7 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 force=args.force,
                 install_hooks=not args.no_hooks,
+                discover=False if args.no_discover else None,
             )
         except (OSError, TimeoutError, ValueError) as exc:
             print(f"Setup failed: {exc}", file=sys.stderr)

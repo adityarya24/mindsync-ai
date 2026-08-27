@@ -71,7 +71,14 @@ Run one-time onboarding:
 ```bash
 mindsync setup --mode auto
 mindsync doctor
+mindsync agents
 ```
+
+`setup` registers known MCP hosts **and** scans PATH for other coding-agent
+CLIs (OpenCode, Windsurf, Amp, and anything whose name looks like an agent).
+Matching binaries land in the dispatch roster. If a discovered CLI exposes
+`mcp add`, MindSync is installed as its MCP server. Heavy capability tags are
+never auto-assigned.
 
 Restart the configured CLI sessions. From then on, the CLI can use MindSync
 automatically; the user does not need to name a worker for every task. Session
@@ -79,8 +86,10 @@ memory for dispatched jobs is on by default in git checkouts. When the Codex CLI
 is installed, `setup` also registers standalone Codex memory hooks.
 
 `setup` is idempotent. Existing MCP registrations and Codex hooks are preserved
-unless `--force` is explicitly supplied. Skip hooks with `--no-hooks`. A
-non-mutating preview is available:
+unless `--force` is explicitly supplied. Skip hooks with `--no-hooks`. Limit
+setup to one known host with `--cli grok` (this also skips the PATH scan), or
+keep host setup and skip discovery with `--no-discover`. A non-mutating
+preview is available:
 
 ```bash
 mindsync setup --dry-run
@@ -116,8 +125,10 @@ Antigravity and Gemini CLI are two execution backends in one logical
 the human-facing orchestrator, MindSync excludes both from automatic worker selection
 to prevent self-delegation.
 
-Detected clients without a supported registration surface are reported but never
-modified through guessed or undocumented configuration.
+The table is the first-party preset list, not the full universe of CLIs.
+`mindsync setup` also picks up other PATH-installed coding-agent binaries.
+Detected known hosts without a supported registration surface are reported but
+never modified through guessed or undocumented configuration.
 
 ## Automatic orchestration
 
@@ -167,8 +178,10 @@ preventing duplicate edits.
 
 ### Custom workers
 
-Register a local CLI so MindSync can dispatch to it and, when that CLI has an MCP
-management command, so the CLI can use MindSync:
+`mindsync setup` is the usual onboarding path: install MindSync, run setup, and
+every PATH-installed agent CLI that looks like a coding agent should appear in
+`mindsync agents`. Use `register` when setup cannot see a binary (unusual name,
+not on PATH, or you want a custom roster name / extra capabilities):
 
 ```bash
 mindsync register --name vidur --bin opencode --capability coding --capability review

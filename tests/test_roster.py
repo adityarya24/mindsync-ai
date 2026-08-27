@@ -3,32 +3,43 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 import mindsync.config as config_mod
+import mindsync.onboarding as onboarding
 import mindsync.storage as storage
 from mindsync.dispatch.adapters import load_adapters, user_config_path
+from mindsync.manage import build_parser
 from mindsync.onboarding import CommandResult
 from mindsync.roster import (
     describe_agents,
+    discover_agent_clis,
+    looks_like_agent_cli,
+    path_cli_names,
     register_agent,
     resolve_register_capabilities,
 )
 from mindsync.server import list_agents
 
+_KNOWN_MCP_BINS = {"codex", "claude", "gemini", "grok", "cursor", "cursor-agent"}
+
 
 class RegisterRunner:
-    def __init__(self) -> None:
+    def __init__(self, mcp_bins: set[str] | None = None) -> None:
         self.configured: set[str] = set()
         self.calls: list[tuple[str, list[str]]] = []
+        self.mcp_bins = set(_KNOWN_MCP_BINS if mcp_bins is None else mcp_bins)
 
     def __call__(self, resolved: str, args: list[str]) -> CommandResult:
         name = Path(resolved).name
         self.calls.append((name, list(args)))
         if args[:1] == ["--version"]:
             return CommandResult(0, f"{name} 1.0.0\n")
+        if args[:1] == ["mcp"] and name not in self.mcp_bins:
+            return CommandResult(1, stderr="unknown command: mcp")
         if args[:2] == ["mcp", "list"]:
             payload = [{"name": item} for item in sorted(self.configured)]
             return CommandResult(0, json.dumps(payload))
@@ -194,3 +205,136 @@ def test_describe_agents_reports_three_columns(tmp_path, monkeypatch):
     assert "mcp_installed" in listed_vidur
     assert "routable" in listed_vidur
     assert "available" in listed_vidur
+
+
+def test_looks_like_agent_cli_uses_seed_and_name_hints():
+    assert looks_like_agent_cli("opencode") is True
+    assert looks_like_agent_cli("my-agent") is True
+    assert looks_like_agent_cli("windsurf") is True
+    assert looks_like_agent_cli("ffmpeg") is False
+    assert looks_like_agent_cli("git") is False
+
+
+def test_path_cli_names_skips_denylist_and_system_dirs(tmp_path, monkeypatch):
+    good = tmp_path / "bin"
+    good.mkdir()
+    system = tmp_path / "Windows" / "System32"
+    system.mkdir(parents=True)
+
+    def touch(directory: Path, name: str) -> None:
+        filename = f"{name}.exe" if os.name == "nt" else name
+        (directory / filename).write_bytes(b"")
+
+    touch(good, "opencode")
+    touch(good, "git")
+    touch(good, "ffmpeg")
+    touch(system, "my-agent")
+    monkeypatch.setenv("PATH", os.pathsep.join([str(good), str(system)]))
+
+    found = path_cli_names()
+    assert "opencode" in found
+    assert "git" not in found
+    assert "ffmpeg" in found
+    assert "my-agent" not in found
+
+
+def test_discover_agent_clis_keeps_agentish_unknowns(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    found = discover_agent_clis(
+        resolver=lambda name: str(Path("fake-bin") / name),
+        runner=RegisterRunner(),
+        path_bins={
+            "opencode": str(Path("fake-bin") / "opencode"),
+            "ffmpeg": str(Path("fake-bin") / "ffmpeg"),
+            "git": str(Path("fake-bin") / "git"),
+            "my-agent": str(Path("fake-bin") / "my-agent"),
+            "codex": str(Path("fake-bin") / "codex"),
+            "pi": str(Path("fake-bin") / "pi"),
+        },
+    )
+    names = {item["name"] for item in found}
+    assert names == {"opencode", "my-agent", "pi"}
+    assert all(item["mcp_capable"] is False for item in found)
+
+
+def test_register_unknown_mcp_capable_cli_uses_generic_add(tmp_path, monkeypatch):
+    user_home = _isolate(tmp_path, monkeypatch)
+    runner = RegisterRunner(mcp_bins={"opencode"})
+    result = register_agent(
+        name="vidur",
+        bin_name="opencode",
+        capabilities=["coding"],
+        runner=runner,
+        resolver=_resolver,
+        user_home=user_home,
+        python_exe="python-test",
+    )
+    assert result["mcp"]["action"] == "configured"
+    assert result["verify"]["mcp_installed"] is True
+    assert any(
+        name == "opencode" and args[:2] == ["mcp", "add"] and "--scope" in args
+        for name, args in runner.calls
+    )
+    assert "MINDSYNC_CALLER_CLI=vidur" in next(
+        args for name, args in runner.calls if args[:2] == ["mcp", "add"]
+    )
+
+
+def _selective_resolver(*allowed: str):
+    def resolver(name: str) -> str | None:
+        if name in allowed:
+            return str(Path("fake-bin") / name)
+        return None
+
+    return resolver
+
+
+def test_setup_discovers_unknown_path_cli(tmp_path, monkeypatch):
+    user_home = _isolate(tmp_path, monkeypatch)
+    runner = RegisterRunner()
+    result = onboarding.setup(
+        mode="auto",
+        runner=runner,
+        resolver=_selective_resolver("opencode"),
+        user_home=user_home,
+        policy_file=tmp_path / "orchestration.json",
+        python_exe="python-test",
+        install_hooks=False,
+        path_bins={
+            "opencode": str(Path("fake-bin") / "opencode"),
+            "git": str(Path("fake-bin") / "git"),
+            "ffmpeg": str(Path("fake-bin") / "ffmpeg"),
+        },
+    )
+    names = {item["cli"] for item in result["actions"]}
+    assert "opencode" in names
+    assert "git" not in names
+    assert "ffmpeg" not in names
+    discovered = next(item for item in result["actions"] if item["cli"] == "opencode")
+    assert discovered["action"] == "configured"
+    assert "PATH discovery" in discovered["detail"]
+    assert load_adapters()["opencode"].bin == "opencode"
+
+
+def test_setup_with_cli_skips_path_discovery(tmp_path, monkeypatch):
+    user_home = _isolate(tmp_path, monkeypatch)
+    result = onboarding.setup(
+        mode="auto",
+        cli_names=["codex"],
+        runner=RegisterRunner(),
+        resolver=_selective_resolver("codex", "opencode"),
+        user_home=user_home,
+        policy_file=tmp_path / "orchestration.json",
+        python_exe="python-test",
+        install_hooks=False,
+        path_bins={"opencode": str(Path("fake-bin") / "opencode")},
+    )
+    assert all(item["cli"] != "opencode" for item in result["actions"])
+    assert any(item["cli"] == "codex" for item in result["actions"])
+
+
+def test_setup_no_discover_flag_is_parsed():
+    args = build_parser().parse_args(["setup", "--no-discover"])
+    assert args.no_discover is True
+    default = build_parser().parse_args(["setup"])
+    assert default.no_discover is False

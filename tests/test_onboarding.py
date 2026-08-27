@@ -62,6 +62,10 @@ def test_registration_commands_identify_caller_and_use_module_entrypoint():
         assert "mindsync" in args
         assert f"MINDSYNC_CALLER_CLI={cli}" in args
         assert args[-3:] == ["python-test", "-m", "mindsync.server"]
+    generic = onboarding.registration_args("opencode", "python-test")
+    assert generic[:4] == ["mcp", "add", "--scope", "user"]
+    assert "MINDSYNC_CALLER_CLI=opencode" in generic
+    assert generic[-3:] == ["python-test", "-m", "mindsync.server"]
 
 
 def test_colored_cli_output_is_detected_and_pending_approval_is_reported():
