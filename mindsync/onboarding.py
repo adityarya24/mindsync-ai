@@ -100,7 +100,25 @@ def registration_args(cli_name: str, python_exe: str | None = None) -> list[str]
         ]
     if cli_name == "grok":
         return ["mcp", "add", "--scope", "user", *_env_args("-e", env), "mindsync", "--", python, "-m", "mindsync.server"]
-    raise ValueError(f"CLI '{cli_name}' does not support command-based MCP registration")
+    return generic_mcp_registration_args(cli_name, python)
+
+
+def generic_mcp_registration_args(cli_name: str, python_exe: str | None = None) -> list[str]:
+    """Best-effort `mcp add` used when the CLI is not in CLI_SPECS."""
+    python = python_exe or sys.executable
+    env = _server_env(cli_name)
+    return [
+        "mcp",
+        "add",
+        "--scope",
+        "user",
+        *_env_args("-e", env),
+        "mindsync",
+        "--",
+        python,
+        "-m",
+        "mindsync.server",
+    ]
 
 
 def _json_has_mindsync(text: str) -> bool:
@@ -451,11 +469,13 @@ def setup(
     dry_run: bool = False,
     force: bool = False,
     install_hooks: bool = True,
+    discover: bool | None = None,
     runner: CommandRunner = _run_command,
     resolver: Resolver = resolve_bin,
     user_home: Path | None = None,
     policy_file: Path | None = None,
     python_exe: str | None = None,
+    path_bins: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     policy = OrchestrationPolicy(mode=mode)
     if not dry_run:
@@ -518,6 +538,23 @@ def setup(
             actions.append(
                 _write_codex_hooks(user_home=home, force=force, dry_run=dry_run)
             )
+
+    if discover is None:
+        discover = cli_names is None
+    if discover:
+        from mindsync.roster import register_discovered_clis
+
+        actions.extend(
+            register_discovered_clis(
+                dry_run=dry_run,
+                force=force,
+                runner=runner,
+                resolver=resolver,
+                user_home=home,
+                python_exe=python,
+                path_bins=path_bins,
+            )
+        )
 
     return {
         "ok": not any(action["action"] == "error" for action in actions),

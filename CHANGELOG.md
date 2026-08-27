@@ -9,10 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mindsync setup` scans PATH for coding-agent CLIs beyond the first-party host
+  list. Matching binaries (seed names plus name heuristics such as `agent`,
+  `cli`, `codex`, `opencode`) are added to the user dispatch roster with
+  `coding` capability. If a discovered CLI exposes `mcp add`, MindSync is
+  registered with a generic `mcp add --scope user` command. Discovery is on by
+  default, off when `--cli` is passed, and skippable with `--no-discover`.
+  System directories and a denylist of ordinary tools are ignored. Heavy
+  capability tags are never auto-assigned.
 - `mindsync register` lands an agent in the user dispatch roster and, when the CLI
   exposes an MCP-management command, installs MindSync as its MCP server. It verifies
   `--version` and `mcp list`, is idempotent, and refuses heavy capability tags
-  (`security`, `large-context`, `multimodal`) without `--confirm`.
+  (`security`, `large-context`, `multimodal`) without `--confirm`. Unknown CLIs
+  get the same generic MCP registration attempt as PATH discovery.
 - `mindsync agents` (and `mindsync-dispatch agents`) report binary present, MCP
   installed, and routable for every roster entry.
 

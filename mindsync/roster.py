@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -19,12 +20,162 @@ from mindsync.onboarding import (
     CommandRunner,
     CommandResult,
     Resolver,
+    _json_has_mindsync,
     _run_command,
+    _text_has_mindsync,
     cli_status,
+    generic_mcp_registration_args,
     registration_args,
 )
 
 _AGENT_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
+_CLI_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,40}$")
+_NAME_HINT = re.compile(
+    r"(agent|aider|amp|claude|cli|codex|continue|copilot|crush|cursor|"
+    r"droid|gemini|goose|gpt|grok|hermes|llm|opencode|openclaw|qwen|"
+    r"windsurf)"
+)
+_SEED_BINS = frozenset({
+    "aider",
+    "amp",
+    "claude",
+    "codex",
+    "continue",
+    "copilot",
+    "crush",
+    "cursor-agent",
+    "droid",
+    "gemini",
+    "goose",
+    "grok",
+    "hermes",
+    "opencode",
+    "openclaw",
+    "pi",
+    "qwen",
+    "qwen-code",
+    "windsurf",
+})
+_DENYLIST = frozenset({
+    "aws", "az", "bash", "bat", "cargo", "cat", "choco", "cmake", "cmd", "code",
+    "conda", "curl", "dir", "docker", "explorer", "fd", "find", "fish", "gcc",
+    "gcloud", "gh", "git", "go", "grep", "java", "javac", "kubectl", "less",
+    "ls", "make", "mindsync", "mindsync-codex-hook", "mindsync-dispatch",
+    "more", "node", "notepad", "npm", "npx", "nvim", "pip", "pip3", "pipx",
+    "powershell", "pwsh", "pytest", "python", "python3", "pythonw", "rg",
+    "ruff", "rustc", "scoop", "scp", "sh", "ssh", "tar", "taskkill", "tasklist",
+    "uv", "uvx", "vim", "wget", "where", "which", "winget", "zsh", "zip",
+    "unzip",
+})
+_SKIP_DIR_PARTS = ("system32", "syswow64", "windowsapps", "systemapps")
+_MAX_DISCOVERED = 40
+
+
+def _leaf_cli_name(filename: str) -> str | None:
+    name = filename
+    if os.name == "nt":
+        stem, ext = os.path.splitext(filename)
+        if ext.lower() not in {".exe", ".cmd", ".bat", ".com"}:
+            return None
+        name = stem
+    name = name.lower()
+    if name.endswith(".exe"):
+        name = name[:-4]
+    if name not in _DENYLIST and _CLI_NAME_RE.fullmatch(name):
+        return name
+    return None
+
+
+def path_cli_names() -> dict[str, str]:
+    """Return unique PATH executable names that are not obviously system tools."""
+    found: dict[str, str] = {}
+    path_env = os.environ.get("PATH", "")
+    for directory in path_env.split(os.pathsep):
+        if not directory:
+            continue
+        lowered = directory.replace("\\", "/").lower()
+        if any(part in lowered for part in _SKIP_DIR_PARTS):
+            continue
+        try:
+            entries = os.listdir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            name = _leaf_cli_name(entry)
+            if not name or name in found:
+                continue
+            found[name] = str(Path(directory) / entry)
+    return found
+
+
+def looks_like_agent_cli(name: str) -> bool:
+    if name in _DENYLIST:
+        return False
+    if name in _SEED_BINS:
+        return True
+    return bool(_NAME_HINT.search(name))
+
+
+def probe_mcp_capable(bin_name: str, runner: CommandRunner, resolver: Resolver) -> bool:
+    resolved = resolver(bin_name)
+    if not resolved:
+        return False
+    for args in (["mcp", "list", "--json"], ["mcp", "list"]):
+        result = runner(resolved, list(args))
+        text = f"{result.stdout}\n{result.stderr}"
+        if result.returncode == 0:
+            return True
+        if _json_has_mindsync(result.stdout) or _text_has_mindsync(text):
+            return True
+        lowered = text.lower()
+        if "mcp" in lowered and "add" in lowered and "unknown" not in lowered:
+            return True
+    return False
+
+
+def discover_agent_clis(
+    *,
+    resolver: Resolver = resolve_bin,
+    runner: CommandRunner = _run_command,
+    path_bins: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Find coding-agent CLIs on PATH that are not already bundled presets."""
+    adapters = load_adapters()
+    known_bins = {adapter.bin.lower() for adapter in adapters.values()}
+    known_names = {adapter.name.lower() for adapter in adapters.values()}
+    known_names.update(CLI_SPECS)
+    known_bins.update(spec.bin.lower() for spec in CLI_SPECS.values())
+
+    if path_bins is None:
+        names = path_cli_names()
+        for seed in _SEED_BINS:
+            if seed not in names and resolver(seed):
+                names[seed] = seed
+    else:
+        names = dict(path_bins)
+
+    discovered: list[dict[str, Any]] = []
+    for name, bin_name in sorted(names.items()):
+        if len(discovered) >= _MAX_DISCOVERED:
+            break
+        if name in known_names or name in known_bins:
+            continue
+        if not looks_like_agent_cli(name):
+            continue
+        if not resolver(name) and not resolver(bin_name):
+            continue
+        use_bin = name if resolver(name) else bin_name
+        roster_name = name.replace("_", "-")
+        if not _AGENT_NAME_RE.fullmatch(roster_name):
+            continue
+        discovered.append(
+            {
+                "name": roster_name,
+                "bin": name if resolver(name) else Path(bin_name).stem.lower(),
+                "mcp_capable": probe_mcp_capable(use_bin, runner, resolver),
+            }
+        )
+    return discovered
 
 
 def resolve_register_capabilities(
@@ -117,6 +268,55 @@ def _ensure_mcp(
     return {"action": "configured", "cli": cli_name}
 
 
+def _mcp_already_configured(resolved: str, runner: CommandRunner) -> bool:
+    for args in (["mcp", "list", "--json"], ["mcp", "list"]):
+        result = runner(resolved, list(args))
+        text = f"{result.stdout}\n{result.stderr}"
+        if _json_has_mindsync(result.stdout) or _text_has_mindsync(text):
+            return True
+    return False
+
+
+def _ensure_generic_mcp(
+    name: str,
+    bin_name: str,
+    *,
+    dry_run: bool,
+    force: bool,
+    runner: CommandRunner,
+    resolver: Resolver,
+    python_exe: str | None,
+) -> dict[str, Any]:
+    resolved = resolver(bin_name)
+    if not resolved:
+        return {
+            "action": "skipped",
+            "cli": name,
+            "detail": f"'{bin_name}' is not on PATH; MCP was not registered",
+        }
+    if not probe_mcp_capable(bin_name, runner, resolver):
+        return {
+            "action": "skipped",
+            "cli": name,
+            "detail": "no MCP-management command for this CLI; dispatch registration still landed in the user roster",
+        }
+    if _mcp_already_configured(resolved, runner) and not force:
+        return {"action": "already_configured", "cli": name}
+    args = generic_mcp_registration_args(name, python_exe)
+    if dry_run:
+        return {"action": "would_configure", "cli": name, "command": args}
+    if force:
+        runner(resolved, ["mcp", "remove", "mindsync"])
+    added = runner(resolved, args)
+    if added.returncode != 0:
+        return {
+            "action": "error",
+            "cli": name,
+            "detail": added.stderr.strip() or added.stdout.strip() or "generic mcp add failed",
+        }
+    return {"action": "configured", "cli": name}
+
+
 def _verify_binary(bin_name: str, runner: CommandRunner, resolver: Resolver) -> dict[str, Any]:
     resolved = resolver(bin_name)
     if not resolved:
@@ -203,16 +403,7 @@ def register_agent(
         roster = upsert_user_agent(entry, force=force, dry_run=dry_run)
 
     matched_cli = _match_mcp_cli(agent_name, binary)
-    if matched_cli is None:
-        mcp = {
-            "action": "skipped",
-            "cli": None,
-            "detail": (
-                "no MCP-management command for this CLI; dispatch registration "
-                "still landed in the user roster"
-            ),
-        }
-    else:
+    if matched_cli is not None:
         mcp = _ensure_mcp(
             matched_cli,
             dry_run=dry_run,
@@ -220,6 +411,16 @@ def register_agent(
             runner=runner,
             resolver=resolver,
             user_home=user_home,
+            python_exe=python_exe,
+        )
+    else:
+        mcp = _ensure_generic_mcp(
+            agent_name,
+            binary,
+            dry_run=dry_run,
+            force=force,
+            runner=runner,
+            resolver=resolver,
             python_exe=python_exe,
         )
 
@@ -277,7 +478,14 @@ def describe_agents(
         mcp_installed = False
         mcp_detail = "no MCP-management command"
         if matched is None:
-            mcp_detail = "no MCP-management command for this CLI"
+            resolved = resolver(adapter.bin)
+            if resolved and _mcp_already_configured(resolved, runner):
+                mcp_installed = True
+                mcp_detail = "configured"
+            elif probe_mcp_capable(adapter.bin, runner, resolver):
+                mcp_detail = "installed, not configured"
+            else:
+                mcp_detail = "no MCP-management command for this CLI"
         else:
             status = cli_status(
                 matched, runner=runner, resolver=resolver, user_home=user_home
@@ -308,3 +516,56 @@ def describe_agents(
         )
     rows.sort(key=lambda item: item["name"])
     return rows
+
+
+def register_discovered_clis(
+    *,
+    dry_run: bool = False,
+    force: bool = False,
+    runner: CommandRunner = _run_command,
+    resolver: Resolver = resolve_bin,
+    user_home: Path | None = None,
+    python_exe: str | None = None,
+    path_bins: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Register PATH-discovered agent CLIs into the user roster during setup."""
+    actions: list[dict[str, Any]] = []
+    for item in discover_agent_clis(
+        resolver=resolver, runner=runner, path_bins=path_bins
+    ):
+        try:
+            result = register_agent(
+                name=item["name"],
+                bin_name=item["bin"],
+                capabilities=["coding"],
+                runner=runner,
+                resolver=resolver,
+                user_home=user_home,
+                python_exe=python_exe,
+                dry_run=dry_run,
+                force=force,
+            )
+        except ValueError as exc:
+            actions.append(
+                {
+                    "cli": item["name"],
+                    "action": "error",
+                    "detail": f"PATH discovery failed: {exc}",
+                }
+            )
+            continue
+        mcp = result.get("mcp") or {}
+        detail = (
+            f"PATH discovery; roster={result['roster']['action']}; "
+            f"mcp={mcp.get('action')}"
+        )
+        if mcp.get("detail"):
+            detail = f"{detail} ({mcp['detail']})"
+        actions.append(
+            {
+                "cli": item["name"],
+                "action": result["roster"]["action"],
+                "detail": detail,
+            }
+        )
+    return actions
