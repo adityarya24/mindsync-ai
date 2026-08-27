@@ -28,8 +28,27 @@ def test_ci_has_pinned_uv_lock_check():
     )
 
     assert (
-        "astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e"
+        "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d"
         in workflow
     )
     assert 'version: "0.11.26"' in workflow
     assert "uv lock --check" in workflow
+
+
+def test_workflows_pin_node24_action_releases():
+    workflows = "\n".join(
+        (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        for name in ("ci.yml", "release.yml")
+    )
+
+    expected_pins = (
+        "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd",
+        "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+        "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d",
+        "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f",
+        "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131",
+        "softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228",
+        "pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247",
+    )
+
+    assert all(pin in workflows for pin in expected_pins)
