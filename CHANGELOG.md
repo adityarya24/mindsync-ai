@@ -67,7 +67,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   at a share of the budget.
 - Undoing a consolidation left the proposals that application had retired at
   `superseded`, even though their source facts were restored and they were applicable
-  again.
+  again. Only proposals whose sources are all active again are revived: matching on
+  project alone also revived proposals retired by a *different* consolidation, which
+  rejoined the queue, consumed the per-project cap, and failed on apply.
 - Consolidation wedged shut once generated facts filled the candidate window.
   `is_generated` was filtered after the SQL `LIMIT`, and an applied proposal seeds its
   generated fact with the summed `source_count` of every fact it replaced — so

@@ -593,3 +593,58 @@ def test_undo_restores_the_proposals_the_application_retired():
     }
     assert statuses[retired_id] == "pending", statuses
     assert statuses[applied_id] == "undone", statuses
+
+
+def test_undo_leaves_another_consolidations_proposals_superseded():
+    """Undo must reactivate only what it actually made applicable again.
+
+    Matching on project alone revives proposals retired by a *different*
+    consolidation whose sources are still superseded — they rejoin the queue,
+    consume the per-project cap, and fail on apply.
+    """
+    from mindsync.memory import (
+        _get_db,
+        _utc_now,
+        memory_consolidation_apply,
+        memory_consolidation_undo,
+    )
+
+    db = _get_db()
+    now = _utc_now()
+    for i in range(1, 7):
+        db.execute(
+            "INSERT INTO facts (fact_id, project_key, text, first_seen,"
+            " recall_count, source_count, is_generated) VALUES (?,?,?,?,1,1,0)",
+            (f"i{i}", "indep", f"fact {i}", now),
+        )
+    first, first_dup = "1a" * 16, "1b" * 16
+    second, second_dup = "2a" * 16, "2b" * 16
+    for pid, sources, text in (
+        (first, ["i1", "i2"], "first pair"),
+        (first_dup, ["i2", "i3"], "overlaps first"),
+        (second, ["i4", "i5"], "second pair"),
+        (second_dup, ["i5", "i6"], "overlaps second"),
+    ):
+        db.execute(
+            "INSERT INTO consolidation_proposals (proposal_id, project_key, model,"
+            " source_fact_ids, proposed_text, status, created_at)"
+            " VALUES (?,?,?,?,?,'pending',?)",
+            (pid, "indep", "test-model", json.dumps(sources), text, now),
+        )
+
+    applied_first = memory_consolidation_apply(first)
+    memory_consolidation_apply(second)
+    memory_consolidation_undo(applied_first["fact_id"])
+
+    statuses = {
+        row["proposal_id"]: row["status"]
+        for row in db.execute(
+            "SELECT proposal_id, status FROM consolidation_proposals"
+            " WHERE project_key = 'indep'"
+        ).fetchall()
+    }
+    assert statuses[first_dup] == "pending", statuses
+    # i5 is still superseded by the second consolidation, so this one is not
+    # applicable and must not return to the queue.
+    assert statuses[second_dup] == "superseded", statuses
+    assert statuses[second] == "applied", statuses
