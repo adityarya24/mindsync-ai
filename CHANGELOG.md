@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `mindsync setup` registers Codex standalone memory hooks at `~/.codex/hooks.json`
+  when the Codex CLI is installed. Existing hook entries are merged and backed up;
+  `--no-hooks` skips the step and `--force` rewrites the MindSync hook blocks.
+- `mindsync doctor` reports session-memory database health, whether this directory
+  has a git identity, and whether Codex standalone hooks are configured.
+
 ## [1.5.0] - 2026-08-27
 
 ### Added

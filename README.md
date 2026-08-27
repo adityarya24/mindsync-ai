@@ -74,10 +74,13 @@ mindsync doctor
 ```
 
 Restart the configured CLI sessions. From then on, the CLI can use MindSync
-automatically; the user does not need to name a worker for every task.
+automatically; the user does not need to name a worker for every task. Session
+memory for dispatched jobs is on by default in git checkouts. When the Codex CLI
+is installed, `setup` also registers standalone Codex memory hooks.
 
-`setup` is idempotent. Existing MCP registrations are preserved unless `--force` is
-explicitly supplied, and a non-mutating preview is available:
+`setup` is idempotent. Existing MCP registrations and Codex hooks are preserved
+unless `--force` is explicitly supplied. Skip hooks with `--no-hooks`. A
+non-mutating preview is available:
 
 ```bash
 mindsync setup --dry-run
@@ -516,13 +519,13 @@ checkpoints only a compact changed-file list, and finalizes the mapped memory se
 Repeated terminal events and unchanged `Stop` events are idempotent. A later start
 conservatively finalizes stale or interrupted mappings before creating a new episode.
 
-The repository includes [`.codex/hooks.json`](.codex/hooks.json) as a working project
-configuration. After installing MindSync, copy that file into a trusted repository's
-`.codex` directory, review/enable it through Codex's hook trust flow, then restart the
-Codex session. Project-local hooks do not replace user-level Codex configuration.
+`mindsync setup` writes user-level hooks to `~/.codex/hooks.json` when the Codex
+CLI is installed, merging with any existing hook entries and leaving a backup.
+Project-local [`.codex/hooks.json`](.codex/hooks.json) still works for a single
+repository and does not replace user-level Codex configuration. Trust the hooks
+in Codex if prompted, then restart the session.
 
 ```bash
-python -m pip install mindsync-ai
 mindsync-codex-hook < codex-hook-event.json  # adapter smoke test
 ```
 

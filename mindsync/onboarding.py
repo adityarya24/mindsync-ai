@@ -253,12 +253,204 @@ def _write_cursor_config(
     return {"cli": "cursor", "action": "configured", "path": str(path), "backup": backup}
 
 
+CODEX_HOOK_COMMAND = "mindsync-codex-hook"
+CODEX_HOOK_EVENTS = ("SessionStart", "Stop", "SessionEnd")
+
+
+def codex_hooks_path(user_home: Path | None = None) -> Path:
+    return (user_home or Path.home()) / ".codex" / "hooks.json"
+
+
+def _mindsync_hook_command(event: str) -> dict[str, Any]:
+    hook: dict[str, Any] = {
+        "type": "command",
+        "command": CODEX_HOOK_COMMAND,
+        "commandWindows": CODEX_HOOK_COMMAND,
+        "timeout": 3,
+    }
+    if event == "SessionStart":
+        hook["additionalContextLimit"] = 8000
+    return hook
+
+
+def _mindsync_hook_block(event: str) -> dict[str, Any]:
+    block: dict[str, Any] = {"hooks": [_mindsync_hook_command(event)]}
+    if event == "SessionStart":
+        block["matcher"] = "startup|resume|clear|compact"
+    return block
+
+
+def bundled_codex_hooks_config() -> dict[str, Any]:
+    return {
+        "description": "Privacy-safe standalone MindSync lifecycle for Codex sessions.",
+        "hooks": {event: [_mindsync_hook_block(event)] for event in CODEX_HOOK_EVENTS},
+    }
+
+
+def _value_mentions_codex_hook(value: Any) -> bool:
+    if isinstance(value, str):
+        return CODEX_HOOK_COMMAND in value
+    if isinstance(value, dict):
+        return any(_value_mentions_codex_hook(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_value_mentions_codex_hook(item) for item in value)
+    return False
+
+
+def _hooks_cover_mindsync(data: dict[str, Any]) -> bool:
+    root = data.get("hooks")
+    if not isinstance(root, dict):
+        return False
+    return all(_value_mentions_codex_hook(root.get(event)) for event in CODEX_HOOK_EVENTS)
+
+
+def _file_has_mindsync_hooks(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(data, dict) and _hooks_cover_mindsync(data)
+
+
+def _ensure_mindsync_hook_events(data: dict[str, Any]) -> bool:
+    """Merge MindSync hook blocks into existing Codex hooks. Return True if changed."""
+    root = data.setdefault("hooks", {})
+    if not isinstance(root, dict):
+        raise ValueError("hooks is not an object")
+    changed = False
+    if not data.get("description"):
+        data["description"] = bundled_codex_hooks_config()["description"]
+        changed = True
+    for event in CODEX_HOOK_EVENTS:
+        entries = root.setdefault(event, [])
+        if not isinstance(entries, list):
+            raise ValueError(f"hooks.{event} is not an array")
+        if _value_mentions_codex_hook(entries):
+            continue
+        entries.append(_mindsync_hook_block(event))
+        changed = True
+    return changed
+
+
+def _write_codex_hooks(
+    *,
+    user_home: Path,
+    force: bool,
+    dry_run: bool,
+) -> dict[str, Any]:
+    path = codex_hooks_path(user_home)
+    original_text: str | None = None
+    data: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            original_text = path.read_text(encoding="utf-8")
+            parsed = json.loads(original_text)
+        except json.JSONDecodeError as exc:
+            return {
+                "cli": "codex-hook",
+                "action": "error",
+                "detail": f"Invalid JSON at {path}: {exc}",
+            }
+        if not isinstance(parsed, dict):
+            return {
+                "cli": "codex-hook",
+                "action": "error",
+                "detail": f"hooks file {path} is not an object",
+            }
+        data = parsed
+        if _hooks_cover_mindsync(data) and not force:
+            return {"cli": "codex-hook", "action": "already_configured", "path": str(path)}
+    if dry_run:
+        return {"cli": "codex-hook", "action": "would_configure", "path": str(path)}
+
+    try:
+        changed = _ensure_mindsync_hook_events(data)
+    except ValueError as exc:
+        return {"cli": "codex-hook", "action": "error", "detail": f"{path}: {exc}"}
+    if not changed and _hooks_cover_mindsync(data):
+        return {"cli": "codex-hook", "action": "already_configured", "path": str(path)}
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup = None
+    if path.is_file():
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        backup_path = path.with_name(f"hooks.{stamp}.{secrets.token_hex(3)}.json.bak")
+        atomic_private_write(backup_path, original_text or "")
+        backup = str(backup_path)
+    atomic_private_write(path, json.dumps(data, indent=2) + "\n")
+    return {
+        "cli": "codex-hook",
+        "action": "configured",
+        "path": str(path),
+        "backup": backup,
+    }
+
+
+def _codex_hooks_status(
+    user_home: Path | None = None,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
+    home = user_home or Path.home()
+    user_path = codex_hooks_path(home)
+    project_path = (cwd / ".codex" / "hooks.json") if cwd is not None else None
+    paths: list[str] = []
+    if _file_has_mindsync_hooks(user_path):
+        paths.append(str(user_path))
+    if project_path is not None and _file_has_mindsync_hooks(project_path):
+        paths.append(str(project_path))
+    return {
+        "configured": bool(paths),
+        "user_path": str(user_path),
+        "project_path": str(project_path) if project_path is not None else None,
+        "paths": paths,
+    }
+
+
+def _memory_doctor_report(
+    *,
+    user_home: Path | None = None,
+    cwd: Path | None = None,
+) -> dict[str, Any]:
+    workspace = cwd if cwd is not None else Path.cwd()
+    db_error = None
+    stats: dict[str, Any] | None = None
+    try:
+        from mindsync.memory import memory_stats
+
+        stats = memory_stats()
+    except Exception as exc:
+        db_error = str(exc)
+
+    git_project = None
+    try:
+        from mindsync.dispatch.memory_lifecycle import _infer_git_project_key
+
+        if workspace.is_dir():
+            git_project = _infer_git_project_key(str(workspace))
+    except Exception:
+        git_project = None
+
+    return {
+        "ok": db_error is None,
+        "db_open": db_error is None,
+        "db_error": db_error,
+        "sessions": None if stats is None else stats.get("total_sessions"),
+        "facts": None if stats is None else stats.get("total_facts"),
+        "db_size_bytes": None if stats is None else stats.get("db_size_bytes"),
+        "git_project": git_project,
+        "codex_hooks": _codex_hooks_status(user_home, workspace if workspace.is_dir() else None),
+    }
+
+
 def setup(
     *,
     mode: str = "auto",
     cli_names: Iterable[str] | None = None,
     dry_run: bool = False,
     force: bool = False,
+    install_hooks: bool = True,
     runner: CommandRunner = _run_command,
     resolver: Resolver = resolve_bin,
     user_home: Path | None = None,
@@ -316,6 +508,17 @@ def setup(
             actions.append({"cli": name, "action": "configured"})
         else:
             actions.append({"cli": name, "action": "error", "detail": added.stderr.strip() or added.stdout.strip() or "registration failed"})
+
+    if install_hooks:
+        codex_touched = any(
+            item.get("cli") == "codex" and item.get("action") != "not_installed"
+            for item in actions
+        )
+        if codex_touched:
+            actions.append(
+                _write_codex_hooks(user_home=home, force=force, dry_run=dry_run)
+            )
+
     return {
         "ok": not any(action["action"] == "error" for action in actions),
         "version": __version__,
@@ -332,6 +535,7 @@ def doctor(
     resolver: Resolver = resolve_bin,
     user_home: Path | None = None,
     policy_file: Path | None = None,
+    cwd: Path | None = None,
 ) -> dict[str, Any]:
     policy_error = None
     try:
@@ -366,6 +570,9 @@ def doctor(
         issues.append("No supported CLI has MindSync configured.")
     if not available_workers:
         issues.append("No dispatch worker CLI is available on PATH.")
+    memory = _memory_doctor_report(user_home=user_home, cwd=cwd)
+    if memory["db_error"]:
+        issues.append(f"Session memory database could not be opened: {memory['db_error']}")
     return {
         "ok": not issues,
         "version": __version__,
@@ -378,4 +585,5 @@ def doctor(
         "issues": issues,
         "clis": clis,
         "workers": workers,
+        "memory": memory,
     }
