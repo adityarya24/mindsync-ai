@@ -175,6 +175,7 @@ def spawn_background(
     stdout_path: str | Path,
     stderr_path: str | Path,
     stdin_path: str | Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     spec = spawn_spec(resolved_bin, args)
     stdout_path = Path(stdout_path)
@@ -203,6 +204,8 @@ def spawn_background(
         "stderr": err_f,
         "close_fds": not IS_WIN,
     }
+    if env is not None:
+        kwargs["env"] = env
     if IS_WIN:
         # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
         creationflags = 0x00000008 | 0x00000200

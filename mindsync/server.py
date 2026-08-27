@@ -40,6 +40,7 @@ from mindsync.bus import (
 from mindsync.config import settings
 from mindsync.conflict import detect_focus_conflicts
 from mindsync.dispatch import store as dispatch_store
+from mindsync.dispatch.memory_lifecycle import DEFAULT_MEMORY_MODE
 from mindsync.dispatch.review import format_review as dispatch_format_review
 from mindsync.dispatch.runner import (
     AutoDelegationSuggestion,
@@ -653,7 +654,7 @@ async def delegate_task(
     required_capabilities: list[str] | None = None,
     exclude_agents: list[str] | None = None,
     memory_project: str | None = None,
-    memory_mode: str = "explicit",
+    memory_mode: str = DEFAULT_MEMORY_MODE,
     agent_name: str = "default_agent",
     ctx: Context | None = None,
 ) -> str:
@@ -666,9 +667,9 @@ async def delegate_task(
     If worktree is True, the agent runs in an isolated git worktree branching from cwd.
     checks are shell commands run after the agent finishes (for example a test command);
     read their outcome with job_review before spending anything on the job's output.
-    memory_mode controls dispatch memory: explicit (the compatibility default)
-    requires memory_project, auto infers an opaque Git checkout identity when no
-    project is supplied, and off disables memory. An explicit project overrides
+    memory_mode controls dispatch memory: auto (the default) infers an opaque
+    Git checkout identity when no project is supplied, explicit requires
+    memory_project, and off disables memory. An explicit project overrides
     inference. Raw prompts are never stored in memory.
     """
     settings.ensure_dirs()

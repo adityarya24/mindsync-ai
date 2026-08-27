@@ -30,6 +30,7 @@ _CONTEXT_END = "--- end MindSync session memory ---"
 _MAX_FILES = 50
 _MAX_CHECK_ENTRIES = 20
 _MEMORY_MODES = {"auto", "explicit", "off"}
+DEFAULT_MEMORY_MODE = "auto"
 _GIT_IDENTITY_DOMAIN = "mindsync-git-project-v1"
 
 

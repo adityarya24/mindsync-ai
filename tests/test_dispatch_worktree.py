@@ -249,16 +249,19 @@ async def test_worktree_job_prompt_warns_against_absolute_paths(
         cwd=str(fake_repo), worktree=True
     )
     sent = store.get_job(res["job"]["id"])["prompt"]
-    assert sent.startswith("do the thing")
+    assert "do the thing" in sent
     assert "isolated git worktree" in sent
     assert "absolute path" in sent
 
-    # A job without isolation must not have its prompt rewritten.
+    # Isolation note is worktree-only. Default auto may still wrap a git cwd
+    # with a session-memory prefix; that is not an isolation rewrite.
     plain = await run_task(
         agent="noop", prompt="do the thing", background=False, publisher_agent="t",
         cwd=str(fake_repo)
     )
-    assert store.get_job(plain["job"]["id"])["prompt"] == "do the thing"
+    plain_prompt = store.get_job(plain["job"]["id"])["prompt"]
+    assert "do the thing" in plain_prompt
+    assert "isolated git worktree" not in plain_prompt
 
 
 @pytest.mark.asyncio
