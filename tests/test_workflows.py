@@ -28,7 +28,7 @@ def test_ci_has_pinned_uv_lock_check():
     )
 
     assert (
-        "astral-sh/setup-uv@eb1897b8dc4b5d5bfe39a428a8f2304605e0983c"
+        "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d"
         in workflow
     )
     assert 'version: "0.11.26"' in workflow
@@ -44,7 +44,7 @@ def test_workflows_pin_node24_action_releases():
     expected_pins = (
         "actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd",
         "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
-        "astral-sh/setup-uv@eb1897b8dc4b5d5bfe39a428a8f2304605e0983c",
+        "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d",
         "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f",
         "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131",
         "softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228",
