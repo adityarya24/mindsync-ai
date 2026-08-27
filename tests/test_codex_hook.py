@@ -132,6 +132,7 @@ def test_session_start_returns_codex_additional_context(monkeypatch, capsys, lif
 
     (args, kwargs), = lifecycle.named("start")
     assert args == ("codex", "codex-session-1", "/workspace")
+    assert 0 < kwargs.pop("timeout_seconds") <= codex_hook._HOOK_WORK_BUDGET_SECONDS
     assert kwargs == {
         "source": "startup",
         "memory_mode": "auto",
@@ -341,6 +342,7 @@ def test_stop_always_emits_continue_json(monkeypatch, capsys, lifecycle):
     assert json.loads(out) == {"continue": True}
     (args, kwargs), = lifecycle.named("checkpoint")
     assert args == ("codex", "codex-session-1")
+    assert 0 < kwargs.pop("timeout_seconds") <= codex_hook._HOOK_WORK_BUDGET_SECONDS
     assert kwargs == {"status": "active", "files_changed": None}
 
 
@@ -471,7 +473,7 @@ def test_git_is_invoked_by_argv_without_a_shell(monkeypatch, capsys, lifecycle, 
         assert call["args"][0] == "git"
         assert all(isinstance(part, str) for part in call["args"])
         assert call.get("shell", False) is False
-        assert call["timeout"] == codex_hook._GIT_TIMEOUT_SECONDS
+        assert 0 < call["timeout"] <= codex_hook._GIT_TIMEOUT_SECONDS
         assert call["stdin"] is subprocess.DEVNULL
         for name in ("GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"):
             assert name not in call["env"]
@@ -496,6 +498,33 @@ def test_git_status_failure_warns_but_checkpoints(monkeypatch, capsys, lifecycle
     assert "changed-file detection degraded" in err
     (_, kwargs), = lifecycle.named("checkpoint")
     assert kwargs["files_changed"] is None
+
+
+def test_stop_git_and_checkpoint_share_one_deadline(
+    monkeypatch, capsys, lifecycle, tmp_path
+):
+    clock = iter((100.0, 100.1, 102.3, 102.4))
+    monkeypatch.setattr(codex_hook.time, "monotonic", lambda: next(clock))
+    git_timeouts: list[float] = []
+
+    class Result:
+        returncode = 0
+        stdout = "true\n"
+
+    def fake_run(args, **kwargs):
+        git_timeouts.append(kwargs["timeout"])
+        if "status" in args:
+            return type("StatusResult", (), {"returncode": 0, "stdout": ""})()
+        return Result()
+
+    monkeypatch.setattr(codex_hook.subprocess, "run", fake_run)
+    code, out, _ = run_hook(monkeypatch, capsys, payload_for("Stop", tmp_path))
+
+    assert code == 0
+    assert json.loads(out) == {"continue": True}
+    assert git_timeouts == pytest.approx([2.0, 0.2])
+    (_, kwargs), = lifecycle.named("checkpoint")
+    assert kwargs["timeout_seconds"] == pytest.approx(0.1)
 
 
 def test_porcelain_parser_rejects_escaping_paths():
@@ -523,6 +552,7 @@ def test_session_end_closes_the_session_quietly(monkeypatch, capsys, lifecycle):
     assert (code, out, err) == (0, "", "")
     (args, kwargs), = lifecycle.named("end")
     assert args == ("codex", "codex-session-1")
+    assert 0 < kwargs.pop("timeout_seconds") <= codex_hook._HOOK_WORK_BUDGET_SECONDS
     assert kwargs == {"status": "completed"}
 
 
@@ -635,7 +665,7 @@ def test_missing_core_module_degrades(monkeypatch, capsys):
 
 
 def test_unexpected_handler_crash_still_answers_stop(monkeypatch, capsys, lifecycle):
-    def explode(fields, warnings):
+    def explode(fields, warnings, deadline):
         raise KeyError("unexpected")
 
     monkeypatch.setitem(codex_hook._HANDLERS, "Stop", explode)

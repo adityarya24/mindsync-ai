@@ -1671,6 +1671,18 @@ def memory_consolidation_undo(fact_id: str) -> dict[str, Any]:
         db.execute(
             """
             UPDATE consolidation_proposals
+            SET status = 'pending'
+            WHERE project_key = (
+                SELECT project_key FROM consolidation_proposals
+                WHERE applied_fact_id = ? AND status = 'applied'
+            )
+              AND status = 'superseded'
+            """,
+            (fact_id,),
+        )
+        db.execute(
+            """
+            UPDATE consolidation_proposals
             SET status = 'undone'
             WHERE applied_fact_id = ? AND status = 'applied'
             """,
@@ -1698,8 +1710,13 @@ def memory_consolidation_list(
         project_key = _validate_identifier(
             project_key, "project_key", _PROJECT_KEY_MAX
         )
-    if status is not None and status not in {"pending", "applied", "undone"}:
-        raise ValueError("status must be pending, applied, or undone")
+    if status is not None and status not in {
+        "pending",
+        "applied",
+        "superseded",
+        "undone",
+    }:
+        raise ValueError("status must be pending, applied, superseded, or undone")
     limit = _validate_limit(limit, "limit", _MAX_LIST_LIMIT)
     rows = _get_db().execute(
         """

@@ -420,7 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     memory_proposals_parser.add_argument("--project", help="Filter by project key")
     memory_proposals_parser.add_argument(
-        "--status", choices=["pending", "applied", "undone"]
+        "--status", choices=["pending", "applied", "superseded", "undone"]
     )
     memory_proposals_parser.add_argument("--limit", type=_positive_int, default=50)
 

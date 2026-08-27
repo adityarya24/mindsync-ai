@@ -538,6 +538,58 @@ def test_applying_a_proposal_retires_the_ones_it_invalidates():
         ("bb" * 16,),
     ).fetchone()["status"]
     assert status == "superseded"
+    audit = memory_consolidation_list(project_key="retire", status="superseded")
+    assert [proposal["proposal_id"] for proposal in audit] == ["bb" * 16]
     assert db.execute(
         "SELECT COUNT(*) FROM consolidation_proposals WHERE status = 'pending'"
     ).fetchone()[0] == 0
+
+
+def test_undo_restores_the_proposals_the_application_retired():
+    """Undoing an application makes its retired proposals applicable again.
+
+    Applying a proposal supersedes its sources and retires every proposal
+    citing them. Undo restores those source facts, so leaving the retired
+    proposals at 'superseded' strands work that is valid once more.
+    """
+    from mindsync.memory import (
+        _get_db,
+        _utc_now,
+        memory_consolidation_apply,
+        memory_consolidation_undo,
+    )
+
+    db = _get_db()
+    now = _utc_now()
+    for fid, text in (("u1", "one"), ("u2", "two"), ("u3", "three")):
+        db.execute(
+            "INSERT INTO facts (fact_id, project_key, text, first_seen,"
+            " recall_count, source_count, is_generated) VALUES (?,?,?,?,1,1,0)",
+            (fid, "undo-proj", text, now),
+        )
+    applied_id, retired_id = "cc" * 16, "dd" * 16
+    for pid, sources, text in (
+        (applied_id, ["u1", "u2"], "one and two"),
+        (retired_id, ["u2", "u3"], "two and three"),
+    ):
+        db.execute(
+            "INSERT INTO consolidation_proposals (proposal_id, project_key, model,"
+            " source_fact_ids, proposed_text, status, created_at)"
+            " VALUES (?,?,?,?,?,'pending',?)",
+            (pid, "undo-proj", "test-model", json.dumps(sources), text, now),
+        )
+
+    result = memory_consolidation_apply(applied_id)
+    assert retired_id in result["superseded_proposals"]
+
+    memory_consolidation_undo(result["fact_id"])
+
+    statuses = {
+        row["proposal_id"]: row["status"]
+        for row in db.execute(
+            "SELECT proposal_id, status FROM consolidation_proposals"
+            " WHERE project_key = 'undo-proj'"
+        ).fetchall()
+    }
+    assert statuses[retired_id] == "pending", statuses
+    assert statuses[applied_id] == "undone", statuses
