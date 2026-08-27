@@ -1214,6 +1214,18 @@ def _ensure_fact_embeddings(
     return indexed
 
 
+def _all_facts_active(db: sqlite3.Connection, fact_ids: list[str]) -> bool:
+    """True when every named fact exists and none has been superseded."""
+    if not fact_ids:
+        return False
+    placeholders = ",".join("?" * len(fact_ids))
+    return db.execute(
+        f"SELECT COUNT(*) FROM facts WHERE fact_id IN ({placeholders})"
+        " AND superseded_by IS NULL",
+        fact_ids,
+    ).fetchone()[0] == len(fact_ids)
+
+
 def _active_fact_rows(
     db: sqlite3.Connection,
     project_key: str,
@@ -1668,18 +1680,32 @@ def memory_consolidation_undo(fact_id: str) -> dict[str, Any]:
             ).fetchall()
         ]
         db.execute("UPDATE facts SET superseded_by = NULL WHERE superseded_by = ?", (fact_id,))
-        db.execute(
-            """
-            UPDATE consolidation_proposals
-            SET status = 'pending'
-            WHERE project_key = (
-                SELECT project_key FROM consolidation_proposals
-                WHERE applied_fact_id = ? AND status = 'applied'
-            )
-              AND status = 'superseded'
-            """,
+        # Reactivate only what this undo actually made applicable again.
+        # Matching on project alone reactivates proposals retired by a *different*
+        # consolidation, whose sources are still superseded: they return to the
+        # queue, count against the cap, and fail on apply. A proposal is
+        # applicable again only when every source it cites is active.
+        project_row = db.execute(
+            "SELECT project_key FROM consolidation_proposals"
+            " WHERE applied_fact_id = ? AND status = 'applied'",
             (fact_id,),
-        )
+        ).fetchone()
+        if project_row is not None:
+            revived = [
+                row["proposal_id"]
+                for row in db.execute(
+                    "SELECT proposal_id, source_fact_ids FROM consolidation_proposals"
+                    " WHERE project_key = ? AND status = 'superseded'",
+                    (project_row["project_key"],),
+                ).fetchall()
+                if _all_facts_active(db, json.loads(row["source_fact_ids"]))
+            ]
+            if revived:
+                db.execute(
+                    "UPDATE consolidation_proposals SET status = 'pending'"
+                    f" WHERE proposal_id IN ({','.join('?' * len(revived))})",
+                    revived,
+                )
         db.execute(
             """
             UPDATE consolidation_proposals
