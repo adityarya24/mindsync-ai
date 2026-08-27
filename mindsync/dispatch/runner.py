@@ -25,6 +25,7 @@ from mindsync.dispatch.proc import (
 )
 from mindsync.dispatch import store
 from mindsync.dispatch.memory_lifecycle import (
+    DEFAULT_MEMORY_MODE,
     append_warnings,
     finalize_dispatch_memory,
     prepare_dispatch_memory,
@@ -231,6 +232,21 @@ def _finalize_memory_if_needed(job_id: str) -> None:
     append_warnings(job_id, warnings)
 
 
+def _supervisor_child_env() -> dict[str, str]:
+    """Preserve the parent interpreter's import overlay for a detached supervisor.
+
+    `uv run --with` (and similar overlays) put dependencies on `sys.path` without
+    installing them onto `sys.executable`. A bare re-exec then fails before it
+    can finalize session memory.
+    """
+    env = os.environ.copy()
+    inherited = [part for part in env.get("PYTHONPATH", "").split(os.pathsep) if part]
+    overlay = [part for part in sys.path if part and part not in inherited]
+    if overlay:
+        env["PYTHONPATH"] = os.pathsep.join([*overlay, *inherited])
+    return env
+
+
 async def run_task(
     *,
     agent: str | None = None,
@@ -249,7 +265,7 @@ async def run_task(
     execution_mode: str = "worker",
     timeout_seconds: float | None = None,
     memory_project: str | None = None,
-    memory_mode: str = "explicit",
+    memory_mode: str = DEFAULT_MEMORY_MODE,
 ) -> dict[str, Any]:
     execution_mode = validate_execution_mode(execution_mode)
     memory_mode = validate_memory_mode(memory_mode)
@@ -423,6 +439,7 @@ async def run_task(
             cwd=supervisor_cwd,
             stdout_path=paths["supervisorLog"],
             stderr_path=paths["supervisorLog"],
+            env=_supervisor_child_env(),
         )
         updated = store.update_job(
             meta["id"],

@@ -6,6 +6,7 @@ import asyncio
 import sys
 
 from mindsync.dispatch.adapters import load_adapters, user_config_path
+from mindsync.dispatch.memory_lifecycle import DEFAULT_MEMORY_MODE
 from mindsync.dispatch.review import format_review, verdict
 from mindsync.dispatch.runner import (
     cancel_job,
@@ -31,7 +32,7 @@ def parse_run_args(argv: list[str]) -> dict:
         "required_capabilities": [],
         "exclude_agents": [],
         "memory_project": None,
-        "memory_mode": "explicit",
+        "memory_mode": DEFAULT_MEMORY_MODE,
     }
     rest: list[str] = []
     i = 0

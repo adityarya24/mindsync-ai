@@ -227,13 +227,13 @@ MindSync exposes 29 tools.
 | `session_end` | Mark a session completed or failed |
 
 Note: dispatch can also drive session memory automatically. `memory_mode` (MCP) or
-`--memory-mode` (CLI) accepts `explicit`, `auto`, or `off`. The compatibility default
-is `explicit`, where `memory_project` / `--memory-project <key>` opts in exactly as
-before. `auto` uses an explicit key when supplied; otherwise it hashes Git's resolved
+`--memory-mode` (CLI) accepts `auto`, `explicit`, or `off`. The default is `auto`,
+which uses an explicit key when supplied and otherwise hashes Git's resolved
 common directory into an opaque key shared by the checkout and its linked worktrees.
 It never uses a raw path, repository name, or remote URL as the key. If Git identity
-cannot be trusted, memory stays off and the job carries a non-fatal warning. `off`
-is an explicit opt-out. When enabled, MindSync bootstraps bounded project context before
+cannot be trusted, memory stays off and the job carries a non-fatal warning.
+`explicit` requires `memory_project` / `--memory-project <key>`. `off` is an
+explicit opt-out. When enabled, MindSync bootstraps bounded project context before
 spawn, prepends a delimited compact prefix to the worker prompt, starts a local session,
 and finalizes once on every terminal job outcome. Raw user prompts, injected prompts,
 and full stdout/stderr are never written to session memory.
@@ -293,8 +293,8 @@ mindsync-dispatch run codex "summarize README" \
   --worktree --effort high --check "pytest -q"
 mindsync-dispatch run codex "continue the refactor" \
   --memory-project my-repo-key
-mindsync-dispatch run codex "pilot inferred project memory" \
-  --memory-mode auto
+mindsync-dispatch run codex "skip session memory" \
+  --memory-mode off
 mindsync-dispatch status
 mindsync-dispatch review <job-id>
 mindsync-dispatch result <job-id>

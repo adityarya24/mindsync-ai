@@ -33,12 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consolidation output. Remote or credential-bearing model URLs are rejected, request
   failures are visible without response-body leakage, cues are redacted and never
   persisted, and consolidation receives only already-redacted durable-fact text.
-- Phase 3A dispatch memory rollout modes: `explicit` remains the compatibility
-  default, `auto` infers a privacy-safe opaque identity shared by a Git checkout
-  and its linked worktrees, and `off` is an explicit opt-out. A supplied
+- Phase 3A dispatch memory rollout modes: `auto` infers a privacy-safe opaque
+  identity shared by a Git checkout and its linked worktrees, `explicit` requires a
+  supplied project key, and `off` is an explicit opt-out. A supplied
   `memory_project` overrides inference; failed or untrustworthy inference disables
   memory with a visible non-fatal job warning instead of guessing from a path or
   repository name. CLI callers use `--memory-mode`; MCP callers use `memory_mode`.
+  After a real-dispatch pilot, `auto` is the default.
 - Project-scoped fact store (session-memory schema v2). Durable facts are still written
   to their checkpoint exactly as before, and are now also promoted into `facts` /
   `fact_sources` keyed by project, so the same lesson recorded in twenty sessions becomes
@@ -109,9 +110,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mid-JSON. The budget reserves the framing, and the cap has one definition.
 - A retried `memory_checkpoint` with an existing caller-supplied checkpoint ID skipped
   the session-status update, returning success while `sessions.status` never advanced.
+- A background dispatch supervisor re-exec'd `sys.executable` without the parent
+  process's import overlay, so `uv run --with` children crashed before finalize
+  (`ModuleNotFoundError: pydantic`). The supervisor now inherits a `PYTHONPATH`
+  built from the parent's `sys.path`.
+- Reconciling a dead running job marked it `failed` without finalizing session
+  memory, leaving the episode `active` until the 24-hour reaper. Dead-PID
+  reconciliation now finalizes.
 
 ### Changed
 
+- Dispatch `--memory-mode` / `memory_mode` now defaults to `auto`. A real-dispatch
+  pilot confirmed Git identity is stable across a checkout and its subdirectory, and
+  that a non-git working directory fail-closes with a visible warning instead of
+  minting a key. `explicit` still requires `--memory-project` / `memory_project`;
+  `off` is unchanged. The Codex standalone hook was already `auto`.
 - `memory_checkpoint` accepts an optional caller-supplied checkpoint ID. Reusing that
   ID in the same session returns the existing checkpoint, while cross-session reuse is
   rejected; standalone terminal retries use this to avoid duplicate final markers.

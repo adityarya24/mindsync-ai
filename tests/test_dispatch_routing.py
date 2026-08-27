@@ -165,6 +165,7 @@ async def test_run_task_auto_records_explainable_route(tmp_path, monkeypatch):
         agent="auto",
         prompt="implement the feature",
         required_capabilities=["coding"],
+        cwd=str(tmp_path),
     )
 
     assert res["job"]["agent"] == "builder"
@@ -185,7 +186,11 @@ async def test_mcp_defaults_to_auto_and_exposes_preview_and_inventory(tmp_path, 
     assert auditor["available"] is True
     assert "security" in auditor["capabilities"]
 
-    result = await delegate_task(prompt="security review", required_capabilities=["security"])
+    result = await delegate_task(
+        prompt="security review",
+        required_capabilities=["security"],
+        cwd=str(tmp_path),
+    )
     assert "Auto route: Selected auditor" in result
     assert "audited:security review" in result
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import mindsync.storage as storage
 from mindsync.dispatch.adapters import user_config_path
 from mindsync.dispatch.cli import parse_run_args
 from mindsync.dispatch.memory_lifecycle import (
+    DEFAULT_MEMORY_MODE,
     _infer_git_project_key,
     _format_context_prefix,
     finalize_dispatch_memory,
@@ -141,11 +143,12 @@ def test_parse_run_args_memory_project_flag():
     assert opts["memory_project"] == "planner"
     assert opts["agent"] == "codex"
     assert opts["prompt"] == "do work"
+    assert opts["memory_mode"] == DEFAULT_MEMORY_MODE == "auto"
 
 
 def test_parse_run_args_memory_mode_flag():
-    opts = parse_run_args(["codex", "do work", "--memory-mode", "auto"])
-    assert opts["memory_mode"] == "auto"
+    opts = parse_run_args(["codex", "do work", "--memory-mode", "explicit"])
+    assert opts["memory_mode"] == "explicit"
 
 
 def test_memory_mode_resolution_preserves_explicit_default_and_opt_out():
@@ -246,7 +249,12 @@ async def test_memory_disabled_preserves_create_job_prompt(tmp_path, monkeypatch
 
     monkeypatch.setattr(runner, "_create_job_with_auto_limit", capture_create)
 
-    await run_task(agent="pyecho", prompt="plain-task", background=False)
+    await run_task(
+        agent="pyecho",
+        prompt="plain-task",
+        memory_mode="explicit",
+        background=False,
+    )
 
     assert len(captured) == 1
     assert captured[0]["prompt"] == "plain-task"
@@ -255,6 +263,51 @@ async def test_memory_disabled_preserves_create_job_prompt(tmp_path, monkeypatch
     assert jobs[0].get("memorySessionId") is None
     assert jobs[0]["memoryMode"] == "explicit"
     assert jobs[0]["prompt"] == "plain-task"
+
+
+@pytest.mark.asyncio
+async def test_default_auto_mode_infers_git_identity_without_flag(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    _register_pyecho(tmp_path)
+    repo = tmp_path / "default-auto-repo"
+    _init_git_repo(repo)
+    expected_key = _infer_git_project_key(str(repo))
+
+    res = await run_task(
+        agent="pyecho",
+        prompt="default-auto-task",
+        cwd=str(repo),
+        background=False,
+    )
+
+    job = res["job"]
+    assert job["status"] == "done"
+    assert job["memoryMode"] == "auto"
+    assert job["memoryProjectSource"] == "git"
+    assert job["memoryProject"] == expected_key
+    assert job["memoryFinalized"] is True
+    assert not any("session memory" in item for item in job["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_default_auto_mode_fails_closed_outside_git(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    _register_pyecho(tmp_path)
+
+    res = await run_task(
+        agent="pyecho",
+        prompt="plain-task",
+        cwd=str(tmp_path),
+        background=False,
+    )
+
+    job = res["job"]
+    assert job["status"] == "done"
+    assert job["memoryMode"] == "auto"
+    assert job.get("memorySessionId") is None
+    assert job.get("memoryProject") is None
+    assert any("session memory auto disabled" in item for item in job["warnings"])
+    assert "--- MindSync session memory" not in (res["result"] or "")
 
 
 @pytest.mark.asyncio
@@ -650,3 +703,67 @@ def test_memory_mode_flag_without_a_value_is_a_usage_error():
     with pytest.raises(SystemExit) as excinfo:
         parse_run_args(["codex", "a task", "--memory-mode"])
     assert "--memory-mode" in str(excinfo.value)
+
+
+def test_reconcile_dead_running_job_finalizes_memory(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    meta = store.create_job(agent="test", prompt="x", cwd=str(tmp_path))
+    from mindsync.dispatch.memory_lifecycle import prepare_dispatch_memory
+
+    prepare_dispatch_memory(
+        meta["id"],
+        "dead-supervisor",
+        agent="test",
+        workspace=str(tmp_path),
+        branch=None,
+    )
+    started = store.update_job(
+        meta["id"],
+        {"status": "running", "pid": 999_999_999, "spawnedName": "python"},
+    )
+    assert started.get("memorySessionId")
+    assert started.get("memoryFinalized") is False
+
+    reconciled = store.reconcile_job(started)
+    assert reconciled["status"] == "failed"
+    assert reconciled["memoryFinalized"] is True
+    row = _get_db().execute(
+        "SELECT status FROM sessions WHERE session_id = ?",
+        (reconciled["memorySessionId"],),
+    ).fetchone()
+    assert row["status"] != "active"
+
+
+@pytest.mark.asyncio
+async def test_background_supervisor_inherits_parent_pythonpath(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    _register_pyecho(tmp_path)
+    overlay = str(tmp_path / "uv-overlay-site")
+    monkeypatch.setattr(
+        sys,
+        "path",
+        [overlay, *sys.path],
+    )
+
+    captured: dict = {}
+
+    def fake_spawn(py, args, cwd=None, stdout_path=None, stderr_path=None, env=None):
+        captured["env"] = env
+        captured["args"] = args
+        return {"pid": 999999, "spawnedName": "python"}
+
+    import mindsync.dispatch.runner as runner
+
+    monkeypatch.setattr(runner, "spawn_background", fake_spawn)
+    monkeypatch.setattr(runner, "resolve_bin", lambda _bin: sys.executable)
+
+    await run_task(
+        agent="pyecho",
+        prompt="bg-memory",
+        cwd=str(tmp_path),
+        background=True,
+    )
+
+    assert captured["env"] is not None
+    assert overlay in captured["env"].get("PYTHONPATH", "").split(os.pathsep)
+    assert "_supervise" in captured["args"]

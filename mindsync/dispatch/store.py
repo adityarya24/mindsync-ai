@@ -242,11 +242,23 @@ def reconcile_job(meta: dict[str, Any]) -> dict[str, Any]:
     fresh = get_job(str(meta["id"]))
     if fresh is None or fresh.get("status") != "running":
         return fresh if fresh is not None else meta
-    return update_job(
+    updated = update_job(
         str(meta["id"]),
         {"status": "failed", "endedAt": utc_now()},
         expected_status="running",
     )
+    # A dead supervisor never reaches _finalize_memory_if_needed. Close the
+    # session here so auto-mode jobs cannot stay `active` until the 24h reaper.
+    if (
+        updated.get("status") == "failed"
+        and updated.get("memorySessionId")
+        and not updated.get("memoryFinalized")
+    ):
+        from mindsync.dispatch.memory_lifecycle import finalize_dispatch_memory
+
+        finalize_dispatch_memory(updated["id"])
+        return get_job(updated["id"]) or updated
+    return updated
 
 
 def list_jobs() -> list[dict[str, Any]]:
