@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Ended memory sessions stay terminal: a late dispatch checkpoint cannot
+  resurrect them or write new facts.
+- Dispatch memory finalization is retryable. A degraded first attempt no
+  longer marks the job finalized forever; the terminal checkpoint id is
+  stable across retries, and replayed session context is labeled untrusted.
+- Legacy `~/.claude/agent-dispatch` migration runs once under a lock and
+  writes a completion marker, so later files in the old folder cannot leak
+  into `~/.mindsync/dispatch`.
+- Release tagging now requires the commit to be on `origin/master` with a
+  successful **push** CI run on that SHA, not merely any completed CI check.
+
 ## [1.5.2] - 2026-08-27
 
 ### Added
