@@ -1671,6 +1671,18 @@ def memory_consolidation_undo(fact_id: str) -> dict[str, Any]:
         db.execute(
             """
             UPDATE consolidation_proposals
+            SET status = 'pending'
+            WHERE project_key = (
+                SELECT project_key FROM consolidation_proposals
+                WHERE applied_fact_id = ? AND status = 'applied'
+            )
+              AND status = 'superseded'
+            """,
+            (fact_id,),
+        )
+        db.execute(
+            """
+            UPDATE consolidation_proposals
             SET status = 'undone'
             WHERE applied_fact_id = ? AND status = 'applied'
             """,

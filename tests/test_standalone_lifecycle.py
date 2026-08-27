@@ -642,13 +642,18 @@ def test_checkpoint_zero_budget_stops_before_database(
         raise AssertionError("database checkpoint must not start after the deadline")
 
     monkeypatch.setattr(lifecycle_mod, "memory_checkpoint", unexpected_checkpoint)
-    with pytest.raises(TimeoutError, match="deadline exhausted"):
-        checkpoint_standalone_session(
-            "cursor",
-            "deadline",
-            decisions=["too late"],
-            timeout_seconds=0,
-        )
+    # The database must not be touched after the deadline — but the caller gets
+    # a warning, not an exception. Every other failure in this module degrades,
+    # the return type is unchanged, and only the Codex hook happens to wrap
+    # these calls; anything else would get an exception where it used to get a
+    # value.
+    warnings = checkpoint_standalone_session(
+        "cursor",
+        "deadline",
+        decisions=["too late"],
+        timeout_seconds=0,
+    )
+    assert any("deadline exhausted" in item for item in warnings)
 
 
 def test_checkpoint_skips_empty_and_duplicate_heartbeats(isolated: Path):
@@ -749,3 +754,64 @@ def test_mode_off_still_reports_an_ignored_project():
         "codex", "sess-off-2", None, memory_mode="off", memory_project="planner"
     )
     assert any("memory_project ignored" in item for item in result.warnings)
+
+
+def test_exhausted_budget_does_not_strand_a_healthy_session(isolated: Path):
+    """Finalize must check the budget before it mutates anything.
+
+    Flipping lifecycle_state to "finalizing" and only then discovering there is
+    no time left leaves the state file saying finalizing while the DB row is
+    still active with no ended_at. "finalizing" is not resumable, so the session
+    is unusable until the 24h stale reaper reaches it.
+    """
+    import time
+
+    import mindsync.memory as memory_mod
+
+    repo = isolated / "repo"
+    _init_git_repo(repo)
+    started = start_standalone_session(
+        "cursor", "strand", str(repo), memory_mode="auto"
+    )
+    assert started.memory_session_id
+
+    digest = lifecycle_mod._session_digest("cursor", "strand")
+    state = lifecycle_mod._load_state(lifecycle_mod._state_path(digest))
+    warnings: list[str] = []
+    lifecycle_mod._finalize_state(
+        state, digest, "completed", warnings, deadline=time.monotonic() - 1
+    )
+
+    after = lifecycle_mod._load_state(lifecycle_mod._state_path(digest))
+    assert after["lifecycle_state"] == "active", after["lifecycle_state"]
+    assert after["lifecycle_state"] in lifecycle_mod._RESUMABLE_STATES
+    row = memory_mod._get_db().execute(
+        "SELECT status, ended_at FROM sessions WHERE session_id = ?",
+        (started.memory_session_id,),
+    ).fetchone()
+    assert row["status"] == "active" and row["ended_at"] is None
+
+
+def test_public_entry_points_degrade_rather_than_raise(isolated: Path):
+    """Memory is optional here; a spent budget is a warning, not an exception."""
+    repo = isolated / "repo"
+    _init_git_repo(repo)
+
+    started = start_standalone_session(
+        "cursor", "degrade", str(repo), memory_mode="auto", timeout_seconds=0
+    )
+    assert started.memory_session_id is None
+    assert any("skipped" in item for item in started.warnings)
+
+    assert any(
+        "skipped" in item
+        for item in checkpoint_standalone_session(
+            "cursor", "degrade", status="active", timeout_seconds=0
+        )
+    )
+    assert any(
+        "skipped" in item
+        for item in end_standalone_session(
+            "cursor", "degrade", status="completed", timeout_seconds=0
+        )
+    )

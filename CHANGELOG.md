@@ -54,6 +54,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A standalone `SessionEnd` that ran out of budget marked a healthy session
+  `finalizing` before checking the deadline, leaving the state file finalizing while
+  the session row stayed `active` — unresumable until the 24-hour stale reaper reached
+  it. The budget is now checked before anything is mutated.
+- The standalone entry points raised `TimeoutError` on an exhausted budget. Memory is
+  optional in this module and every other failure degrades with a warning, so a spent
+  budget now does too; only the Codex hook wrapped these calls, and anything else
+  would have seen an exception where it previously saw a value.
+- The stale-session reaper was handed the entire remaining budget, so a contended
+  cleanup could consume it all and leave the new session with no context. It is capped
+  at a share of the budget.
+- Undoing a consolidation left the proposals that application had retired at
+  `superseded`, even though their source facts were restored and they were applicable
+  again.
 - Consolidation wedged shut once generated facts filled the candidate window.
   `is_generated` was filtered after the SQL `LIMIT`, and an applied proposal seeds its
   generated fact with the summed `source_count` of every fact it replaced — so

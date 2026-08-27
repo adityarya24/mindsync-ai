@@ -56,6 +56,11 @@ _DB_BUSY_TIMEOUT_MS = 500
 # killed hook can strand a session row that has no state file to recover
 # it from.
 _GIT_TIMEOUT_SECONDS = 1.0
+# Share of the budget the stale reaper may consume. It finalizes up to
+# five sessions, each able to wait on a contended lock and two DB ops, so
+# handing it the whole budget lets a courtesy cleanup spend everything and
+# leave this session with no context at all.
+_REAP_BUDGET_SHARE = 0.4
 
 
 @dataclass(frozen=True)
@@ -286,6 +291,17 @@ def _finalize_state(
         warnings.append("standalone session finalize skipped: invalid lifecycle state")
         return warnings
 
+    # Check the budget before mutating anything. Flipping to "finalizing" and
+    # then finding there is no time left strands the session: the state file
+    # says finalizing, the DB row is still active with no ended_at, and
+    # "finalizing" is not resumable — so it is unusable until the 24h stale
+    # reaper reaches it.
+    try:
+        _require_budget(deadline)
+    except TimeoutError as exc:
+        warnings.append(f"standalone session finalize skipped: {exc}")
+        return warnings
+
     state["lifecycle_state"] = "finalizing"
     state["terminal_status"] = end_status
     _save_state(_state_path(digest), state)
@@ -369,7 +385,9 @@ def start_standalone_session(
                 timeout_seconds=(
                     None
                     if deadline is None
-                    else _remaining_timeout(deadline, float(timeout_seconds or 0.0))
+                    else _remaining_timeout(
+                        deadline, float(timeout_seconds or 0.0) * _REAP_BUDGET_SHARE
+                    )
                 ),
             )
         )
@@ -381,7 +399,11 @@ def start_standalone_session(
     digest = _session_digest(adapter, external_session_id)
     path = _state_path(digest)
 
-    _require_budget(deadline)
+    try:
+        _require_budget(deadline)
+    except TimeoutError as exc:
+        warnings.append(f"standalone session start skipped: {exc}")
+        return StandaloneSessionStart(None, None, None, False, warnings)
     with file_lock(
         _lock_name(digest),
         timeout=_remaining_timeout(deadline, _LOCK_TIMEOUT_SECONDS),
@@ -477,12 +499,12 @@ def start_standalone_session(
             _require_budget(deadline)
             with _memory_busy_timeout(_remaining_db_timeout_ms(deadline)):
                 memory_session_id = session_start(
-                project_key=project_key,
-                agent=adapter,
-                workspace=None,
-                branch=None,
-                goal=_STANDALONE_GOAL,
-            )
+                    project_key=project_key,
+                    agent=adapter,
+                    workspace=None,
+                    branch=None,
+                    goal=_STANDALONE_GOAL,
+                )
         except Exception as exc:
             warnings.append(f"standalone session start degraded: {exc}")
             return StandaloneSessionStart(
@@ -553,7 +575,11 @@ def checkpoint_standalone_session(
     path = _state_path(digest)
     warnings: list[str] = []
 
-    _require_budget(deadline)
+    try:
+        _require_budget(deadline)
+    except TimeoutError as exc:
+        warnings.append(f"standalone session operation skipped: {exc}")
+        return warnings
     with file_lock(
         _lock_name(digest),
         timeout=_remaining_timeout(deadline, _LOCK_TIMEOUT_SECONDS),
@@ -622,7 +648,11 @@ def end_standalone_session(
     path = _state_path(digest)
     warnings: list[str] = []
 
-    _require_budget(deadline)
+    try:
+        _require_budget(deadline)
+    except TimeoutError as exc:
+        warnings.append(f"standalone session operation skipped: {exc}")
+        return warnings
     with file_lock(
         _lock_name(digest),
         timeout=_remaining_timeout(deadline, _LOCK_TIMEOUT_SECONDS),
