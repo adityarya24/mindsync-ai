@@ -242,23 +242,20 @@ async def _async_main(argv: list[str]) -> int:
         return 0
 
     if cmd == "agents":
-        from mindsync.dispatch.proc import resolve_bin
+        from mindsync.roster import describe_agents
 
-        for a in load_adapters().values():
-            label = f" — {a.displayName}" if a.displayName else ""
-            state = "available" if resolve_bin(a.bin) else "missing"
-            print(f"{a.name}{label} (bin: {a.bin}, {state})")
-            extras = []
-            if a.defaultModel:
-                extras.append(f"default model: {a.defaultModel}")
-            if a.efforts:
-                extras.append(f"effort: {'|'.join(a.efforts)}")
-            if a.capabilities:
-                extras.append(f"capabilities: {','.join(a.capabilities)}")
-            if a.routingPriority:
-                extras.append(f"routing priority: {a.routingPriority}")
-            if extras:
-                print(f"    {'    '.join(extras)}")
+        rows = describe_agents()
+        for row in rows:
+            binary = "yes" if row["binary_present"] else "no"
+            mcp = "yes" if row["mcp_installed"] else "no"
+            routable = "yes" if row["routable"] else "no"
+            label = f" — {row['display_name']}" if row["display_name"] != row["name"] else ""
+            print(
+                f"{row['name']}{label}  binary={binary}  mcp={mcp}  "
+                f"routable={routable}  bin={row['bin']}"
+            )
+            print(f"    {row['mcp_detail']}")
+            print(f"    capabilities: {','.join(row['capabilities'])}")
         print(f"\nCustom agents: {user_config_path()}")
         return 0
 

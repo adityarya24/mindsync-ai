@@ -11,6 +11,7 @@ from typing import Any
 
 from mindsync.onboarding import CLI_SPECS, doctor, setup
 from mindsync.orchestration import load_policy, policy_path, update_policy
+from mindsync.roster import describe_agents, register_agent
 
 
 def _non_negative_int(raw: str) -> int:
@@ -134,6 +135,44 @@ def _print_doctor(report: dict[str, Any]) -> None:
         )
     for issue in report["issues"]:
         print(f"  issue    {issue}")
+
+
+def _print_register(result: dict[str, Any]) -> None:
+    prefix = "DRY RUN — " if result["dry_run"] else ""
+    roster = result["roster"]
+    mcp = result["mcp"]
+    verify = result["verify"]
+    print(f"{prefix}MindSync {result['version']} register {roster.get('action')}")
+    print(f"  roster   {roster.get('action')} — {result['path']}")
+    mcp_cli = mcp.get("cli") or "n/a"
+    mcp_detail = f" — {mcp['detail']}" if mcp.get("detail") else ""
+    print(f"  mcp      {mcp_cli} {mcp.get('action')}{mcp_detail}")
+    binary = "yes" if verify.get("binary_present") else "no"
+    version = verify.get("version") or verify.get("detail") or ""
+    version_bit = f" ({version})" if version else ""
+    print(f"  binary   {binary}{version_bit}")
+    print(f"  mcp-in   {'yes' if verify.get('mcp_installed') else 'no'}")
+    print(f"  routable {'yes' if verify.get('routable') else 'no'}")
+    print(f"  caps     {', '.join(result.get('capabilities') or ['general'])}")
+
+
+def _print_agents(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        print("No agents in the roster.")
+        return
+    for row in rows:
+        binary = "yes" if row["binary_present"] else "no"
+        mcp = "yes" if row["mcp_installed"] else "no"
+        routable = "yes" if row["routable"] else "no"
+        print(
+            f"{row['name']:<12} binary={binary}  mcp={mcp}  routable={routable}  "
+            f"bin={row['bin']}  source={row['source']}"
+        )
+        print(f"             {row['mcp_detail']}")
+        print(f"             capabilities: {', '.join(row['capabilities'])}")
+    from mindsync.dispatch.adapters import user_config_path
+
+    print(f"\nUser roster: {user_config_path()}")
 
 
 def _format_db_size(size_bytes: int) -> str:
@@ -320,6 +359,36 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser = sub.add_parser("doctor", help="Diagnose policy, CLI registration, workers, and memory")
     doctor_parser.add_argument("--json", action="store_true")
 
+    register_parser = sub.add_parser(
+        "register",
+        help="Add an agent to the user dispatch roster and install MCP when the CLI allows it",
+    )
+    register_parser.add_argument("--name", required=True, help="Roster name, e.g. vidur")
+    register_parser.add_argument("--bin", dest="bin_name", required=True, help="Executable on PATH")
+    register_parser.add_argument(
+        "--capability",
+        dest="capabilities",
+        action="append",
+        help="Known capability tag (repeatable). Heavy tags need --confirm",
+    )
+    register_parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Allow security, large-context, or multimodal capability tags",
+    )
+    register_parser.add_argument("--display-name")
+    register_parser.add_argument("--family")
+    register_parser.add_argument("--priority", type=int, default=40)
+    register_parser.add_argument("--dry-run", action="store_true")
+    register_parser.add_argument("--force", action="store_true")
+    register_parser.add_argument("--json", action="store_true")
+
+    agents_parser = sub.add_parser(
+        "agents",
+        help="Show whether each roster agent is binary-present, MCP-installed, and routable",
+    )
+    agents_parser.add_argument("--json", action="store_true")
+
     config_parser = sub.add_parser("config", help="Read or change orchestration policy")
     config_parser.add_argument("key", nargs="?")
     config_parser.add_argument("value", nargs="?")
@@ -496,6 +565,40 @@ def main(argv: list[str] | None = None) -> int:
         else:
             _print_doctor(report)
         return 0 if report["ok"] else 1
+
+    if args.command == "register":
+        try:
+            result = register_agent(
+                name=args.name,
+                bin_name=args.bin_name,
+                capabilities=args.capabilities,
+                confirm=args.confirm,
+                display_name=args.display_name,
+                family=args.family,
+                routing_priority=args.priority,
+                dry_run=args.dry_run,
+                force=args.force,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"Register failed: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            _print_register(result)
+        return 0 if result["ok"] else 1
+
+    if args.command == "agents":
+        try:
+            rows = describe_agents()
+        except (OSError, ValueError) as exc:
+            print(f"Agents failed: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            _print_agents(rows)
+        return 0
 
     if args.command == "config":
         if args.key is None:

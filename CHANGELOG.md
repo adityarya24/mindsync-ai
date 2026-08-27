@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `mindsync register` lands an agent in the user dispatch roster and, when the CLI
+  exposes an MCP-management command, installs MindSync as its MCP server. It verifies
+  `--version` and `mcp list`, is idempotent, and refuses heavy capability tags
+  (`security`, `large-context`, `multimodal`) without `--confirm`.
+- `mindsync agents` (and `mindsync-dispatch agents`) report binary present, MCP
+  installed, and routable for every roster entry.
+
+### Changed
+
+- Codex and Cursor presets now advertise `refactoring`, so `--capability refactoring`
+  no longer depends on Aider being installed.
+
+## [1.5.1] - 2026-08-27
+
+### Added
+
 - `mindsync setup` registers Codex standalone memory hooks at `~/.codex/hooks.json`
   when the Codex CLI is installed. Existing hook entries are merged and backed up;
   `--no-hooks` skips the step and `--force` rewrites the MindSync hook blocks.

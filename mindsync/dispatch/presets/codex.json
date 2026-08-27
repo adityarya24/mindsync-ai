@@ -11,7 +11,7 @@
   "authCheckArgs": ["login", "status"],
   "loginHint": "codex login",
   "installHint": "npm install -g @openai/codex",
-  "capabilities": ["general", "coding", "debugging", "testing", "devops", "repository", "review"],
-  "capabilityWeights": {"coding": 100, "debugging": 95, "testing": 95, "devops": 90, "repository": 90, "review": 75},
+  "capabilities": ["general", "coding", "debugging", "testing", "devops", "repository", "review", "refactoring"],
+  "capabilityWeights": {"coding": 100, "debugging": 95, "testing": 95, "devops": 90, "repository": 90, "review": 75, "refactoring": 80},
   "routingPriority": 80
 }
