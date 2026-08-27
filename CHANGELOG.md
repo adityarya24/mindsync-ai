@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.5.2] - 2026-08-27
 
+### Changed
+
+- Dispatch roster and jobs now live under `~/.mindsync/dispatch/` instead of
+  `~/.claude/agent-dispatch/`. On first use of the default home, existing
+  files are copied from the old path and never overwritten.
+  `AGENT_DISPATCH_HOME` still overrides the location.
+
 ### Fixed
 
 - PATH discovery no longer executes unrecognised binaries. It decided a name

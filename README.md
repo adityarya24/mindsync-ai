@@ -198,7 +198,7 @@ mindsync agents
 If the CLI has no MCP-management command, register still writes the dispatch roster
 and says so. Re-running is safe.
 
-Or add custom adapters to `~/.claude/agent-dispatch/agents.json`:
+Or add custom adapters to `~/.mindsync/dispatch/agents.json`:
 
 ```json
 {
@@ -335,8 +335,10 @@ mindsync-dispatch result <job-id>
 mindsync-dispatch cancel <job-id>
 ```
 
-Jobs live under `~/.claude/agent-dispatch/jobs/`; override this with
-`AGENT_DISPATCH_HOME`.
+Jobs live under `~/.mindsync/dispatch/jobs/`; override this with
+`AGENT_DISPATCH_HOME`. A one-time copy from the older
+`~/.claude/agent-dispatch` path runs automatically if that folder still
+exists.
 
 `--worktree` provides advisory isolation. Agents still run with the permissions of
 the current user, so task wording and working-directory boundaries must agree.
