@@ -494,6 +494,13 @@ MindSync provides local, structured session memory via SQLite (`session_memory.d
   the individual sources and removes the generated replacement atomically. Pending
   proposals are capped at 100 per project and remain recoverable through
   `memory_consolidation_list` / `mindsync memory proposals`.
+- **Proposal statuses**: a proposal is `pending` until it is applied. Applying one
+  supersedes its source facts, so any other proposal citing those facts can no longer
+  be applied — those are marked `superseded` rather than left in the queue, where they
+  would consume the cap forever. An applied proposal becomes `applied`, and `undo`
+  marks it `undone` while reviving only the `superseded` proposals whose sources are
+  now *all* active again; proposals still blocked by a different consolidation stay
+  superseded. Filter any of these with `mindsync memory proposals --status <status>`.
 - **Local-model boundary**: model URLs must resolve explicitly to loopback; remote
   hosts and credential-bearing URLs are rejected. MindSync never downloads a model.
   Only already-redacted durable-fact text is sent for consolidation—never prompts,
@@ -588,11 +595,18 @@ agents. See [`SECURITY.md`](SECURITY.md) for the complete security policy.
 ## Development
 
 ```bash
+python -m venv .venv && . .venv/bin/activate   # Windows: .venv\Scripts\activate
 python -m pip install -e ".[dev]"
 python -m ruff check .
 python -m pytest -q
 python scripts/smoke_test.py
 ```
+
+Install into a virtual environment. Semantic recall needs `sqlite-vec`, which comes
+in with the package — run the tests against a system Python that lacks it and the
+Tier 2 suite fails with `No module named 'sqlite_vec'`, which looks like a broken
+checkout rather than a missing install. Recent distributions also refuse a
+system-wide `pip install` outright (PEP 668).
 
 CI covers Python 3.10, 3.12, and 3.13 on Ubuntu and Windows.
 
