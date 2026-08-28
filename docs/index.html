@@ -9,9 +9,11 @@
   <meta property="og:description" content="A local-first MCP orchestration layer for coding agents. Codex, Claude, Gemini, Grok, Cursor, OpenCode and Aider as one coordinated system." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://adityarya24.github.io/mindsync-ai/" />
-  <meta property="og:image" content="https://avatars.githubusercontent.com/u/82873763?v=4" />
-  <meta name="twitter:card" content="summary" />
-  <meta name="generator" content="MindSync landing v2.2" />
+  <meta property="og:image" content="https://adityarya24.github.io/mindsync-ai/mindsync-logo.jpg" />
+  <meta property="og:image:alt" content="MindSync AI — multi-agent memory and orchestration for coding CLIs" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://adityarya24.github.io/mindsync-ai/mindsync-logo.jpg" />
+  <meta name="generator" content="MindSync landing v2.3" />
   <link rel="canonical" href="https://adityarya24.github.io/mindsync-ai/" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='14' fill='%2309090b'/><text x='32' y='44' font-family='monospace' font-size='30' font-weight='700' fill='%2334d399' text-anchor='middle'>ms</text></svg>" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -96,6 +98,17 @@
       font-size: 0.85rem;
     }
     .nav-links .nav-gh:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+    .nav-links .nav-cta {
+      color: #052318;
+      background: linear-gradient(135deg, var(--accent), #10b981);
+      border: 0;
+      border-radius: 0.45rem;
+      padding: 0.38rem 0.85rem;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+    .nav-links .nav-cta:hover { filter: brightness(1.08); color: #052318; text-decoration: none; }
+    .brand img { width: 1.75rem; height: 1.75rem; border-radius: 0.4rem; vertical-align: -0.35rem; margin-right: 0.45rem; object-fit: cover; }
 
     /* ── section rhythm ──────────────────────────────── */
     section { padding: 5rem 0; border-bottom: 1px solid var(--border); }
@@ -417,6 +430,47 @@
     }
     .step:nth-child(2) .sn { color: var(--info); background: var(--info-dim); }
     .step:nth-child(3) .sn { color: var(--violet); background: rgba(192,132,252,.12); }
+    .step:nth-child(4) .sn { color: var(--cyan); background: var(--cyan-dim); }
+    .callout-box {
+      margin-top: 2rem;
+      padding: 1rem 1.15rem;
+      background: var(--info-dim);
+      border: 1px solid rgba(129, 140, 248, 0.35);
+      border-radius: 0.65rem;
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+    .callout-box strong { color: var(--text); }
+    .mcp-panel {
+      margin-top: 2rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 0.8rem;
+      overflow: hidden;
+    }
+    .mcp-panel .bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.55rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface-2);
+    }
+    .mcp-panel .bar .ttl { font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: var(--muted); }
+    .mcp-panel pre {
+      padding: 1rem 1.15rem;
+      font-size: 0.78rem;
+      line-height: 1.65;
+      overflow-x: auto;
+      border: 0;
+      margin: 0;
+    }
+    .windows-note {
+      font-size: 0.82rem;
+      color: var(--muted);
+      padding: 0 1.15rem 1rem;
+      border-top: 1px solid var(--border);
+      margin-top: 0;
+    }
+    .windows-note code { font-size: 0.78rem; }
     .step { transition: transform .18s ease, border-color .18s ease; }
     .step:hover { transform: translateY(-3px); border-color: rgba(52,211,153,.4); }
     .step h3 { font-size: 1rem; font-weight: 600; margin-bottom: 0.35rem; }
@@ -514,14 +568,15 @@
 
 <nav>
   <div class="wrap">
-    <a class="brand" href="#top">mindsync<span>_ai</span></a>
+    <a class="brand" href="#top"><img src="mindsync-logo.jpg" alt="" width="28" height="28" />mindsync<span>_ai</span></a>
     <div class="nav-links">
       <a href="#demo">Demo</a>
       <a href="#why">Why</a>
       <a href="#how">How</a>
       <a href="#memory">Memory</a>
       <a href="#faq">FAQ</a>
-      <a class="nav-gh" href="https://github.com/adityarya24/mindsync-ai">GitHub ↗</a>
+      <a class="nav-cta" href="#start">Get started</a>
+      <a class="nav-gh" href="https://github.com/adityarya24/mindsync-ai">★ GitHub</a>
     </div>
   </div>
 </nav>
@@ -533,6 +588,7 @@
       <span class="badge">local-first</span>
       <span class="badge">no account required</span>
       <span class="badge">Python 3.10+</span>
+      <span class="badge">v1.5.3</span>
     </div>
     <div class="hero-grid">
       <div>
@@ -542,13 +598,13 @@
           preventing file conflicts, and remembering decisions across sessions.
         </p>
         <div class="trust">
-          <div><b id="stat-downloads">469</b><span>installs · last 30 days</span></div>
-          <div><b id="stat-clis">8</b><span>first-party CLIs · more via register</span></div>
+          <div><b id="stat-downloads">…</b><span>PyPI downloads · last 30 days</span></div>
+          <div><b id="stat-total">1k+</b><span>downloads · all time</span></div>
           <div><b>0</b><span>servers · runs on your machine</span></div>
         </div>
         <div class="cta">
           <a class="btn btn-primary" href="#start">Get started</a>
-          <a class="btn btn-ghost" href="https://github.com/adityarya24/mindsync-ai">GitHub</a>
+          <a class="btn btn-ghost" href="https://github.com/adityarya24/mindsync-ai">★ Star on GitHub</a>
         </div>
       </div>
       <div class="install-card">
@@ -572,6 +628,7 @@
     <div class="label">// Watch it work</div>
     <h2>You describe the task. MindSync does the delegation dance.</h2>
     <p class="lede">One command. The orchestrator picks the worker, locks the files, supervises the run, and saves what mattered to memory.</p>
+    <div class="callout-box"><strong><code>mindsync</code></strong> runs the MCP server, setup, and memory. <strong><code>mindsync-dispatch</code></strong> routes bounded tasks to workers — your human-facing CLI stays the lead orchestrator.</div>
     <div class="term-wrap">
       <div class="term">
         <div class="bar">
@@ -735,7 +792,7 @@ my-repo      47         2         12
 <section id="start">
   <div class="wrap">
     <div class="label">// Get started</div>
-    <h2>Three commands.</h2>
+    <h2>Four steps to a connected team.</h2>
     <div class="steps">
       <div class="step">
         <span class="sn">step 1</span>
@@ -755,6 +812,32 @@ my-repo      47         2         12
         <p>Check health, inspect the roster, then hand out a task.</p>
         <code class="cmd">mindsync doctor &amp;&amp; mindsync agents</code>
       </div>
+      <div class="step">
+        <span class="sn">step 4</span>
+        <h3>Connect your MCP host</h3>
+        <p>Add MindSync to Codex, Claude, Cursor, or any MCP client — then delegate from the tools you already use.</p>
+        <code class="cmd" style="white-space:pre-wrap;font-size:0.72rem">see MCP config below</code>
+      </div>
+    </div>
+    <div class="mcp-panel" id="mcp-config">
+      <div class="bar">
+        <span class="ttl">mcp.json · Codex / Claude / Cursor</span>
+        <button class="copy-btn" data-copy='{
+  "mcpServers": {
+    "mindsync": {
+      "command": "mindsync"
+    }
+  }
+}'>copy</button>
+      </div>
+      <pre>{
+  <span style="color:var(--info)">"mcpServers"</span>: {
+    <span style="color:var(--info)">"mindsync"</span>: {
+      <span style="color:var(--info)">"command"</span>: <span style="color:var(--accent)">"mindsync"</span>
+    }
+  }
+}</pre>
+      <p class="windows-note"><strong style="color:var(--text)">Windows:</strong> if your MCP client does not share PATH, point <code>command</code> at your venv's <code>python.exe</code> and use <code>"args": ["-m", "mindsync.server"]</code>.</p>
     </div>
     <p class="lede" style="margin-top:1.5rem">
       Requires Python 3.10 or newer. <code>--dry-run</code> previews every change without touching a file.
@@ -793,10 +876,10 @@ my-repo      47         2         12
   <div class="wrap">
     <div class="label">// Ready when you are</div>
     <h2>Your agents are already good.<br />Make them a team.</h2>
-    <p class="lede">Local-first, MIT licensed, and three commands away.</p>
+    <p class="lede">Local-first, MIT licensed, and four steps away.</p>
     <div class="cta">
       <a class="btn btn-primary" href="https://pypi.org/project/mindsync-ai/">Install from PyPI</a>
-      <a class="btn btn-ghost" href="https://github.com/adityarya24/mindsync-ai">Read the docs</a>
+      <a class="btn btn-ghost" href="https://github.com/adityarya24/mindsync-ai">View on GitHub</a>
     </div>
   </div>
 </section>
@@ -815,6 +898,46 @@ my-repo      47         2         12
 </footer>
 
 <script>
+  // Cloudflare Web Analytics: set token at dash.cloudflare.com → Web Analytics → Add site
+  var MS_ANALYTICS = { cfBeacon: "96b2944970904c3d89837b5bb7d34e66" };
+  if (MS_ANALYTICS.cfBeacon) {
+    var b = document.createElement("script");
+    b.defer = true;
+    b.src = "https://static.cloudflareinsights.com/beacon.min.js";
+    b.setAttribute("data-cf-beacon", JSON.stringify({ token: MS_ANALYTICS.cfBeacon }));
+    document.head.appendChild(b);
+  }
+
+  // ── live PyPI stats ──────────────────────────────────
+  (function () {
+    function setText(id, val) {
+      var el = document.getElementById(id);
+      if (el && val != null) el.textContent = val;
+    }
+    function fmt(n) {
+      if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
+      return String(n);
+    }
+    fetch("https://pypistats.org/api/packages/mindsync-ai/recent")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (d && d.data && d.data.last_month != null) setText("stat-downloads", fmt(d.data.last_month));
+      })
+      .catch(function () { setText("stat-downloads", "500+"); });
+    Promise.all([
+      fetch("https://pypistats.org/api/packages/mindsync-ai/overall").then(function (r) { return r.json(); }),
+      fetch("https://pypistats.org/api/packages/mindsync-mcp/overall").then(function (r) { return r.json(); })
+    ]).then(function (results) {
+      var total = 0;
+      results.forEach(function (payload) {
+        (payload.data || []).forEach(function (row) {
+          if (row.category === "without_mirrors") total += row.downloads || 0;
+        });
+      });
+      if (total > 0) setText("stat-total", fmt(total));
+    }).catch(function () {});
+  })();
+
   // ── copy buttons ─────────────────────────────────────
   document.querySelectorAll('.copy-btn').forEach(function (btn) {
     btn.addEventListener('click', function () {
