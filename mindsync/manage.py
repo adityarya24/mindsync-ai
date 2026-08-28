@@ -10,7 +10,12 @@ import sys
 from typing import Any
 
 from mindsync.onboarding import CLI_SPECS, doctor, setup
-from mindsync.orchestration import load_policy, policy_path, update_policy
+from mindsync.orchestration import (
+    load_policy,
+    policy_path,
+    project_on_complete,
+    update_policy,
+)
 from mindsync.roster import describe_agents, register_agent
 
 
@@ -50,6 +55,11 @@ def _parse_value(key: str, raw: str) -> Any:
             return int(raw)
         except ValueError as exc:
             raise ValueError(f"{key} must be an integer") from exc
+    if leaf == "onComplete":
+        normalized = raw.strip().lower()
+        if normalized not in {"pr", "branch", "none"}:
+            raise ValueError(f"{key} must be one of: pr, branch, none")
+        return normalized
     return raw
 
 
@@ -400,6 +410,11 @@ def build_parser() -> argparse.ArgumentParser:
     config_parser = sub.add_parser("config", help="Read or change orchestration policy")
     config_parser.add_argument("key", nargs="?")
     config_parser.add_argument("value", nargs="?")
+    config_parser.add_argument(
+        "--project",
+        metavar="PATH",
+        help="Apply to one repository instead of every project (onComplete only)",
+    )
 
     worker_parser = sub.add_parser("worker", help="Poll or process remote queue jobs")
     worker_parser.add_argument("--once", action="store_true", help="Process at most one job and exit")
@@ -610,20 +625,26 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "config":
+        project = getattr(args, "project", None)
         if args.key is None:
             print(json.dumps(load_policy().model_dump(), indent=2))
             print(f"Policy: {policy_path()}")
             return 0
         if args.value is None:
-            policy = load_policy().model_dump()
+            policy = load_policy()
             leaf = args.key.rsplit(".", 1)[-1]
-            if leaf not in policy:
+            if leaf not in policy.model_dump():
                 print(f"Unknown orchestration setting '{args.key}'.", file=sys.stderr)
                 return 2
-            print(json.dumps(policy[leaf]))
+            if project is not None and leaf == "onComplete":
+                print(json.dumps(project_on_complete(project, policy)))
+                return 0
+            print(json.dumps(policy.model_dump()[leaf]))
             return 0
         try:
-            policy = update_policy(args.key, _parse_value(args.key, args.value))
+            policy = update_policy(
+                args.key, _parse_value(args.key, args.value), project=project
+            )
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2

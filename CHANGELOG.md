@@ -21,9 +21,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   be removed cleanly.
 
   A pull request also requires the mechanical checks to have passed; a zero
-  exit code is not a passing build. Uncommitted work is committed onto the
-  job's own branch first, but the staged set is screened and nothing is
-  committed when a path looks like a secret, with commit hooks left enabled.
+  exit code is not a passing build, and neither is a check that was requested
+  and produced no result — that question is asked of the review gate itself,
+  so the two cannot drift apart. Uncommitted work is committed onto the job's
+  own branch first, with commit hooks left enabled, and a commit the
+  repository refuses stops the publish rather than opening a pull request
+  without the work. Every path the branch adds or changes is screened for
+  things that look like secrets — case-insensitively, at any depth, including
+  what the agent committed itself — and nothing is pushed when one matches.
+
+  Set it per project with `mindsync config onComplete pr --project <path>`,
+  which overrides the global default for that repository only. Project
+  overrides live in MindSync's own policy file rather than in the repository,
+  because a dispatched agent can write to the repository.
 
   Defaults to `branch`, the previous behaviour, reuses an existing open PR
   instead of failing, targets the branch the job was cut from, and reports on

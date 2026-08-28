@@ -244,3 +244,69 @@ async def test_auto_mode_excludes_caller_and_enforces_parallel_limit(tmp_path, m
             prompt="review another",
             required_capabilities=["review"],
         )
+
+
+def test_on_complete_is_settable_and_scoped_to_one_project(tmp_path, monkeypatch):
+    """Issue #41 promised per-project on_complete, and the field had no setter.
+
+    A global default plus one project that opts in has to be expressible, or
+    turning publishing on for a single repository means turning it on for all.
+    """
+    _isolate(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+
+    assert orchestration.update_policy("onComplete", "none").onComplete == "none"
+    assert (
+        orchestration.update_policy("orchestration.onComplete", "branch").onComplete
+        == "branch"
+    )
+
+    policy = orchestration.update_policy("onComplete", "pr", project=repo)
+    assert policy.onComplete == "branch"  # the global default is untouched
+    assert orchestration.project_on_complete(repo) == "pr"
+    assert orchestration.project_on_complete(other) == "branch"
+    assert orchestration.project_on_complete(None) == "branch"
+
+
+def test_a_project_override_survives_a_reload(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    orchestration.update_policy("onComplete", "pr", project=repo)
+
+    assert orchestration.project_on_complete(repo, orchestration.load_policy()) == "pr"
+
+
+def test_one_repository_cannot_become_two_entries(tmp_path, monkeypatch):
+    """A symlinked or unresolved path must key to the same project."""
+    _isolate(tmp_path, monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(repo, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+
+    orchestration.update_policy("onComplete", "pr", project=link)
+
+    assert orchestration.project_on_complete(repo) == "pr"
+    assert len(orchestration.load_policy().projects) == 1
+
+
+def test_settings_without_a_project_meaning_are_refused_per_project(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="cannot be set per project"):
+        orchestration.update_policy("maxParallel", 4, project=tmp_path)
+
+
+def test_an_unknown_setting_still_names_what_is_allowed(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="onComplete"):
+        orchestration.update_policy("nonsense", "pr")

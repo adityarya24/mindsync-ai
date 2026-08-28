@@ -245,7 +245,7 @@ def test_failing_checks_block_the_pull_request(repo, monkeypatch):
     )
 
     assert outcome["opened"] is False
-    assert outcome["reason"] == "mechanical checks did not pass"
+    assert outcome["reason"].startswith("mechanical checks did not pass")
 
 
 def test_a_job_with_no_checks_is_not_blocked(repo, monkeypatch):
@@ -414,3 +414,214 @@ def test_policy_supplies_the_mode_when_the_env_does_not(monkeypatch):
 
     monkeypatch.setattr("mindsync.orchestration.load_policy", lambda: _Policy())
     assert publish.on_complete_mode() == "pr"
+
+
+# --- the gaps found on the first hardened head -------------------------------
+
+
+def test_a_check_that_produced_no_result_does_not_pass(repo, monkeypatch):
+    """all([]) is True, and that is how a gate that never ran reported PASS.
+
+    A crashed check runner leaves the results empty while the job still ends
+    'done'; the review gate has always called that a failure, and publishing
+    now asks the same code rather than its own.
+    """
+    monkeypatch.setenv("MINDSYNC_ON_COMPLETE", "pr")
+    monkeypatch.setattr(publish.shutil, "which", lambda _name: "/usr/bin/gh")
+
+    meta = _meta(repo, checks=["pytest"], checkResults=[])
+
+    assert publish.checks_passed(meta) is False
+
+    outcome = publish.open_pull_request(meta)
+
+    assert outcome["opened"] is False
+    assert "produced no result" in outcome["reason"]
+
+
+def test_a_partial_set_of_results_does_not_pass(repo):
+    meta = _meta(
+        repo,
+        checks=["pytest", "ruff"],
+        checkResults=[{"name": "pytest", "passed": True}],
+    )
+
+    assert publish.checks_passed(meta) is False
+
+
+def test_every_requested_check_reporting_a_pass_still_passes(repo):
+    meta = _meta(
+        repo,
+        checks=["pytest"],
+        checkResults=[{"name": "pytest", "passed": True}],
+    )
+
+    assert publish.checks_passed(meta) is True
+
+
+def test_the_skip_reason_names_the_check_that_failed(repo, monkeypatch):
+    monkeypatch.setenv("MINDSYNC_ON_COMPLETE", "pr")
+    monkeypatch.setattr(publish.shutil, "which", lambda _name: "/usr/bin/gh")
+
+    outcome = publish.open_pull_request(
+        _meta(repo, checkResults=[{"name": "pytest", "passed": False, "exitCode": 1}])
+    )
+
+    assert outcome["opened"] is False
+    assert "pytest" in outcome["reason"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".env.production",
+        ".env.local.bak",
+        "api.env",
+        "KEY.PEM",
+        "nested/ID_RSA",
+        "deep/nested/dir/id_ed25519_old",
+        "config\\prod\\.env",
+        "Secrets.YAML",
+        "deploy/prod.keystore",
+    ],
+)
+def test_secret_shaped_paths_are_flagged_however_they_are_spelled(path):
+    """Case and decoration are not a security boundary.
+
+    The first screen matched exact lowercase basenames, so `.env.production`,
+    `KEY.PEM` and `nested/ID_RSA` all walked straight through it.
+    """
+    assert publish.risky_paths([path]) == [path]
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["README.md", "src/main.py", "keys/id_rsa.pub", ".environment", "env.py"],
+)
+def test_ordinary_paths_are_left_alone(path):
+    """A screen that refuses real work teaches the operator to ignore it."""
+    assert publish.risky_paths([path]) == []
+
+
+def test_a_secret_the_agent_committed_itself_stops_the_push(repo, monkeypatch):
+    """Only the leftovers were screened, so an earlier commit sailed past.
+
+    Pushing publishes every commit on the branch, not just the one this module
+    made, so the whole branch is screened before it leaves the machine.
+    """
+    monkeypatch.setenv("MINDSYNC_ON_COMPLETE", "pr")
+    monkeypatch.setattr(publish.shutil, "which", lambda _name: "/usr/bin/gh")
+    _git(repo["path"], "remote", "add", "origin", "https://example.invalid/x.git")
+    __import__("pathlib").Path(repo["path"], ".env.production").write_text("K=v\n")
+    _git(repo["path"], "add", "-A")
+    _git(repo["path"], "commit", "-m", "agent's own commit")
+
+    real_run = subprocess.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+        if "push" in cmd:
+            raise AssertionError("must not push a branch carrying a secret")
+        if cmd[:3] == ["gh", "pr", "create"]:
+            raise AssertionError("must not open a PR carrying a secret")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(publish.subprocess, "run", fake_run)
+
+    outcome = publish.open_pull_request(_meta(repo))
+
+    assert outcome["opened"] is False
+    assert ".env.production" in outcome["reason"]
+
+
+def test_removing_a_committed_secret_is_not_treated_as_publishing_one(repo, monkeypatch):
+    """Deleting a secret makes the repository safer; refusing that is backwards."""
+    import pathlib as _p
+
+    root = _p.Path(repo["path"])
+    _git(repo["path"], "checkout", "main")
+    (root / ".env").write_text("K=v\n")
+    _git(repo["path"], "add", "-f", ".env")
+    _git(repo["path"], "commit", "-m", "oops")
+    base = _git(repo["path"], "rev-parse", "HEAD").stdout.strip()
+    _git(repo["path"], "checkout", "-b", "agent/job-2")
+    (root / ".env").unlink()
+    _git(repo["path"], "add", "-A")
+    _git(repo["path"], "commit", "-m", "remove the secret")
+
+    assert publish._branch_paths(repo["path"], base) == []
+
+
+def test_a_commit_the_repository_refuses_stops_the_pull_request(repo, monkeypatch):
+    """A rejected commit left the work uncommitted and the PR opened anyway.
+
+    Hooks stay enabled precisely so a repository can refuse this commit; the
+    refusal has to reach the outcome, or the PR is opened without the work.
+    """
+    import pathlib as _p
+    import os as _os
+
+    monkeypatch.setenv("MINDSYNC_ON_COMPLETE", "pr")
+    monkeypatch.setattr(publish.shutil, "which", lambda _name: "/usr/bin/gh")
+    _git(repo["path"], "remote", "add", "origin", "https://example.invalid/x.git")
+
+    root = _p.Path(repo["path"])
+    (root / "a.txt").write_text("a\n")
+    _git(repo["path"], "add", "-A")
+    _git(repo["path"], "commit", "-m", "earlier work")
+
+    hook = root / ".git" / "hooks" / "pre-commit"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text("#!/bin/sh\necho 'refused by policy' >&2\nexit 1\n")
+    _os.chmod(hook, 0o755)
+    (root / "b.txt").write_text("b\n")
+
+    real_run = subprocess.run
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+        if "push" in cmd:
+            raise AssertionError("must not push work the repository refused")
+        if cmd[:3] == ["gh", "pr", "create"]:
+            raise AssertionError("must not open an incomplete PR")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(publish.subprocess, "run", fake_run)
+
+    outcome = publish.open_pull_request(_meta(repo))
+
+    assert outcome["opened"] is False
+    assert "could not commit" in outcome["reason"]
+    # the work is still there for a human to deal with, not silently reset away
+    assert (root / "b.txt").exists()
+
+
+def test_publishing_can_be_turned_on_for_one_project_only(repo, monkeypatch):
+    """The env var was the only way in; a project override is the promised one."""
+    monkeypatch.delenv("MINDSYNC_ON_COMPLETE", raising=False)
+
+    from mindsync.orchestration import OrchestrationPolicy, ProjectPolicy, project_key
+
+    policy = OrchestrationPolicy(
+        onComplete="branch",
+        projects={project_key(repo["path"]): ProjectPolicy(onComplete="pr")},
+    )
+    monkeypatch.setattr("mindsync.orchestration.load_policy", lambda: policy)
+
+    assert publish.on_complete_mode(repo["path"]) == "pr"
+    assert publish.on_complete_mode("/somewhere/else") == "branch"
+    assert publish.on_complete_mode() == "branch"
+
+
+def test_the_environment_still_overrides_a_project_override(repo, monkeypatch):
+    from mindsync.orchestration import OrchestrationPolicy, ProjectPolicy, project_key
+
+    policy = OrchestrationPolicy(
+        projects={project_key(repo["path"]): ProjectPolicy(onComplete="pr")},
+    )
+    monkeypatch.setattr("mindsync.orchestration.load_policy", lambda: policy)
+    monkeypatch.setenv("MINDSYNC_ON_COMPLETE", "none")
+
+    assert publish.on_complete_mode(repo["path"]) == "none"

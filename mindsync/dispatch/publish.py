@@ -41,20 +41,22 @@ _CONTEXT_END = "--- end MindSync prior session data ---"
 VALID_MODES = ("pr", "branch", "none")
 
 
-def on_complete_mode() -> str:
+def on_complete_mode(repo_root: str | None = None) -> str:
     """What to do with a finished job's branch.
 
-    The orchestration policy owns this; the environment variable overrides it
-    for a single run. Defaults to ``branch`` — the behaviour before this module
-    existed — so an existing install keeps working until its operator opts in.
+    Three levels, narrowest first: the environment variable overrides a single
+    run, a per-project entry in the orchestration policy covers one repository,
+    and the global setting covers the rest. Defaults to ``branch`` — the
+    behaviour before this module existed — so an existing install keeps working
+    until its operator opts in, one project at a time if they prefer.
     """
     raw = (os.environ.get("MINDSYNC_ON_COMPLETE") or "").strip().lower()
     if raw in VALID_MODES:
         return raw
     try:
-        from mindsync.orchestration import load_policy
+        from mindsync.orchestration import project_on_complete
 
-        configured = getattr(load_policy(), "onComplete", None)
+        configured = project_on_complete(repo_root)
     except Exception:
         configured = None
     return configured if configured in VALID_MODES else "branch"
@@ -103,13 +105,27 @@ def _skip(reason: str) -> dict[str, Any]:
     return {"opened": False, "reason": reason}
 
 
+def check_failures(meta: dict[str, Any]) -> list[str]:
+    """Why this job's checks do not count as passing. Empty means they do.
+
+    Delegates to the review gate rather than re-deciding it here. A check that
+    was requested and produced no result — the runner crashed, the job never
+    reached the review block — is a check that did not pass; ``all([])`` calls
+    that True, which is how an unreviewed job could reach a pull request.
+    """
+    from mindsync.dispatch.review import check_reasons
+
+    return check_reasons(meta)
+
+
 def checks_passed(meta: dict[str, Any]) -> bool:
-    """Every mechanical check that ran must have passed.
+    """Every mechanical check that was requested ran, and passed.
 
     A job with no checks configured passes trivially; that is the operator's
-    choice. A job whose checks failed does not reach review as a pull request.
+    choice. A job whose checks failed, or never reported, does not reach review
+    as a pull request.
     """
-    return all(c.get("passed") for c in (meta.get("checkResults") or []))
+    return not check_failures(meta)
 
 
 def _base_branch(meta: dict[str, Any]) -> str | None:
@@ -141,22 +157,45 @@ def _existing_pr(cwd: str, branch: str) -> str | None:
     return rows[0]["url"] if rows else None
 
 
-# Paths that must never be committed by an automated step, even when the
-# repository has not thought to ignore them. Matched on the basename or a
-# suffix, so a nested copy is caught too.
+# Paths that must never be committed or pushed by an automated step, even when
+# the repository has not thought to ignore them. Matched on the basename, so a
+# nested copy is caught too.
 _NEVER_COMMIT_NAMES = {
-    ".env", ".env.local", ".npmrc", ".pypirc", ".netrc",
-    "id_rsa", "id_ed25519", "credentials.json", "service-account.json",
+    ".npmrc", ".pypirc", ".netrc",
+    "credentials.json", "service-account.json", "serviceaccount.json",
+    "secrets.json", "secrets.yaml", "secrets.yml",
 }
-_NEVER_COMMIT_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore")
+_NEVER_COMMIT_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".ppk")
+# Matched anywhere in the basename, because the variants that matter are all
+# decorations on a stem: id_rsa.bak, id_ed25519_old, backup_id_rsa.
+_NEVER_COMMIT_STEMS = ("id_rsa", "id_dsa", "id_ecdsa", "id_ed25519")
+# A public key is the half that is meant to be shared; flagging it would refuse
+# a legitimate commit and teach the operator to ignore the refusal.
+_PUBLIC_SUFFIXES = (".pub",)
 
 
 def risky_paths(paths: list[str]) -> list[str]:
-    """Paths that look like secrets, whatever the repository's ignore rules say."""
+    """Paths that look like secrets, whatever the repository's ignore rules say.
+
+    Matching is case-insensitive and separator-agnostic: git reports forward
+    slashes, but a path can arrive from elsewhere, and a filesystem that folds
+    case will happily hand back ``KEY.PEM`` for a file written as ``key.pem``.
+    """
     flagged = []
     for path in paths:
-        name = path.rsplit("/", 1)[-1]
-        if name in _NEVER_COMMIT_NAMES or name.endswith(_NEVER_COMMIT_SUFFIXES):
+        name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if not name or name.endswith(_PUBLIC_SUFFIXES):
+            continue
+        if (
+            name in _NEVER_COMMIT_NAMES
+            or name.endswith(_NEVER_COMMIT_SUFFIXES)
+            or any(stem in name for stem in _NEVER_COMMIT_STEMS)
+            # .env, .env.production, .env.local.bak, api.env — an environment
+            # file is a secret whatever suffix has been hung off it.
+            or name == ".env"
+            or ".env." in name
+            or name.endswith(".env")
+        ):
             flagged.append(path)
     return flagged
 
@@ -174,20 +213,47 @@ def _commit_leftovers(cwd: str, subject: str) -> dict[str, Any]:
     commits must still get to refuse this one.
     """
     status = _git(cwd, "status", "--porcelain")
-    if status.returncode != 0 or not status.stdout.strip():
-        return {"committed": False}
+    if status.returncode != 0:
+        return {"committed": False, "dirty": True, "failed": "git status failed"}
+    if not status.stdout.strip():
+        return {"committed": False, "dirty": False}
     if _git(cwd, "add", "-A").returncode != 0:
-        return {"committed": False}
+        return {"committed": False, "dirty": True, "failed": "could not stage the changes"}
 
     staged = _git(cwd, "diff", "--cached", "--name-only")
     flagged = risky_paths([p for p in (staged.stdout or "").splitlines() if p])
     if flagged:
         _git(cwd, "reset")
-        return {"committed": False, "blocked": flagged}
+        return {"committed": False, "dirty": True, "blocked": flagged}
 
     line = (subject.strip().splitlines() or ["agent changes"])[0]
-    ok = _git(cwd, "commit", "-m", line[:72]).returncode == 0
-    return {"committed": ok}
+    commit = _git(cwd, "commit", "-m", line[:72])
+    if commit.returncode != 0:
+        # A hook refused, or the commit could not be made. Either way the work
+        # is still sitting uncommitted, so it will not be in the pull request.
+        _git(cwd, "reset")
+        return {
+            "committed": False,
+            "dirty": True,
+            "failed": (commit.stderr or commit.stdout or "commit failed").strip()[:200],
+        }
+    return {"committed": True, "dirty": True}
+
+
+def _branch_paths(cwd: str, base_commit: str | None) -> list[str]:
+    """Every path this branch adds or changes over its base.
+
+    Deletions are excluded: an agent that removed a committed secret has made
+    the repository safer, and refusing to publish that would be backwards.
+    """
+    if not base_commit:
+        return []
+    result = _git(
+        cwd, "diff", "--name-only", "--diff-filter=d", f"{base_commit}..HEAD"
+    )
+    if result.returncode != 0:
+        return []
+    return [p for p in (result.stdout or "").splitlines() if p]
 
 
 def _commit_count(cwd: str, base_commit: str | None) -> int:
@@ -242,12 +308,13 @@ def open_pull_request(meta: dict[str, Any]) -> dict[str, Any]:
     because silently doing nothing would leave the operator guessing. Never
     raises — a publishing problem must not fail a job that succeeded.
     """
-    mode = on_complete_mode()
+    mode = on_complete_mode(meta.get("repoRoot"))
     if mode != "pr":
         return _skip(f"on_complete is '{mode}'")
 
-    if not checks_passed(meta):
-        return _skip("mechanical checks did not pass")
+    failures = check_failures(meta)
+    if failures:
+        return _skip("mechanical checks did not pass: " + "; ".join(failures[:3]))
 
     task = public_task(meta.get("prompt"))
     if not task:
@@ -278,9 +345,22 @@ def open_pull_request(meta: dict[str, Any]) -> dict[str, Any]:
                 "refused to commit files that look like secrets: "
                 + ", ".join(left["blocked"][:5])
             )
+        if left.get("failed"):
+            # Publishing anyway would open a pull request that is missing the
+            # very work the agent left behind, and look complete doing it.
+            return _skip(f"could not commit the agent's leftover work: {left['failed']}")
 
         if _commit_count(cwd, meta.get("baseCommit")) == 0:
             return _skip("branch has no commits over its base")
+
+        # The staged screen above only ever saw the leftovers. Anything the
+        # agent committed itself is just as public once this branch is pushed.
+        carried = risky_paths(_branch_paths(cwd, meta.get("baseCommit")))
+        if carried:
+            return _skip(
+                "branch carries files that look like secrets: "
+                + ", ".join(carried[:5])
+            )
 
         pushed = _git(cwd, "push", "-u", "origin", branch)
         if pushed.returncode != 0:
