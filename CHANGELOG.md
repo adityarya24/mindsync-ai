@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MINDSYNC_ON_COMPLETE=pr` pushes a finished job's branch and opens a pull
+  request for it, so the path to review belongs to the orchestrator instead of
+  being an instruction each agent may or may not carry. Uncommitted work the
+  agent left behind is committed onto its own branch first, so editing without
+  committing is not the reason no PR appears. Nothing is ever merged. Defaults
+  to `branch`, the previous behaviour, and reports why on the job whenever it
+  declines — no remote, no `gh`, or no commits over the base.
+
 ### Changed
 
 - GitHub Pages landing matches 1.5.3: OpenCode is listed, copy-paste commands

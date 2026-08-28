@@ -42,6 +42,26 @@ from mindsync.orchestration import (
 from mindsync.storage import file_lock
 
 
+def _publish_if_requested(job_id: str) -> None:
+    """Open a PR for a finished job when the operator asked for one.
+
+    Runs before _cleanup_worktree, which may remove the worktree this needs.
+    Never raises: a publishing failure must not turn a successful job into a
+    failed one, so the outcome is recorded on the job and the run continues.
+    """
+    meta = store.get_job(job_id)
+    if not meta or meta.get("status") != "done":
+        return
+    try:
+        from mindsync.dispatch.publish import open_pull_request
+
+        outcome = open_pull_request(meta)
+    except Exception as exc:  # noqa: BLE001 - never fail a finished job
+        outcome = {"opened": False, "reason": f"{type(exc).__name__}: {exc}"}
+    if outcome.get("opened") or outcome.get("reason") != "on_complete is 'branch'":
+        store.update_job(job_id, {"pullRequest": outcome})
+
+
 def _cleanup_worktree(job_id: str) -> None:
     """Drop the job's worktree unless the agent left work in it.
 
@@ -611,6 +631,7 @@ async def supervise_job(
         except Exception:
             pass
 
+    _publish_if_requested(job_id)
     _finalize_memory_if_needed(job_id)
     _cleanup_worktree(job_id)
     final = store.get_job(job_id)
