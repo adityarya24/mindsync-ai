@@ -128,9 +128,20 @@ def looks_like_agent_cli(name: str) -> bool:
 
 
 def probe_mcp_capable(bin_name: str, runner: CommandRunner, resolver: Resolver) -> bool:
+    """Whether a CLI has an MCP-management command at all.
+
+    Asked with ``mcp --help`` first, because this runs over every PATH binary
+    that looks like an agent CLI and the question does not justify starting
+    one. ``mcp list`` is not a read: a host CLI boots its own configuration to
+    answer it, plugins included, and a plugin that holds a single-instance lock
+    will take it from whatever session already had it.
+    """
     resolved = resolver(bin_name)
     if not resolved:
         return False
+    helped = runner(resolved, ["mcp", "--help"])
+    if helped.returncode == 0:
+        return True
     for args in (["mcp", "list", "--json"], ["mcp", "list"]):
         result = runner(resolved, list(args))
         text = f"{result.stdout}\n{result.stderr}"
@@ -509,8 +520,15 @@ def describe_agents(
     runner: CommandRunner = _run_command,
     resolver: Resolver = resolve_bin,
     user_home: Path | None = None,
+    probe_hosts: bool = True,
 ) -> list[dict[str, Any]]:
-    """Roster rows: registered, binary present, MCP installed, routable."""
+    """Roster rows: registered, binary present, MCP installed, routable.
+
+    ``probe_hosts`` decides whether the MCP columns are filled by running each
+    host CLI. That is the honest answer but not a free one — starting a host
+    CLI starts everything it is configured to start — so a caller that only
+    needs routing information should turn it off.
+    """
     user_names: set[str] = set()
     path = user_config_path()
     if path.is_file():
@@ -531,7 +549,9 @@ def describe_agents(
         matched = _match_mcp_cli(adapter.name, adapter.bin)
         mcp_installed = False
         mcp_detail = "no MCP-management command"
-        if matched is None:
+        if not probe_hosts:
+            mcp_detail = "not probed"
+        elif matched is None:
             resolved = resolver(adapter.bin)
             if resolved and _mcp_already_configured(resolved, runner):
                 mcp_installed = True

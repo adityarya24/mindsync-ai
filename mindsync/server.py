@@ -781,13 +781,17 @@ def get_orchestration_policy(
 
 @mcp.tool()
 def list_agents(agent_name: str = "default_agent") -> list[dict[str, Any]]:
-    """List dispatch agents with live binary, MCP, and routable status."""
+    """List dispatch agents with live binary and routable status."""
     from mindsync.dispatch.adapters import load_adapters
     from mindsync.roster import describe_agents
 
     by_name = {adapter.name: adapter for adapter in load_adapters().values()}
     agents = []
-    for row in describe_agents():
+    # Routing needs the binary and its capabilities, not whether MindSync is
+    # registered inside each host CLI. Answering that means running every host
+    # CLI, which starts whatever else that CLI is configured to start — and
+    # this tool is called routinely, by agents, in the middle of other work.
+    for row in describe_agents(probe_hosts=False):
         adapter = by_name[row["name"]]
         agents.append({
             "name": row["name"],
