@@ -28,6 +28,12 @@ def _read() -> dict[str, dict[str, Any]]:
     return data if isinstance(data, dict) else {}
 
 
+def _write(data: dict[str, dict[str, Any]]) -> None:
+    path = _cooldown_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_private_write(path, json.dumps(data, indent=2))
+
+
 def _parse_time(value: Any) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -51,7 +57,10 @@ def classify_quota_exhaustion(
     """Match only adapter-owned quota signatures; generic failures never rotate."""
     if not adapter.quotaErrorPatterns:
         return None
-    text = f"{stderr}\n{stdout}"[-16_000:]
+    # Provider failures belong on stderr. Agent-authored stdout may quote an
+    # error while reviewing logs or tests; treating that as account state would
+    # rotate a healthy job and cool the wrong provider account.
+    text = stderr[-16_000:]
     for pattern in adapter.quotaErrorPatterns:
         if re.search(pattern, text):
             return {
@@ -60,6 +69,44 @@ def classify_quota_exhaustion(
                 "pattern": pattern,
             }
     return None
+
+
+def list_cooldowns() -> list[dict[str, str]]:
+    now = datetime.now(timezone.utc)
+    active: list[dict[str, str]] = []
+    with file_lock("dispatch-quota-cooldowns"):
+        data = _read()
+        changed = False
+        for scope, raw in list(data.items()):
+            until = _parse_time(raw.get("until")) if isinstance(raw, dict) else None
+            if until is None or until <= now:
+                data.pop(scope, None)
+                changed = True
+                continue
+            active.append(
+                {
+                    "scope": scope,
+                    "until": until.isoformat(),
+                    "reason": str(raw.get("reason") or "provider quota exhausted"),
+                }
+            )
+        if changed:
+            _write(data)
+    return sorted(active, key=lambda item: item["scope"])
+
+
+def clear_cooldowns(scope: str | None = None) -> int:
+    """Clear one explicit account cooldown, or all when scope is omitted."""
+    with file_lock("dispatch-quota-cooldowns"):
+        data = _read()
+        if scope is None:
+            count = len(data)
+            data = {}
+        else:
+            count = int(scope in data)
+            data.pop(scope, None)
+        _write(data)
+    return count
 
 
 def mark_cooling(adapter: AdapterConfig) -> dict[str, str]:
@@ -74,7 +121,7 @@ def mark_cooling(adapter: AdapterConfig) -> dict[str, str]:
     with file_lock("dispatch-quota-cooldowns"):
         data = _read()
         data[scope] = entry
-        atomic_private_write(_cooldown_path(), json.dumps(data, indent=2))
+        _write(data)
     return entry
 
 
@@ -88,6 +135,6 @@ def cooldown_reason(adapter: AdapterConfig) -> str | None:
         if until is None or until <= now:
             if scope in data:
                 data.pop(scope, None)
-                atomic_private_write(_cooldown_path(), json.dumps(data, indent=2))
+                _write(data)
             return None
     return f"provider account cooling until {until.isoformat()}"

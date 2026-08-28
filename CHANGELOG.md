@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in reactive provider-quota handoff for isolated dispatch jobs. With
+  `--on-limit handoff`, a narrowly classified exhaustion failure cools the
+  configured provider/account, records a new attempt, and transfers the same
+  worktree to the next available agent only after process-tree shutdown and an
+  atomic worktree-lease handoff. The default remains `stop` and has no cooldown
+  side effect. `mindsync-dispatch limits` shows or clears active cooldowns.
+
+### Security
+
+- Pull-request publication uses the separately stored operator task, never a
+  successor prompt containing a private structured handoff checkpoint.
+
 ## [1.6.0] - 2026-08-28
 
 ### Added

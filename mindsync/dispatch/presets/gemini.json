@@ -11,5 +11,6 @@
   "installHint": "npm install -g @google/gemini-cli",
   "capabilities": ["general", "research", "large-context", "multimodal", "coding", "writing"],
   "capabilityWeights": {"research": 95, "large-context": 100, "multimodal": 100, "writing": 80, "coding": 65},
-  "routingPriority": 70
+  "routingPriority": 70,
+  "quotaScope": "google:default"
 }

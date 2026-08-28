@@ -70,6 +70,20 @@ mindsync-dispatch run auto "implement and test the fix" --capability coding
 mindsync-dispatch status
 ```
 
+Provider quota handoff is opt-in and requires an isolated worktree:
+
+```bash
+mindsync-dispatch run auto "implement and test the fix" --write --worktree --on-limit handoff
+mindsync-dispatch limits                 # inspect provider/account cooldowns
+mindsync-dispatch limits clear           # clear cooldowns after operator verification
+```
+
+Only configured provider-specific exhaustion messages rotate. Timeouts, auth
+errors, generic rate limits, failing tests, and ordinary agent failures stop the
+job. A successor receives the same worktree, the original task, and the latest
+structured MindSync checkpoint; because routing may select another provider,
+enable handoff only when that cross-provider context transfer is acceptable.
+
 Completed jobs keep their branch by default. To push a successful isolated
 job and open a pull request for review, enable it for that repository:
 

@@ -6,6 +6,7 @@ import re
 from typing import Any, Iterable
 
 from mindsync.dispatch.adapters import AdapterConfig, load_adapters
+from mindsync.dispatch.limits import cooldown_reason
 from mindsync.dispatch.proc import resolve_bin
 
 
@@ -106,8 +107,6 @@ def select_agent(
     for adapter in (adapters or load_adapters()).values():
         if adapter.name.lower() in excluded:
             continue
-        from mindsync.dispatch.limits import cooldown_reason
-
         cooling = cooldown_reason(adapter)
         if cooling:
             unavailable.append(adapter.name)
@@ -121,7 +120,13 @@ def select_agent(
 
     if not available:
         suffix = f" Excluded: {', '.join(sorted(excluded))}." if excluded else ""
-        raise RuntimeError(f"No installed dispatch agents are available.{suffix}")
+        detail = "; ".join(
+            f"{name}: {unavailable_reasons[name]}" for name in sorted(unavailable_reasons)
+        )
+        unavailable_suffix = f" Unavailable: {detail}." if detail else ""
+        raise RuntimeError(
+            f"No installed dispatch agents are available.{suffix}{unavailable_suffix}"
+        )
 
     ranked = [candidate for adapter in available if (candidate := _candidate(adapter, required))]
     ranked.sort(key=lambda item: (-item["score"], item["agent"]))

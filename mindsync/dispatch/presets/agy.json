@@ -12,5 +12,6 @@
   "modelsArgs": ["models"],
   "capabilities": ["general", "architecture", "reasoning", "research", "large-context", "multimodal", "coding", "review", "writing"],
   "capabilityWeights": {"architecture": 90, "reasoning": 95, "research": 95, "large-context": 100, "multimodal": 95, "coding": 75, "review": 85, "writing": 85},
-  "routingPriority": 85
+  "routingPriority": 85,
+  "quotaScope": "google:default"
 }

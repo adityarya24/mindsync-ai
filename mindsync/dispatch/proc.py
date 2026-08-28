@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 IS_WIN = sys.platform == "win32"
 
@@ -100,6 +100,15 @@ def _posix_process_group_dead(pid: int) -> bool:
     except (PermissionError, OSError):
         return False
     return False
+
+
+def _kill_posix_process_group(pgid: int) -> None:
+    if IS_WIN:
+        return
+    try:
+        os.killpg(pgid, 9)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
 
 
 def _open_private_append(path: Path):
@@ -334,6 +343,7 @@ async def spawn_foreground(
     timeout_ms: int = 600_000,
     input_text: str | None = None,
     env: dict[str, str] | None = None,
+    on_spawn: Callable[[int], None] | None = None,
 ) -> dict[str, Any]:
     spec = spawn_spec(resolved_bin, args)
     timed_out = False
@@ -361,6 +371,17 @@ async def spawn_foreground(
         }
 
     windows_job = _create_kill_on_close_job(proc.pid)
+    if on_spawn is not None:
+        try:
+            on_spawn(proc.pid)
+        except Exception:
+            _close_job(windows_job)
+            kill_tree(proc.pid)
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=5.0)
+            except Exception:
+                pass
+            raise
 
     try:
         stdout_b, stderr_b = await asyncio.wait_for(
@@ -394,7 +415,10 @@ async def spawn_foreground(
     else:
         process_tree_dead = _posix_process_group_dead(proc.pid)
         if not process_tree_dead:
-            kill_tree(proc.pid)
+            # The group id was allocated before communicate() reaped its leader.
+            # Kill that group only; killing the now-reaped pid could target a
+            # newly recycled, unrelated process.
+            _kill_posix_process_group(proc.pid)
             await asyncio.sleep(0.05)
             process_tree_dead = _posix_process_group_dead(proc.pid)
     return {

@@ -13,7 +13,12 @@ import mindsync.dispatch.routing as routing_mod
 import mindsync.dispatch.runner as runner_mod
 from mindsync.dispatch.adapters import AdapterConfig, user_config_path
 from mindsync.dispatch.cli import fmt_job, parse_run_args
-from mindsync.dispatch.limits import classify_quota_exhaustion, mark_cooling
+from mindsync.dispatch.limits import (
+    classify_quota_exhaustion,
+    clear_cooldowns,
+    list_cooldowns,
+    mark_cooling,
+)
 from mindsync.dispatch.routing import select_agent
 from mindsync.dispatch.runner import run_task
 from mindsync.dispatch.runner import _reactive_handoff_prompt
@@ -87,6 +92,30 @@ def test_classifier_is_provider_specific_and_rejects_generic_rate_limit():
     )
     assert classify_quota_exhaustion(adapter, stderr="rate limit exceeded") is None
     assert classify_quota_exhaustion(adapter, stderr="authentication failed") is None
+    assert classify_quota_exhaustion(
+        adapter,
+        stdout="x" * 20_000,
+        stderr="Usage window exhausted; resets at 17:00",
+    )
+    assert classify_quota_exhaustion(
+        adapter,
+        stdout="Usage window exhausted; resets at 17:00",
+        stderr="ordinary failure",
+    ) is None
+
+
+def test_claude_captured_usage_message_matches_narrow_signature():
+    adapter = AdapterConfig(
+        name="claude",
+        bin="claude",
+        quotaErrorPatterns=[r"(?im)^Claude AI usage limit reached\|[0-9]{9,13}\s*$"],
+    )
+    assert classify_quota_exhaustion(
+        adapter, stderr="Claude AI usage limit reached|1787949999"
+    )
+    assert classify_quota_exhaustion(
+        adapter, stderr="Claude AI rate limit reached|1787949999"
+    ) is None
 
 
 def test_successor_prompt_uses_public_task_not_injected_agent_prompt(monkeypatch):
@@ -127,6 +156,7 @@ def test_cooldown_applies_to_every_entry_for_one_provider_account(tmp_path, monk
         quotaScope="provider:other", routingPriority=10,
     )
     mark_cooling(shared_a)
+    assert list_cooldowns()[0]["scope"] == "provider:shared"
 
     decision = select_agent(
         "implement", required_capabilities=["coding"],
@@ -135,6 +165,14 @@ def test_cooldown_applies_to_every_entry_for_one_provider_account(tmp_path, monk
 
     assert decision["agent"] == "other"
     assert {"shared-a", "shared-b"}.issubset(decision["unavailableAgents"])
+    with pytest.raises(RuntimeError, match="provider account cooling until"):
+        select_agent(
+            "implement",
+            required_capabilities=["coding"],
+            adapters={row.name: row for row in (shared_a, shared_b)},
+        )
+    assert clear_cooldowns("provider:shared") == 1
+    assert list_cooldowns() == []
 
 
 @pytest.mark.asyncio
@@ -186,6 +224,7 @@ async def test_quota_failure_transfers_same_worktree_to_successor(
     assert calls[0][0] == calls[1][0] == job["worktreePath"]
     assert "Continue the same job" in calls[1][1]
     assert job["worktreeLease"]["agent"] == "backup"
+    assert job["worktreeLease"]["state"] == "released"
     assert job["worktreeKept"] is True
     assert "primary -> backup" in fmt_job(job)
 
@@ -221,6 +260,64 @@ async def test_generic_failure_never_rotates(
 
 
 @pytest.mark.asyncio
+async def test_default_stop_has_no_persistent_cooldown(
+    fake_repo: Path, tmp_path: Path, monkeypatch
+):
+    _write_agents(tmp_path, monkeypatch)
+
+    async def fake_spawn(*args, **kwargs):
+        return {
+            "stdout": "",
+            "stderr": "Usage window exhausted; resets at 17:00",
+            "exitCode": 1,
+            "timedOut": False,
+            "processTreeDead": True,
+        }
+
+    monkeypatch.setattr(runner_mod, "spawn_foreground", fake_spawn)
+    result = await run_task(
+        agent="primary", prompt="implement", cwd=str(fake_repo),
+        worktree=True, on_limit="stop", memory_mode="off",
+    )
+
+    assert result["job"]["status"] == "failed"
+    assert "cooldownUntil" not in result["job"]["quotaFailure"]
+    assert list_cooldowns() == []
+
+
+@pytest.mark.asyncio
+async def test_no_successor_fails_closed_and_keeps_partial_work(
+    fake_repo: Path, tmp_path: Path, monkeypatch
+):
+    _write_agents(tmp_path, monkeypatch)
+    config = json.loads(user_config_path().read_text(encoding="utf-8"))
+    config["agents"] = [row for row in config["agents"] if row["name"] == "primary"]
+    user_config_path().write_text(json.dumps(config), encoding="utf-8")
+
+    async def fake_spawn(*args, **kwargs):
+        (Path(kwargs["cwd"]) / "partial.txt").write_text("keep", encoding="utf-8")
+        return {
+            "stdout": "",
+            "stderr": "Usage window exhausted; resets at 17:00",
+            "exitCode": 1,
+            "timedOut": False,
+            "processTreeDead": True,
+        }
+
+    monkeypatch.setattr(runner_mod, "spawn_foreground", fake_spawn)
+    result = await run_task(
+        agent="primary", prompt="implement", cwd=str(fake_repo), worktree=True,
+        on_limit="handoff", memory_mode="off",
+    )
+
+    job = result["job"]
+    assert job["status"] == "failed"
+    assert "no successor available" in job["handoffBlocked"]
+    assert job["worktreeKept"] is True
+    assert (Path(job["worktreePath"]) / "partial.txt").is_file()
+
+
+@pytest.mark.asyncio
 async def test_handoff_stops_when_process_tree_is_not_confirmed_dead(
     fake_repo: Path, tmp_path: Path, monkeypatch
 ):
@@ -251,6 +348,8 @@ def test_cli_parses_on_limit_and_handoff_requires_worktree():
     parsed = parse_run_args(["auto", "do", "work", "--worktree", "--on-limit", "handoff"])
     assert parsed["on_limit"] == "handoff"
     assert parsed["worktree"] is True
+    with pytest.raises(SystemExit):
+        parse_run_args(["auto", "do", "work", "--on-limit", "typo"])
 
 
 @pytest.mark.asyncio

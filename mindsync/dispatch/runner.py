@@ -18,6 +18,7 @@ from mindsync.dispatch.adapters import (
 )
 from mindsync.dispatch.proc import (
     kill_tree,
+    names_match,
     process_name,
     resolve_bin,
     spawn_background,
@@ -310,9 +311,17 @@ def _finish_attempt(
             "timedOut": bool(result.get("timedOut")),
             "endedAt": store.utc_now(),
         }
-    return store.update_job(
+    updated = store.update_job(
         job_id, {"attempts": attempts}, expected_status={"running", "cancelled"}
     )
+    if attempts:
+        store.release_worktree_lease(
+            job_id,
+            agent=str(attempts[-1].get("agent")),
+            attempt=attempt_number,
+        )
+        return store.get_job(job_id) or updated
+    return updated
 
 
 def _supervisor_child_env() -> dict[str, str]:
@@ -647,17 +656,11 @@ async def supervise_job(
                 "startedAt": store.utc_now(),
             }
         )
-        meta = store.update_job(
+        meta = store.claim_worktree_lease(
             job_id,
-            {
-                "attempts": attempts,
-                "worktreeLease": {
-                    "attempt": attempt_number,
-                    "agent": adapter.name,
-                    "state": "owned",
-                },
-            },
-            expected_status="running",
+            agent=adapter.name,
+            attempt=attempt_number,
+            attempts=attempts,
         )
 
         child_env = dict(os.environ)
@@ -666,6 +669,16 @@ async def supervise_job(
         else:
             child_env.pop("MINDSYNC_WORKER", None)
 
+        def record_child(pid: int) -> None:
+            child_name = process_name(pid) or Path(bin_path).name.lower()
+            claimed = store.update_job(
+                job_id,
+                {"childPid": pid, "childSpawnedName": child_name},
+                expected_status="running",
+            )
+            if claimed.get("status") != "running":
+                raise RuntimeError("job was cancelled before the agent process started")
+
         result = await spawn_foreground(
             bin_path,
             inv["args"],
@@ -673,6 +686,12 @@ async def supervise_job(
             timeout_ms=int(meta.get("timeoutMs") or inv["timeoutMs"]),
             input_text=inv["input"],
             env=child_env,
+            on_spawn=record_child,
+        )
+        store.update_job(
+            job_id,
+            {"childPid": None, "childSpawnedName": None},
+            expected_status={"running", "cancelled"},
         )
         store.write_attempt_file(job_id, attempt_number, "stdout", result["stdout"])
         store.write_attempt_file(job_id, attempt_number, "stderr", result["stderr"])
@@ -704,12 +723,17 @@ async def supervise_job(
             _finish_attempt(job_id, attempt_number, result, status)
             break
 
-        cooling = mark_cooling(adapter)
         _finish_attempt(job_id, attempt_number, result, "quota_exhausted")
         current = store.get_job(job_id) or meta
+        if current.get("status") != "running":
+            return current
+        quota_failure = dict(quota)
+        if current.get("onLimit") == "handoff":
+            cooling = mark_cooling(adapter)
+            quota_failure["cooldownUntil"] = cooling["until"]
         current = store.update_job(
             job_id,
-            {"quotaFailure": {**quota, "cooldownUntil": cooling["until"]}},
+            {"quotaFailure": quota_failure},
             expected_status="running",
         )
         if current.get("onLimit") != "handoff":
@@ -754,31 +778,24 @@ async def supervise_job(
                 "worktree": current.get("worktreePath"),
             }
         )
-        transferred = store.update_job(
+        transferred = store.transfer_worktree_lease(
             job_id,
-            {
+            from_agent=adapter.name,
+            to_agent=successor_name,
+            next_attempt=attempt_number + 1,
+            prompt=successor_prompt,
+            patch={
                 "agent": successor_name,
                 "role": None,
                 "model": None,
                 "effort": None,
                 "effectiveEffort": None,
-                "prompt": successor_prompt,
                 "handoffs": handoffs,
                 "handoffRouting": successor,
-                "worktreeLease": {
-                    "attempt": attempt_number + 1,
-                    "agent": successor_name,
-                    "state": "owned",
-                    "transferredAt": store.utc_now(),
-                },
             },
-            expected_status="running",
         )
         if transferred.get("status") != "running":
             return transferred
-        from mindsync.storage import atomic_private_write
-
-        atomic_private_write(store.job_paths(job_id)["prompt"], successor_prompt)
 
     final = store.update_job(
         job_id,
@@ -840,9 +857,28 @@ def cancel_job(job_id: str) -> dict[str, Any]:
     if meta.get("status") not in {"pending", "running"}:
         return meta
     pid = meta.get("pid")
+    child_pid = meta.get("childPid")
+    child_tree_dead = child_pid is None
+    if child_pid is not None:
+        if names_match(process_name(int(child_pid)), meta.get("childSpawnedName")):
+            child_tree_dead = kill_tree(int(child_pid))
+        else:
+            child_tree_dead = False
     if pid is not None:
         kill_tree(int(pid))
-    _cleanup_worktree(job_id)
+    if child_tree_dead:
+        _cleanup_worktree(job_id)
+    else:
+        store.update_job(
+            job_id,
+            {
+                "worktreeKept": True,
+                "cancellationWarning": (
+                    "agent process tree could not be confirmed dead; worktree retained"
+                ),
+            },
+            expected_status={"pending", "running"},
+        )
     cancelled = store.update_job(
         job_id,
         {
