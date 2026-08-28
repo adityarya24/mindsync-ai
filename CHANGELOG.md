@@ -7,19 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- `list_agents` no longer runs every host CLI to answer a routing question.
-  Filling the MCP columns means running each host's `mcp list`, which is not a
-  read: the host boots its own configuration, plugins included. Where a plugin
-  holds a single-instance lock — a chat channel bound to one session — the copy
-  started by the probe takes the lock, and the session that had it goes silent.
-  The MCP tool now asks for binary and capability information only; `mindsync
-  agents` and `mindsync doctor` still probe and still report the full truth.
-
-- `probe_mcp_capable` asks `mcp --help` instead of `mcp list`. It only ever
-  needed to know whether the CLI has an MCP command, and it runs over every
-  PATH binary whose name looks like an agent CLI, so it must not start them.
+## [1.6.0] - 2026-08-28
 
 ### Added
 
@@ -55,13 +43,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- GitHub Pages landing matches 1.5.3: OpenCode is listed, copy-paste commands
+- GitHub Pages landing matches 1.6.0: OpenCode is listed, copy-paste commands
   are real (`mindsync-dispatch run auto`, `mindsync agents`), and setup no
-  longer claims every MCP harness is auto-onboarded.
+  longer claims every MCP harness is auto-onboarded. The page now also carries
+  branded social previews, live PyPI download stats, clearer CLI-versus-dispatch
+  guidance, Windows MCP configuration notes, privacy-preserving analytics, and
+  a simplified SVG mark across the navigation, hero, and favicon.
 - README is a front door again: quick start, supported CLIs, and pointers.
   Tool catalogs, remote-worker internals, and memory-engine detail live in
   [`SECURITY.md`](SECURITY.md), [`examples/remote/`](examples/remote/), and
-  the MCP server itself.
+  the MCP server itself. It now documents the per-project pull-request
+  completion policy and its refusal boundaries.
+- GitHub Actions are pinned to Node 24-compatible action releases ahead of the
+  hosted-runner migration.
+
+### Fixed
+
+- `list_agents` no longer runs every host CLI to answer a routing question.
+  Filling the MCP columns means running each host's `mcp list`, which is not a
+  read: the host boots its own configuration, plugins included. Where a plugin
+  holds a single-instance lock — a chat channel bound to one session — the copy
+  started by the probe takes the lock, and the session that had it goes silent.
+  The MCP tool now asks for binary and capability information only; `mindsync
+  agents` and `mindsync doctor` still probe and still report the full truth.
+
+- `probe_mcp_capable` asks `mcp --help` before falling back to `mcp list` for
+  CLIs that do not answer help. Discovery avoids starting known hosts while
+  retaining compatibility with unusual MCP-capable CLIs.
 
 ## [1.5.3] - 2026-08-27
 
