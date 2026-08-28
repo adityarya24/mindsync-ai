@@ -70,6 +70,18 @@ mindsync-dispatch run auto "implement and test the fix" --capability coding
 mindsync-dispatch status
 ```
 
+Completed jobs keep their branch by default. To push a successful isolated
+job and open a pull request for review, enable it for that repository:
+
+```bash
+mindsync config onComplete pr --project .
+```
+
+MindSync never merges the pull request. It also declines to publish when a
+requested check failed or did not report, private prompt framing cannot be
+separated safely, commit hooks refuse the work, or changed paths look like
+secrets. Use `MINDSYNC_ON_COMPLETE=pr` for a one-run override.
+
 Custom worker:
 
 ```bash
