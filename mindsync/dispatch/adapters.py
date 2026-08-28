@@ -37,6 +37,9 @@ _DEFAULTS: dict[str, Any] = {
     "capabilities": [],
     "capabilityWeights": {},
     "routingPriority": 0,
+    "quotaScope": None,
+    "quotaErrorPatterns": [],
+    "quotaCooldownSeconds": 18_000,
 }
 
 
@@ -98,6 +101,9 @@ class AdapterConfig(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     capabilityWeights: dict[str, int] = Field(default_factory=dict)
     routingPriority: int = Field(default=0, ge=0, le=100)
+    quotaScope: str | None = None
+    quotaErrorPatterns: list[str] = Field(default_factory=list)
+    quotaCooldownSeconds: int = Field(default=18_000, ge=60, le=604_800)
 
     @model_validator(mode="after")
     def _require_prompt_placeholder(self) -> AdapterConfig:
@@ -119,6 +125,15 @@ class AdapterConfig(BaseModel):
         self.capabilities = normalized
         if self.family is not None:
             self.family = self.family.strip().lower() or None
+        if self.quotaScope is not None:
+            self.quotaScope = self.quotaScope.strip().lower() or None
+        for pattern in self.quotaErrorPatterns:
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"Adapter '{self.name}': invalid quotaErrorPatterns regex: {exc}"
+                ) from exc
         self.capabilityWeights = {
             capability.strip().lower(): weight
             for capability, weight in self.capabilityWeights.items()

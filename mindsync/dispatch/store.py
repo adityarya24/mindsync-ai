@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from mindsync.config import dispatch_home
-from mindsync.dispatch.proc import is_alive, names_match, process_name
+from mindsync.dispatch.proc import is_alive, kill_tree, names_match, process_name
 from mindsync.storage import atomic_private_write, file_lock
 
 _JOB_ID_RE = re.compile(r"^[0-9a-z]+-[0-9a-f]+$", re.I)
@@ -107,6 +107,18 @@ def write_job_file(job_id: str, name: str, text: str) -> None:
     _private_write(paths[name], text)
 
 
+def write_attempt_file(job_id: str, attempt: int, stream: str, text: str) -> None:
+    if attempt < 1 or stream not in {"stdout", "stderr"}:
+        raise ValueError("Invalid attempt log")
+    root = job_paths(job_id)["dir"] / "attempts"
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.chmod(0o700)
+    except OSError:
+        pass
+    _private_write(root / f"{attempt:04d}.{stream}.log", text)
+
+
 def create_job(
     *,
     agent: str,
@@ -124,6 +136,8 @@ def create_job(
     execution_mode: str = "worker",
     delegation_depth: int = 1,
     timeout_ms: int | None = None,
+    on_limit: str = "stop",
+    task_prompt: str | None = None,
 ) -> dict[str, Any]:
     if execution_mode not in {"worker", "orchestrator"}:
         raise ValueError("execution_mode must be exactly 'worker' or 'orchestrator'")
@@ -180,6 +194,10 @@ def create_job(
             "executionMode": execution_mode,
             "delegationDepth": delegation_depth,
             "timeoutMs": timeout_ms,
+            "onLimit": on_limit,
+            "taskPrompt": task_prompt if task_prompt is not None else prompt,
+            "attempts": [],
+            "handoffs": [],
         }
         if routing:
             _register_active_auto_job(job_id)
@@ -225,6 +243,88 @@ def update_job(
         return meta
 
 
+def claim_worktree_lease(
+    job_id: str, *, agent: str, attempt: int, attempts: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Atomically claim an idle job worktree for exactly one running attempt."""
+    job_paths(job_id)
+    with file_lock(f"dispatch-job-{job_id}"):
+        existing = get_job(job_id)
+        if existing is None:
+            raise ValueError(f"No such job: {job_id}")
+        if existing.get("status") != "running":
+            return existing
+        if existing.get("worktreePath"):
+            lease = existing.get("worktreeLease") or {}
+            if lease.get("agent") != agent or lease.get("state") != "owned":
+                raise RuntimeError("worktree lease is not available for this attempt")
+            lease = {**lease, "attempt": attempt, "state": "running"}
+        else:
+            lease = existing.get("worktreeLease")
+        meta = {**existing, "attempts": attempts, "worktreeLease": lease}
+        _write_meta(job_id, meta)
+        return meta
+
+
+def release_worktree_lease(job_id: str, *, agent: str, attempt: int) -> dict[str, Any]:
+    job_paths(job_id)
+    with file_lock(f"dispatch-job-{job_id}"):
+        existing = get_job(job_id)
+        if existing is None:
+            raise ValueError(f"No such job: {job_id}")
+        lease = existing.get("worktreeLease")
+        if not existing.get("worktreePath") or not isinstance(lease, dict):
+            return existing
+        if (
+            lease.get("agent") != agent
+            or lease.get("attempt") != attempt
+            or lease.get("state") != "running"
+        ):
+            raise RuntimeError("worktree lease ownership changed during the attempt")
+        meta = {
+            **existing,
+            "worktreeLease": {**lease, "state": "released", "releasedAt": utc_now()},
+        }
+        _write_meta(job_id, meta)
+        return meta
+
+
+def transfer_worktree_lease(
+    job_id: str,
+    *,
+    from_agent: str,
+    to_agent: str,
+    next_attempt: int,
+    prompt: str,
+    patch: dict[str, Any],
+) -> dict[str, Any]:
+    """Atomically transfer a released lease and its successor prompt."""
+    job_paths(job_id)
+    with file_lock(f"dispatch-job-{job_id}"):
+        existing = get_job(job_id)
+        if existing is None:
+            raise ValueError(f"No such job: {job_id}")
+        if existing.get("status") != "running":
+            return existing
+        lease = existing.get("worktreeLease") or {}
+        if lease.get("agent") != from_agent or lease.get("state") != "released":
+            raise RuntimeError("worktree lease was not released by the outgoing attempt")
+        meta = {
+            **existing,
+            **patch,
+            "prompt": prompt,
+            "worktreeLease": {
+                "attempt": next_attempt,
+                "agent": to_agent,
+                "state": "owned",
+                "transferredAt": utc_now(),
+            },
+        }
+        _private_write(job_paths(job_id)["prompt"], prompt)
+        _write_meta(job_id, meta)
+        return meta
+
+
 def reconcile_job(meta: dict[str, Any]) -> dict[str, Any]:
     """If a running job's PID is dead or renamed, mark it failed (with re-read)."""
     if meta.get("status") != "running":
@@ -237,6 +337,11 @@ def reconcile_job(meta: dict[str, Any]) -> dict[str, Any]:
     )
     if alive:
         return meta
+    child_pid = meta.get("childPid")
+    if child_pid is not None and names_match(
+        process_name(int(child_pid)), meta.get("childSpawnedName")
+    ):
+        kill_tree(int(child_pid))
     fresh = get_job(str(meta["id"]))
     if fresh is None or fresh.get("status") != "running":
         return fresh if fresh is not None else meta

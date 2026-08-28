@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import stat
@@ -143,6 +144,33 @@ async def test_supervisor_does_not_complete_a_concurrently_cancelled_job(tmp_pat
     assert events == [("job.started", "requester")]
 
 
+def test_cancel_kills_tracked_agent_child_before_supervisor(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    meta = store.create_job(agent="fake", prompt="x", cwd=str(tmp_path))
+    store.update_job(
+        meta["id"],
+        {
+            "status": "running",
+            "pid": 101,
+            "spawnedName": "supervisor",
+            "childPid": 202,
+            "childSpawnedName": "agent",
+        },
+    )
+    killed: list[int] = []
+    import mindsync.dispatch.runner as runner
+
+    monkeypatch.setattr(
+        runner, "process_name", lambda pid: "agent" if pid == 202 else "supervisor"
+    )
+    monkeypatch.setattr(runner, "kill_tree", lambda pid: killed.append(pid) or True)
+
+    cancelled = cancel_job(meta["id"])
+
+    assert cancelled["status"] == "cancelled"
+    assert killed == [202, 101]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_dispatch_job_files_are_private(tmp_path, monkeypatch):
     _isolate_dispatch(tmp_path, monkeypatch)
@@ -195,6 +223,27 @@ async def test_timed_out_agent_leaves_no_children_running(tmp_path: Path):
 
     time.sleep(8)
     assert not marker.exists(), "the timed-out agent's child process outlived it"
+
+
+@pytest.mark.asyncio
+async def test_finished_agent_process_tree_is_contained(tmp_path: Path):
+    child = tmp_path / "long_child.py"
+    child.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+    parent = (
+        "import subprocess,sys,time; "
+        f"p=subprocess.Popen([sys.executable, {str(child)!r}], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL); "
+        "print(p.pid, flush=True); time.sleep(0.5); raise SystemExit(1)"
+    )
+
+    result = await spawn_foreground(sys.executable, ["-c", parent], timeout_ms=10_000)
+    child_pid = int(result["stdout"].strip())
+    await asyncio.sleep(0.2)
+
+    assert result["exitCode"] == 1
+    assert result["processTreeDead"] is True
+    assert proc.is_alive(child_pid) is False
 
 
 def test_names_match_rules():

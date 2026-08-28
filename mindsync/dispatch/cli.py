@@ -33,6 +33,7 @@ def parse_run_args(argv: list[str]) -> dict:
         "exclude_agents": [],
         "memory_project": None,
         "memory_mode": DEFAULT_MEMORY_MODE,
+        "on_limit": "stop",
     }
     rest: list[str] = []
     i = 0
@@ -43,6 +44,7 @@ def parse_run_args(argv: list[str]) -> dict:
         "[--worktree] [--cwd <path>] [--check <command>]... "
         "[--capability <name>]... [--exclude-agent <name>]... "
         "[--memory-project <key>] [--memory-mode <auto|explicit|off>]"
+        " [--on-limit <stop|handoff>]"
     )
     while i < len(argv):
         a = argv[i]
@@ -81,6 +83,13 @@ def parse_run_args(argv: list[str]) -> dict:
             if i >= len(argv):
                 raise SystemExit(usage_str)
             flags["memory_mode"] = argv[i]
+        elif a == "--on-limit":
+            i += 1
+            if i >= len(argv):
+                raise SystemExit(usage_str)
+            flags["on_limit"] = argv[i]
+            if flags["on_limit"] not in {"stop", "handoff"}:
+                raise SystemExit(usage_str)
         elif a == "--write":
             flags["write"] = True
         elif a == "--background":
@@ -145,6 +154,26 @@ def fmt_job(m: dict) -> str:
         lines.append(f"  pull request skipped: {pr['reason']}")
     if m.get("routing"):
         lines.append(f"  route: {m['routing']['reason']}")
+    attempts = m.get("attempts") or []
+    if attempts:
+        summary = " -> ".join(
+            f"{row.get('agent')}:{row.get('status')}" for row in attempts
+        )
+        lines.append(f"  attempts: {summary}")
+    for handoff in m.get("handoffs") or []:
+        lines.append(
+            f"  handoff: {handoff.get('from')} -> {handoff.get('to')} "
+            f"({handoff.get('reason')})"
+        )
+    if m.get("handoffBlocked"):
+        lines.append(f"  handoff stopped: {m['handoffBlocked']}")
+    if m.get("quotaFailure"):
+        scope = m["quotaFailure"].get("scope") or "unknown"
+        until = m["quotaFailure"].get("cooldownUntil")
+        suffix = f"; cooling until {until}" if until else ""
+        lines.append(f"  quota exhausted: {scope}{suffix}")
+    if m.get("cancellationWarning"):
+        lines.append(f"  warning: {m['cancellationWarning']}")
     for warning in m.get("warnings", []):
         lines.append(f"  warning: {warning}")
     return "\n".join(lines)
@@ -154,7 +183,7 @@ async def _async_main(argv: list[str]) -> int:
     if not argv:
         print(
             "usage: dispatch "
-            "<run|status|result|review|cancel|agents|models|roles|_supervise> ...",
+            "<run|status|result|review|cancel|agents|models|roles|limits|_supervise> ...",
             file=sys.stderr,
         )
         return 1
@@ -264,6 +293,25 @@ async def _async_main(argv: list[str]) -> int:
         print(f"\nCustom agents: {user_config_path()}")
         return 0
 
+    if cmd == "limits":
+        from mindsync.dispatch.limits import clear_cooldowns, list_cooldowns
+
+        if rest and rest[0] == "clear":
+            scope = rest[1] if len(rest) > 1 else None
+            count = clear_cooldowns(scope)
+            print(f"Cleared {count} quota cooldown{'s' if count != 1 else ''}.")
+            return 0
+        if rest:
+            print("usage: dispatch limits [clear [scope]]", file=sys.stderr)
+            return 1
+        rows = list_cooldowns()
+        if not rows:
+            print("No active provider quota cooldowns.")
+            return 0
+        for row in rows:
+            print(f"{row['scope']}  until={row['until']}  reason={row['reason']}")
+        return 0
+
     if cmd == "models":
         from mindsync.dispatch.adapters import (
             list_models as adapter_list_models,
@@ -306,7 +354,7 @@ async def _async_main(argv: list[str]) -> int:
         return 0
 
     print(
-        "usage: dispatch <run|status|result|review|cancel|agents|models|roles|_supervise> ...",
+        "usage: dispatch <run|status|result|review|cancel|agents|models|roles|limits|_supervise> ...",
         file=sys.stderr,
     )
     return 1

@@ -316,7 +316,10 @@ def open_pull_request(meta: dict[str, Any]) -> dict[str, Any]:
     if failures:
         return _skip("mechanical checks did not pass: " + "; ".join(failures[:3]))
 
-    task = public_task(meta.get("prompt"))
+    # A reactive successor's private prompt also carries its structured handoff
+    # checkpoint. New jobs retain the exact operator task separately so neither
+    # injected memory nor handoff data can reach a public pull request.
+    task = public_task(meta.get("taskPrompt") or meta.get("prompt"))
     if not task:
         return _skip("could not separate the task from injected private context")
 

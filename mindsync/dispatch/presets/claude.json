@@ -10,5 +10,12 @@
   "installHint": "npm install -g @anthropic-ai/claude-code",
   "capabilities": ["general", "architecture", "reasoning", "review", "writing", "coding"],
   "capabilityWeights": {"architecture": 100, "reasoning": 95, "review": 90, "writing": 90, "coding": 75},
-  "routingPriority": 75
+  "routingPriority": 75,
+  "quotaScope": "anthropic:default",
+  "quotaCooldownSeconds": 18000,
+  "quotaErrorPatterns": [
+    "(?im)^Claude AI usage limit reached\\|[0-9]{9,13}\\s*$",
+    "(?is)\\byou(?:'|’)ve hit your limit\\b.{0,240}\\breset",
+    "(?is)\\b(?:session|weekly) limit (?:has been )?reached\\b.{0,240}\\breset"
+  ]
 }
