@@ -16,6 +16,7 @@ from mindsync.manage import build_parser
 from mindsync.onboarding import CommandResult
 from mindsync.roster import (
     describe_agents,
+    probe_mcp_capable,
     discover_agent_clis,
     suggest_unknown_clis,
     looks_like_agent_cli,
@@ -399,3 +400,64 @@ def test_setup_no_discover_flag_is_parsed():
     assert args.no_discover is True
     default = build_parser().parse_args(["setup"])
     assert default.no_discover is False
+
+
+def test_listing_agents_never_runs_a_host_cli(tmp_path, monkeypatch):
+    """The MCP tool must not start another CLI to answer a routing question.
+
+    `describe_agents` fills its MCP columns by running each host CLI's
+    `mcp list`. That is not a read: the host boots its own configuration,
+    plugins included, and a plugin holding a single-instance lock — a chat
+    channel, say — loses it to the copy the probe just started. `list_agents`
+    is called by agents mid-task, so it asks for the cheap answer.
+    """
+    _isolate(tmp_path, monkeypatch)
+    calls: list[tuple[str, list[str]]] = []
+
+    def forbidden(resolved: str, args: list[str]) -> CommandResult:
+        calls.append((resolved, args))
+        raise AssertionError(f"list_agents ran a host CLI: {resolved} {' '.join(args)}")
+
+    monkeypatch.setattr("mindsync.onboarding._run_command", forbidden)
+    monkeypatch.setattr("mindsync.roster._run_command", forbidden)
+
+    rows = describe_agents(runner=forbidden, resolver=_resolver, probe_hosts=False)
+
+    assert calls == []
+    assert rows
+    assert all(row["mcp_detail"] == "not probed" for row in rows)
+    assert all(row["mcp_installed"] is False for row in rows)
+    # routing information still comes back
+    assert all("capabilities" in row and "routable" in row for row in rows)
+
+
+def test_probing_for_an_mcp_command_asks_for_help_not_a_listing(tmp_path, monkeypatch):
+    """`mcp --help` answers 'does this CLI speak MCP' without starting anything.
+
+    `mcp list` makes the host connect to every server it has configured, which
+    is a side effect this probe has no business causing — and it runs over
+    every PATH binary whose name looks like an agent CLI.
+    """
+    seen: list[list[str]] = []
+
+    def runner(resolved: str, args: list[str]) -> CommandResult:
+        seen.append(args)
+        return CommandResult(0, stdout="Usage: claude mcp [options] [command]")
+
+    assert probe_mcp_capable("claude", runner, lambda _n: "/usr/bin/claude") is True
+    assert seen == [["mcp", "--help"]]
+
+
+def test_a_cli_without_help_still_falls_back_to_listing(tmp_path, monkeypatch):
+    """Not every CLI answers --help on a subcommand; those still get probed."""
+    seen: list[list[str]] = []
+
+    def runner(resolved: str, args: list[str]) -> CommandResult:
+        seen.append(args)
+        if args == ["mcp", "--help"]:
+            return CommandResult(1, stderr="unknown flag")
+        return CommandResult(0, stdout="mindsync")
+
+    assert probe_mcp_capable("someagent", runner, lambda _n: "/usr/bin/someagent") is True
+    assert seen[0] == ["mcp", "--help"]
+    assert ["mcp", "list", "--json"] in seen
