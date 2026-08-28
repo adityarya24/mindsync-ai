@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="MindSync">
+  <defs>
+    <linearGradient id="ms-grad" x1="10" y1="8" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22d3ee"/>
+      <stop offset="0.45" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <filter id="ms-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#12121e"/>
+  <rect width="64" height="64" rx="14" fill="none" stroke="#2d2d42" stroke-width="1"/>
+  <circle cx="32" cy="32" r="23" fill="none" stroke="url(#ms-grad)" stroke-width="1.25" stroke-opacity="0.35"/>
+  <circle cx="32" cy="11" r="2.1" fill="#22d3ee"/>
+  <circle cx="49.5" cy="39" r="2.1" fill="#34d399"/>
+  <circle cx="14.5" cy="39" r="2.1" fill="#a78bfa"/>
+  <path filter="url(#ms-glow)" fill="url(#ms-grad)" d="M17 45V19h6.8l8.2 15.2L40.2 19H47v26h-5.8V31.4l-7.4 13.6h-3.6L23 31.4V45z"/>
+</svg>
