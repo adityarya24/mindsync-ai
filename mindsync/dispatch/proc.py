@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import os
 import re
 import shutil
@@ -12,6 +13,93 @@ from pathlib import Path
 from typing import Any
 
 IS_WIN = sys.platform == "win32"
+
+
+def _create_kill_on_close_job(pid: int) -> int | None:
+    """Contain a Windows process tree so closing the handle kills descendants."""
+    if not IS_WIN:
+        return None
+
+    class IO_COUNTERS(ctypes.Structure):
+        _fields_ = [
+            ("ReadOperationCount", ctypes.c_ulonglong),
+            ("WriteOperationCount", ctypes.c_ulonglong),
+            ("OtherOperationCount", ctypes.c_ulonglong),
+            ("ReadTransferCount", ctypes.c_ulonglong),
+            ("WriteTransferCount", ctypes.c_ulonglong),
+            ("OtherTransferCount", ctypes.c_ulonglong),
+        ]
+
+    class BASIC_LIMITS(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_longlong),
+            ("PerJobUserTimeLimit", ctypes.c_longlong),
+            ("LimitFlags", ctypes.c_ulong),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", ctypes.c_ulong),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", ctypes.c_ulong),
+            ("SchedulingClass", ctypes.c_ulong),
+        ]
+
+    class EXTENDED_LIMITS(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BASIC_LIMITS),
+            ("IoInfo", IO_COUNTERS),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    limits = EXTENDED_LIMITS()
+    limits.BasicLimitInformation.LimitFlags = 0x00002000
+    configured = kernel32.SetInformationJobObject(
+        ctypes.c_void_p(job), 9, ctypes.byref(limits), ctypes.sizeof(limits)
+    )
+    process = kernel32.OpenProcess(0x0001 | 0x0100 | 0x0400, False, pid)
+    assigned = bool(
+        configured
+        and process
+        and kernel32.AssignProcessToJobObject(
+            ctypes.c_void_p(job), ctypes.c_void_p(process)
+        )
+    )
+    if process:
+        kernel32.CloseHandle(ctypes.c_void_p(process))
+    if not assigned:
+        kernel32.CloseHandle(ctypes.c_void_p(job))
+        return None
+    return int(job)
+
+
+def _close_job(handle: int | None) -> bool:
+    if handle is not None and IS_WIN:
+        return bool(
+            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(
+                ctypes.c_void_p(handle)
+            )
+        )
+    return handle is None
+
+
+def _posix_process_group_dead(pid: int) -> bool:
+    if IS_WIN:
+        return False
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError):
+        return False
+    return False
 
 
 def _open_private_append(path: Path):
@@ -269,7 +357,10 @@ async def spawn_foreground(
             "stdout": "",
             "stderr": str(exc),
             "timedOut": False,
+            "processTreeDead": False,
         }
+
+    windows_job = _create_kill_on_close_job(proc.pid)
 
     try:
         stdout_b, stderr_b = await asyncio.wait_for(
@@ -278,6 +369,8 @@ async def spawn_foreground(
         )
     except asyncio.TimeoutError:
         timed_out = True
+        _close_job(windows_job)
+        windows_job = None
         if proc.pid:
             kill_tree(proc.pid)
         try:
@@ -285,6 +378,8 @@ async def spawn_foreground(
         except (asyncio.TimeoutError, Exception):
             stdout_b, stderr_b = b"", b""
     except asyncio.CancelledError:
+        _close_job(windows_job)
+        windows_job = None
         if proc.pid:
             kill_tree(proc.pid)
         try:
@@ -294,9 +389,18 @@ async def spawn_foreground(
         raise
 
     code = proc.returncode if proc.returncode is not None else -1
+    if IS_WIN:
+        process_tree_dead = windows_job is not None and _close_job(windows_job)
+    else:
+        process_tree_dead = _posix_process_group_dead(proc.pid)
+        if not process_tree_dead:
+            kill_tree(proc.pid)
+            await asyncio.sleep(0.05)
+            process_tree_dead = _posix_process_group_dead(proc.pid)
     return {
         "exitCode": code,
         "stdout": (stdout_b or b"").decode("utf-8", errors="replace"),
         "stderr": (stderr_b or b"").decode("utf-8", errors="replace"),
         "timedOut": timed_out,
+        "processTreeDead": process_tree_dead,
     }

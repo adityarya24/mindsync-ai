@@ -101,14 +101,23 @@ def select_agent(
     excluded = {name.strip().lower() for name in (exclude_agents or []) if name.strip()}
     available: list[AdapterConfig] = []
     unavailable: list[str] = []
+    unavailable_reasons: dict[str, str] = {}
 
     for adapter in (adapters or load_adapters()).values():
         if adapter.name.lower() in excluded:
+            continue
+        from mindsync.dispatch.limits import cooldown_reason
+
+        cooling = cooldown_reason(adapter)
+        if cooling:
+            unavailable.append(adapter.name)
+            unavailable_reasons[adapter.name] = cooling
             continue
         if resolve_bin(adapter.bin):
             available.append(adapter)
         else:
             unavailable.append(adapter.name)
+            unavailable_reasons[adapter.name] = "binary is not installed"
 
     if not available:
         suffix = f" Excluded: {', '.join(sorted(excluded))}." if excluded else ""
@@ -146,6 +155,9 @@ def select_agent(
         ),
         "candidates": ranked,
         "unavailableAgents": sorted(unavailable),
+        "unavailableReasons": {
+            name: unavailable_reasons[name] for name in sorted(unavailable_reasons)
+        },
         "excludedAgents": sorted(excluded),
     }
     return decision

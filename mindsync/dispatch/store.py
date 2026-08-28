@@ -107,6 +107,18 @@ def write_job_file(job_id: str, name: str, text: str) -> None:
     _private_write(paths[name], text)
 
 
+def write_attempt_file(job_id: str, attempt: int, stream: str, text: str) -> None:
+    if attempt < 1 or stream not in {"stdout", "stderr"}:
+        raise ValueError("Invalid attempt log")
+    root = job_paths(job_id)["dir"] / "attempts"
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        root.chmod(0o700)
+    except OSError:
+        pass
+    _private_write(root / f"{attempt:04d}.{stream}.log", text)
+
+
 def create_job(
     *,
     agent: str,
@@ -124,6 +136,8 @@ def create_job(
     execution_mode: str = "worker",
     delegation_depth: int = 1,
     timeout_ms: int | None = None,
+    on_limit: str = "stop",
+    task_prompt: str | None = None,
 ) -> dict[str, Any]:
     if execution_mode not in {"worker", "orchestrator"}:
         raise ValueError("execution_mode must be exactly 'worker' or 'orchestrator'")
@@ -180,6 +194,10 @@ def create_job(
             "executionMode": execution_mode,
             "delegationDepth": delegation_depth,
             "timeoutMs": timeout_ms,
+            "onLimit": on_limit,
+            "taskPrompt": task_prompt if task_prompt is not None else prompt,
+            "attempts": [],
+            "handoffs": [],
         }
         if routing:
             _register_active_auto_job(job_id)

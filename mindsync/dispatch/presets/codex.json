@@ -13,5 +13,11 @@
   "installHint": "npm install -g @openai/codex",
   "capabilities": ["general", "coding", "debugging", "testing", "devops", "repository", "review", "refactoring"],
   "capabilityWeights": {"coding": 100, "debugging": 95, "testing": 95, "devops": 90, "repository": 90, "review": 75, "refactoring": 80},
-  "routingPriority": 80
+  "routingPriority": 80,
+  "quotaScope": "openai:default",
+  "quotaCooldownSeconds": 18000,
+  "quotaErrorPatterns": [
+    "(?is)\\byou(?:'|’)ve hit your usage limit\\b",
+    "(?is)\\busage limit (?:has been )?reached\\b.{0,240}\\b(?:reset|try again)\\b"
+  ]
 }

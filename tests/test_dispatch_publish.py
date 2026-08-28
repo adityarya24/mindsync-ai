@@ -232,6 +232,27 @@ def test_a_job_with_private_context_it_cannot_strip_opens_no_pr(repo, monkeypatc
     assert "private context" in outcome["reason"]
 
 
+def test_reactive_handoff_checkpoint_never_reaches_pull_request(repo, monkeypatch):
+    monkeypatch.setenv("MINDSYNC_ON_COMPLETE", "pr")
+    monkeypatch.setattr(publish.shutil, "which", lambda _name: None)
+    private_successor_prompt = (
+        "Add a greeting module\n\nMindSync reactive handoff\n"
+        '{"blockers":["private production detail"]}'
+    )
+
+    outcome = publish.open_pull_request(
+        _meta(
+            repo,
+            taskPrompt="Add a greeting module",
+            prompt=private_successor_prompt,
+        )
+    )
+
+    # Reaching the gh check proves the private successor prompt was not used as
+    # the publication task; a malformed/private task would stop earlier.
+    assert outcome["reason"] == "gh CLI not installed"
+
+
 # --- the review gate ---------------------------------------------------------
 
 

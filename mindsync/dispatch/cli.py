@@ -33,6 +33,7 @@ def parse_run_args(argv: list[str]) -> dict:
         "exclude_agents": [],
         "memory_project": None,
         "memory_mode": DEFAULT_MEMORY_MODE,
+        "on_limit": "stop",
     }
     rest: list[str] = []
     i = 0
@@ -43,6 +44,7 @@ def parse_run_args(argv: list[str]) -> dict:
         "[--worktree] [--cwd <path>] [--check <command>]... "
         "[--capability <name>]... [--exclude-agent <name>]... "
         "[--memory-project <key>] [--memory-mode <auto|explicit|off>]"
+        " [--on-limit <stop|handoff>]"
     )
     while i < len(argv):
         a = argv[i]
@@ -81,6 +83,11 @@ def parse_run_args(argv: list[str]) -> dict:
             if i >= len(argv):
                 raise SystemExit(usage_str)
             flags["memory_mode"] = argv[i]
+        elif a == "--on-limit":
+            i += 1
+            if i >= len(argv):
+                raise SystemExit(usage_str)
+            flags["on_limit"] = argv[i]
         elif a == "--write":
             flags["write"] = True
         elif a == "--background":
@@ -145,6 +152,19 @@ def fmt_job(m: dict) -> str:
         lines.append(f"  pull request skipped: {pr['reason']}")
     if m.get("routing"):
         lines.append(f"  route: {m['routing']['reason']}")
+    attempts = m.get("attempts") or []
+    if attempts:
+        summary = " -> ".join(
+            f"{row.get('agent')}:{row.get('status')}" for row in attempts
+        )
+        lines.append(f"  attempts: {summary}")
+    for handoff in m.get("handoffs") or []:
+        lines.append(
+            f"  handoff: {handoff.get('from')} -> {handoff.get('to')} "
+            f"({handoff.get('reason')})"
+        )
+    if m.get("handoffBlocked"):
+        lines.append(f"  handoff stopped: {m['handoffBlocked']}")
     for warning in m.get("warnings", []):
         lines.append(f"  warning: {warning}")
     return "\n".join(lines)

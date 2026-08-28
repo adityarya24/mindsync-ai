@@ -636,7 +636,18 @@ def _fmt_dispatch_job(m: dict[str, Any]) -> str:
     else:
         agent_str = m["agent"]
     route_line = f"\n  route: {m['routing']['reason']}" if m.get("routing") else ""
-    return f"[{m['id']}] {agent_str} — {m['status']}{exit_bit}\n  prompt: {prompt}{route_line}"
+    attempt_line = ""
+    if m.get("attempts"):
+        attempt_line = "\n  attempts: " + " -> ".join(
+            f"{row.get('agent')}:{row.get('status')}" for row in m["attempts"]
+        )
+    blocked_line = (
+        f"\n  handoff stopped: {m['handoffBlocked']}" if m.get("handoffBlocked") else ""
+    )
+    return (
+        f"[{m['id']}] {agent_str} — {m['status']}{exit_bit}\n"
+        f"  prompt: {prompt}{route_line}{attempt_line}{blocked_line}"
+    )
 
 
 @mcp.tool()
@@ -655,6 +666,7 @@ async def delegate_task(
     exclude_agents: list[str] | None = None,
     memory_project: str | None = None,
     memory_mode: str = DEFAULT_MEMORY_MODE,
+    on_limit: str = "stop",
     agent_name: str = "default_agent",
     ctx: Context | None = None,
 ) -> str:
@@ -671,6 +683,8 @@ async def delegate_task(
     Git checkout identity when no project is supplied, explicit requires
     memory_project, and off disables memory. An explicit project overrides
     inference. Raw prompts are never stored in memory.
+    on_limit='handoff' is opt-in and requires worktree=True; only a configured,
+    provider-specific quota signature can rotate to another available agent.
     """
     settings.ensure_dirs()
     if is_worker_process():
@@ -706,6 +720,7 @@ async def delegate_task(
             exclude_agents=exclusions,
             memory_project=memory_project,
             memory_mode=memory_mode,
+            on_limit=on_limit,
         )
     except AutoDelegationSuggestion as exc:
         log_audit(agent_name, "delegate_task", f"suggested={exc.decision['agent']}")
