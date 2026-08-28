@@ -32,6 +32,7 @@ class OrchestrationPolicy(BaseModel):
     announce: bool = True
     maxParallel: int = Field(default=3, ge=1, le=16)
     avoidHumanFacingAgent: bool = True
+    onComplete: Literal["pr", "branch", "none"] = "branch"
 
 
 def is_worker_process() -> bool:

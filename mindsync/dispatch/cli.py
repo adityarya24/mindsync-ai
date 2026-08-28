@@ -138,6 +138,11 @@ def fmt_job(m: dict) -> str:
     ]
     if m.get("worktreePath") and m.get("worktreeKept"):
         lines.append(f"  worktree kept: {m['worktreePath']} (branch {m['branch']})")
+    pr = m.get("pullRequest") or {}
+    if pr.get("opened"):
+        lines.append(f"  pull request: {pr.get('url') or '(opened)'}")
+    elif pr.get("reason"):
+        lines.append(f"  pull request skipped: {pr['reason']}")
     if m.get("routing"):
         lines.append(f"  route: {m['routing']['reason']}")
     for warning in m.get("warnings", []):

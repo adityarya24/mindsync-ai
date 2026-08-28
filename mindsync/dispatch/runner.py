@@ -401,6 +401,7 @@ async def run_task(
         meta = store.update_job(meta["id"], {
             "cwd": wt_info["path"],
             "repoRoot": repo_rt,
+            "baseBranch": wt_info.get("baseBranch"),
             "worktreePath": wt_info["path"],
             "branch": wt_info["branch"],
             "baseCommit": wt_info["baseCommit"],

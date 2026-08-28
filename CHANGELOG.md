@@ -9,13 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `MINDSYNC_ON_COMPLETE=pr` pushes a finished job's branch and opens a pull
-  request for it, so the path to review belongs to the orchestrator instead of
-  being an instruction each agent may or may not carry. Uncommitted work the
-  agent left behind is committed onto its own branch first, so editing without
-  committing is not the reason no PR appears. Nothing is ever merged. Defaults
-  to `branch`, the previous behaviour, and reports why on the job whenever it
-  declines — no remote, no `gh`, or no commits over the base.
+- `onComplete: pr` in the orchestration policy (or `MINDSYNC_ON_COMPLETE=pr`
+  for one run) pushes a finished job's branch and opens a pull request for it,
+  so the path to review belongs to the orchestrator instead of being an
+  instruction each agent may or may not carry. Nothing is ever merged.
+
+  Only the operator's task is published. A stored job prompt is not the task:
+  it carries the injected memory bootstrap — the project's decisions, blockers
+  and durable facts — which is why it is written with mode 0o600. That framing
+  is stripped, and publishing is abandoned rather than guessed at if it cannot
+  be removed cleanly.
+
+  A pull request also requires the mechanical checks to have passed; a zero
+  exit code is not a passing build. Uncommitted work is committed onto the
+  job's own branch first, but the staged set is screened and nothing is
+  committed when a path looks like a secret, with commit hooks left enabled.
+
+  Defaults to `branch`, the previous behaviour, reuses an existing open PR
+  instead of failing, targets the branch the job was cut from, and reports on
+  the job — and in `mindsync status` — whenever it declines.
 
 ### Changed
 
