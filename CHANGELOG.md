@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `onComplete: pr` in the orchestration policy (or `MINDSYNC_ON_COMPLETE=pr`
+  for one run) pushes a finished job's branch and opens a pull request for it,
+  so the path to review belongs to the orchestrator instead of being an
+  instruction each agent may or may not carry. Nothing is ever merged.
+
+  Only the operator's task is published. A stored job prompt is not the task:
+  it carries the injected memory bootstrap — the project's decisions, blockers
+  and durable facts — which is why it is written with mode 0o600. That framing
+  is stripped, and publishing is abandoned rather than guessed at if it cannot
+  be removed cleanly.
+
+  A pull request also requires the mechanical checks to have passed; a zero
+  exit code is not a passing build, and neither is a check that was requested
+  and produced no result — that question is asked of the review gate itself,
+  so the two cannot drift apart. Uncommitted work is committed onto the job's
+  own branch first, with commit hooks left enabled, and a commit the
+  repository refuses stops the publish rather than opening a pull request
+  without the work. Every path the branch adds or changes is screened for
+  things that look like secrets — case-insensitively, at any depth, including
+  what the agent committed itself — and nothing is pushed when one matches.
+
+  Set it per project with `mindsync config onComplete pr --project <path>`,
+  which overrides the global default for that repository only. Project
+  overrides live in MindSync's own policy file rather than in the repository,
+  because a dispatched agent can write to the repository.
+
+  Defaults to `branch`, the previous behaviour, reuses an existing open PR
+  instead of failing, targets the branch the job was cut from, and reports on
+  the job — and in `mindsync status` — whenever it declines.
+
 ### Changed
 
 - GitHub Pages landing matches 1.5.3: OpenCode is listed, copy-paste commands

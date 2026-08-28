@@ -27,11 +27,60 @@ def validate_execution_mode(value: Any) -> ExecutionMode:
     return value
 
 
+OnComplete = Literal["pr", "branch", "none"]
+
+
+class ProjectPolicy(BaseModel):
+    """Per-project overrides, keyed by repository root.
+
+    These live in MindSync's own policy file rather than inside the repository.
+    A dispatched agent writes to the repository, so a config file kept there
+    would be one an agent could edit to turn its own publishing on.
+    """
+
+    onComplete: OnComplete | None = None
+
+
 class OrchestrationPolicy(BaseModel):
     mode: Literal["auto", "suggest", "off"] = "auto"
     announce: bool = True
     maxParallel: int = Field(default=3, ge=1, le=16)
     avoidHumanFacingAgent: bool = True
+    onComplete: OnComplete = "branch"
+    projects: dict[str, ProjectPolicy] = Field(default_factory=dict)
+
+
+def project_key(repo_root: str | Path | None) -> str | None:
+    """Normalise a repository root into the key its overrides are stored under.
+
+    Symlinks and case differences must not produce two entries for one repo,
+    so the path is resolved and normalised the way the platform compares paths.
+    """
+    if not repo_root:
+        return None
+    try:
+        resolved = Path(repo_root).expanduser().resolve()
+    except OSError:
+        resolved = Path(repo_root).expanduser()
+    return os.path.normcase(str(resolved))
+
+
+def project_on_complete(
+    repo_root: str | Path | None, policy: OrchestrationPolicy | None = None
+) -> OnComplete:
+    """The on-complete mode in force for one repository.
+
+    A project override wins over the global default; the environment variable
+    is handled by the caller, because it overrides a single run rather than a
+    stored setting.
+    """
+    cfg = policy or load_policy()
+    key = project_key(repo_root)
+    if key:
+        entry = cfg.projects.get(key)
+        if entry is not None and entry.onComplete is not None:
+            return entry.onComplete
+    return cfg.onComplete
 
 
 def is_worker_process() -> bool:
@@ -64,23 +113,48 @@ def save_policy(policy: OrchestrationPolicy, path: Path | None = None) -> Path:
     return target
 
 
-def update_policy(key: str, value: Any, path: Path | None = None) -> OrchestrationPolicy:
-    aliases = {
-        "mode": "mode",
-        "orchestration.mode": "mode",
-        "announce": "announce",
-        "orchestration.announce": "announce",
-        "maxParallel": "maxParallel",
-        "orchestration.maxParallel": "maxParallel",
-        "avoidHumanFacingAgent": "avoidHumanFacingAgent",
-        "orchestration.avoidHumanFacingAgent": "avoidHumanFacingAgent",
-    }
-    field = aliases.get(key)
+_POLICY_ALIASES = {
+    "mode": "mode",
+    "announce": "announce",
+    "maxParallel": "maxParallel",
+    "avoidHumanFacingAgent": "avoidHumanFacingAgent",
+    "onComplete": "onComplete",
+}
+_PROJECT_FIELDS = {"onComplete"}
+
+
+def resolve_policy_key(key: str) -> str:
+    """The policy field a CLI key names, accepting the 'orchestration.' prefix."""
+    field = _POLICY_ALIASES.get(key) or _POLICY_ALIASES.get(
+        key[len("orchestration."):] if key.startswith("orchestration.") else ""
+    )
     if field is None:
-        allowed = ", ".join(sorted(aliases))
+        allowed = ", ".join(sorted(_POLICY_ALIASES))
         raise ValueError(f"Unknown orchestration setting '{key}'. Allowed: {allowed}")
+    return field
+
+
+def update_policy(
+    key: str, value: Any, path: Path | None = None, project: str | Path | None = None
+) -> OrchestrationPolicy:
+    field = resolve_policy_key(key)
     current = load_policy(path).model_dump()
-    current[field] = value
+
+    if project is not None:
+        if field not in _PROJECT_FIELDS:
+            allowed = ", ".join(sorted(_PROJECT_FIELDS))
+            raise ValueError(
+                f"'{field}' cannot be set per project. Per-project settings: {allowed}"
+            )
+        repo_key = project_key(project)
+        if not repo_key:
+            raise ValueError("A project override needs a repository path")
+        entry = dict(current.get("projects", {}).get(repo_key) or {})
+        entry[field] = value
+        current.setdefault("projects", {})[repo_key] = entry
+    else:
+        current[field] = value
+
     policy = OrchestrationPolicy.model_validate(current)
     save_policy(policy, path)
     return policy

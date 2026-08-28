@@ -196,26 +196,16 @@ def diff_summary(cwd: str, base_commit: str | None) -> dict[str, Any]:
         return empty
 
 
-def verdict(meta: dict[str, Any]) -> dict[str, Any]:
-    """Fold job outcome and recorded checks into a single verdict dictionary.
+def check_reasons(meta: dict[str, Any]) -> list[str]:
+    """Why a job's mechanical checks do not count as passing. Empty means they do.
 
-    Returns {"passed": bool, "reasons": [str, ...]}.
+    Kept separate from :func:`verdict` because publishing needs exactly this
+    question and nothing else about the job, and two copies of it would drift —
+    the first one already did, and passed a job whose checks never reported.
     """
     reasons: list[str] = []
-
-    status = meta.get("status")
-    if status != "done":
-        if status == "failed":
-            if meta.get("timedOut"):
-                reasons.append("job failed (timed out)")
-            elif meta.get("exitCode") is not None:
-                reasons.append(f"job failed (exit {meta['exitCode']})")
-            else:
-                reasons.append("job failed")
-        else:
-            reasons.append(f"job status is {status}")
-
     check_results = meta.get("checkResults") or []
+
     for check in check_results:
         if isinstance(check, CheckResult):
             c_name = check.name
@@ -245,6 +235,30 @@ def verdict(meta: dict[str, Any]) -> dict[str, Any]:
         reasons.append(
             f"{missing} of {len(requested)} requested checks produced no result"
         )
+
+    return reasons
+
+
+def verdict(meta: dict[str, Any]) -> dict[str, Any]:
+    """Fold job outcome and recorded checks into a single verdict dictionary.
+
+    Returns {"passed": bool, "reasons": [str, ...]}.
+    """
+    reasons: list[str] = []
+
+    status = meta.get("status")
+    if status != "done":
+        if status == "failed":
+            if meta.get("timedOut"):
+                reasons.append("job failed (timed out)")
+            elif meta.get("exitCode") is not None:
+                reasons.append(f"job failed (exit {meta['exitCode']})")
+            else:
+                reasons.append("job failed")
+        else:
+            reasons.append(f"job status is {status}")
+
+    reasons.extend(check_reasons(meta))
 
     if meta.get("write"):
         diff = meta.get("diff")
