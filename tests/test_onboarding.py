@@ -442,3 +442,58 @@ def test_doctor_sees_user_level_codex_hooks(tmp_path, monkeypatch):
     assert report["memory"]["codex_hooks"]["user_path"] == str(
         onboarding.codex_hooks_path(user_home)
     )
+
+
+def test_doctor_no_probe_never_starts_a_host_cli():
+    """`mindsync doctor --no-probe` must not run `<cli> mcp list`.
+
+    Probing registration starts the host CLI and everything it loads. On a
+    machine where a host also runs a bound chat-channel plugin, that steals the
+    channel's single-instance lock — so the diagnostic must be skippable without
+    spawning anything.
+    """
+    calls: list[tuple[str, list[str]]] = []
+
+    def spy(resolved: str, args: list[str]) -> onboarding.CommandResult:
+        calls.append((resolved, args))
+        return onboarding.CommandResult(0, stdout="", stderr="")
+
+    report = onboarding.doctor(
+        runner=spy, resolver=lambda n: "/usr/bin/" + n, probe_hosts=False
+    )
+
+    assert calls == []
+    # command hosts (codex/claude/gemini/grok) report "not probed" without spawning;
+    # file-config hosts (cursor/opencode) are still read from disk, so they are exempt.
+    command_hosts = [
+        c for c in report["clis"]
+        if c.get("cli") in {"codex", "claude", "gemini", "grok"} and c.get("installed")
+    ]
+    assert command_hosts
+    assert all(c.get("detail") == "not probed" for c in command_hosts)
+    assert all(c.get("configured") is False for c in command_hosts)
+
+
+def test_doctor_default_still_probes():
+    calls: list[tuple[str, list[str]]] = []
+
+    def spy(resolved: str, args: list[str]) -> onboarding.CommandResult:
+        calls.append((resolved, args))
+        return onboarding.CommandResult(0, stdout="", stderr="")
+
+    onboarding.doctor(runner=spy, resolver=lambda n: "/usr/bin/" + n)
+
+    assert any(a[:2] == ["mcp", "list"] for _, a in calls)
+
+
+def test_cli_status_no_probe_reads_config_hosts_but_skips_command_hosts():
+    """File-config hosts (cursor/opencode) stay readable; command hosts report 'not probed'."""
+    def forbidden(resolved: str, args: list[str]) -> onboarding.CommandResult:
+        raise AssertionError(f"must not run: {resolved} {args}")
+
+    status = onboarding.cli_status(
+        "claude", runner=forbidden, resolver=lambda n: "/usr/bin/" + n, probe_hosts=False
+    )
+    assert status["installed"] is True
+    assert status["detail"] == "not probed"
+    assert status["configured"] is False

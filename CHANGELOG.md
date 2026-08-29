@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Roster and diagnostic commands no longer start host CLIs just to display MCP
+  registration status. `mindsync agents` and `mindsync-dispatch agents` skip the
+  probe by default (routing needs the binary and capabilities, not registration);
+  `mindsync agents --check-mcp` opts back in. `mindsync doctor` still probes by
+  default but takes `--no-probe`. Probing runs `<cli> mcp list`, which starts the
+  host CLI and everything it loads — on a machine where a host also runs a bound
+  chat-channel plugin, that would steal the channel's single-instance lock. This
+  extends the same fix already applied to the `list_agents` MCP tool.
+
+
 ## [1.8.0] - 2026-08-29
 
 ### Added
