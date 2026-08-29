@@ -11,6 +11,9 @@ from pydantic import BaseModel, Field, field_validator
 from mindsync.dispatch.adapters import user_config_path
 
 DEFAULT_THRESHOLD_PERCENT = 90
+DEFAULT_POLLING_INTERVAL_SECONDS = 60
+MIN_POLLING_INTERVAL_SECONDS = 5
+MAX_POLLING_INTERVAL_SECONDS = 600
 KNOWN_READERS = frozenset({"codex-oauth"})
 
 
@@ -19,6 +22,11 @@ class UsageConfig(BaseModel):
 
     enabled: bool = False
     defaultThresholdPercent: int = Field(default=DEFAULT_THRESHOLD_PERCENT, ge=1, le=100)
+    pollingIntervalSeconds: int = Field(
+        default=DEFAULT_POLLING_INTERVAL_SECONDS,
+        ge=MIN_POLLING_INTERVAL_SECONDS,
+        le=MAX_POLLING_INTERVAL_SECONDS,
+    )
 
     @field_validator("defaultThresholdPercent", mode="before")
     @classmethod

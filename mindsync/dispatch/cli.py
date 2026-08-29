@@ -167,6 +167,19 @@ def fmt_job(m: dict) -> str:
         )
     if m.get("handoffBlocked"):
         lines.append(f"  handoff stopped: {m['handoffBlocked']}")
+    if m.get("preemptiveBlocked"):
+        lines.append(f"  pre-emptive blocked: {m['preemptiveBlocked']}")
+    for skip in m.get("usageSkips") or []:
+        lines.append(
+            f"  usage skip: {skip.get('agent')} ({skip.get('reason')})"
+        )
+    usage_eval = m.get("usageEvaluation") or {}
+    if usage_eval:
+        status_text = usage_eval.get("status", "unknown")
+        scope = usage_eval.get("account_scope") or "unknown"
+        threshold = usage_eval.get("threshold_percent")
+        threshold_bit = f" @ {threshold}%" if threshold is not None else ""
+        lines.append(f"  usage: {status_text} ({scope}{threshold_bit})")
     if m.get("quotaFailure"):
         scope = m["quotaFailure"].get("scope") or "unknown"
         until = m["quotaFailure"].get("cooldownUntil")

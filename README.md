@@ -80,18 +80,31 @@ mindsync-dispatch limits clear           # clear cooldowns after operator verifi
 
 Pre-emptive usage readers are pluggable per provider. The Codex adapter can
 read primary and weekly OAuth usage windows from the local `~/.codex/auth.json`
-source when a reader is configured, but dispatch does not poll or hand off on
-that signal yet. Global usage settings live in `agents.json` under `usage` and
-default to disabled:
+source when a reader is configured. Pre-emptive polling and threshold handoff are
+opt-in: they require both `usage.enabled: true` in `agents.json` and
+`--on-limit handoff` on an isolated worktree job. Global usage settings default
+to disabled:
 
 ```json
 {
   "usage": {
     "enabled": false,
-    "defaultThresholdPercent": 90
+    "defaultThresholdPercent": 90,
+    "pollingIntervalSeconds": 60
   }
 }
 ```
+
+When enabled, dispatch polls at `pollingIntervalSeconds` during a running
+attempt, skips cooling or over-threshold provider accounts before spawn, and may
+transfer only when a privacy-safe MindSync checkpoint already exists for that
+attempt (plus the worktree diff and original task). There is no generic CLI
+control channel: dispatch does not ask arbitrary agents to write `HANDOFF.md`.
+Without a checkpoint, threshold hits are recorded as `preemptiveBlocked` and
+the attempt keeps running so reactive quota handoff remains the floor. Job
+status shows usage evaluation, skips, blocks, and handoffs; only percentages,
+window labels, reset times, scope, and reasons are persisted — never raw usage,
+auth, or source payloads.
 
 Per-adapter overrides use `usageReader` and optional `usageThresholdPercent`.
 The bundled Codex preset declares `usageReader: "codex-oauth"`.
