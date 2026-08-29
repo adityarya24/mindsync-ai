@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `job.completed` / `job.failed` events, with allowlisted JSON, persist-before-send
   outbox retry on drain/restart, first-failure stop plus a bounded drain budget,
   idempotent `event_id` delivery, and no effect on job status (#52).
+- Codex Stop reserve warnings name a ranked dispatch successor and state that
+  MindSync will not auto-start it; the structured checkpoint is already written
+  (#52).
+- `mindsync doctor` reports per-adapter `reactive_reset`
+  (`claude-stderr-epoch` or `quotaCooldownSeconds`) so cooldown source is visible
+  (#54).
 
 ### Changed
 

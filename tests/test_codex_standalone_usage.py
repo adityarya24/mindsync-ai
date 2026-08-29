@@ -195,6 +195,40 @@ def test_stop_warning_refreshes_stale_cache(tmp_path, monkeypatch):
 
     assert warnings
     assert "Codex seat nearing limit" in warnings[0]
+    assert "Checkpoint written" in warnings[0]
+    assert "will not auto-start" in warnings[0]
+
+
+def test_stop_warning_names_ranked_successor(tmp_path, monkeypatch):
+    _enable_usage(tmp_path, monkeypatch)
+    write_cache(
+        UsageReadResult.available(
+            provider="codex",
+            account_scope="openai:test",
+            reader="codex-oauth",
+            source="test",
+            windows=[UsageWindow(id="primary", label="Primary", used_percent=95.0)],
+        )
+    )
+    monkeypatch.setattr(
+        "mindsync.codex_standalone_usage.prefetch_usage",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "mindsync.dispatch.routing.select_agent",
+        lambda *args, **kwargs: {"agent": "claude"},
+    )
+    warnings: list[str] = []
+    maybe_append_reserve_warning(
+        f"succ-{tmp_path.name}",
+        warnings,
+        memory_mode="auto",
+        timeout_seconds=0.2,
+    )
+
+    assert warnings
+    assert "Ranked dispatch successor: claude" in warnings[0]
+    assert "will not auto-start" in warnings[0]
 
 
 def test_stop_warning_uses_orchestrator_reserve_not_worker_threshold(

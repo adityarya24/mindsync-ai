@@ -20,6 +20,7 @@ from mindsync.dispatch.limits import (
     extract_reactive_reset_at,
     list_cooldowns,
     mark_cooling,
+    reactive_reset_source,
 )
 from mindsync.dispatch.routing import select_agent
 from mindsync.dispatch import store
@@ -134,6 +135,17 @@ def test_claude_reactive_reset_parses_future_epoch_from_stderr():
 
     assert reset_at is not None
     assert reset_at == datetime.fromtimestamp(future, tz=timezone.utc)
+
+
+def test_reactive_reset_source_is_parser_only_for_allowlisted_claude_pattern():
+    claude = AdapterConfig(
+        name="claude",
+        bin="claude",
+        quotaErrorPatterns=[r"(?im)^Claude AI usage limit reached\|[0-9]{10}\s*$"],
+    )
+    grok = AdapterConfig(name="grok", bin="grok", quotaErrorPatterns=[r"quota"])
+    assert reactive_reset_source(claude) == "claude-stderr-epoch"
+    assert reactive_reset_source(grok) == "quotaCooldownSeconds"
 
 
 def test_reactive_reset_rejects_past_malformed_and_stdout_only_values():
