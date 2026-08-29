@@ -771,3 +771,70 @@ def test_explicit_mode_is_not_silently_accepted(monkeypatch):
     warnings: list[str] = []
     assert codex_hook._resolve_memory_mode(warnings) == "off"
     assert any("not one of" in item for item in warnings)
+
+
+# --------------------------------------------------------------------------
+# Work budget and deadline boundary
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "t0",
+    [
+        509.72574674175775,  # exact Windows Py310 CI overshoot float: (t0+2.5)-t0 = 2.500000000000057
+        6.717165441581414,
+        63.165730030313675,
+        4094.6100305182476,
+    ],
+)
+def test_remaining_seconds_respects_budget_boundary_under_float_overshoot(
+    monkeypatch, t0
+):
+    monkeypatch.setattr(time, "monotonic", lambda: t0)
+    deadline = t0 + codex_hook._HOOK_WORK_BUDGET_SECONDS
+    remaining = codex_hook._remaining_seconds(deadline)
+
+    assert 0 < remaining <= codex_hook._HOOK_WORK_BUDGET_SECONDS
+    assert remaining == codex_hook._HOOK_WORK_BUDGET_SECONDS
+
+
+def test_remaining_seconds_bounds_and_caps(monkeypatch):
+    t0 = 100.0
+    monkeypatch.setattr(time, "monotonic", lambda: t0)
+
+    # Future deadline inside budget
+    assert codex_hook._remaining_seconds(t0 + 1.5) == 1.5
+    # Future deadline capped by explicit cap
+    assert codex_hook._remaining_seconds(t0 + 2.5, cap=1.0) == 1.0
+    # Future deadline capped by _HOOK_WORK_BUDGET_SECONDS even if cap is larger
+    assert (
+        codex_hook._remaining_seconds(t0 + 10.0, cap=10.0)
+        == codex_hook._HOOK_WORK_BUDGET_SECONDS
+    )
+    # Past deadline remains non-negative
+    assert codex_hook._remaining_seconds(t0 - 1.0) == 0.0
+    # Negative cap remains non-negative
+    assert codex_hook._remaining_seconds(t0 + 2.5, cap=-1.0) == 0.0
+
+
+@pytest.mark.parametrize("event", ["SessionStart", "Stop", "SessionEnd"])
+def test_hook_events_preserve_budget_boundary_under_monotonic_overshoot(
+    monkeypatch, capsys, lifecycle, event
+):
+    # 509.72574674175775 + 2.5 produces 2.500000000000057 under IEEE 754 subtraction
+    t0 = 509.72574674175775
+    monkeypatch.setattr(time, "monotonic", lambda: t0)
+
+    code, _, _ = run_hook(monkeypatch, capsys, payload_for(event))
+    assert code == 0
+
+    call_name = {
+        "SessionStart": "start",
+        "Stop": "checkpoint",
+        "SessionEnd": "end",
+    }[event]
+    (_, kwargs), = lifecycle.named(call_name)
+    timeout = kwargs.get("timeout_seconds")
+    assert timeout is not None
+    assert 0 < timeout <= codex_hook._HOOK_WORK_BUDGET_SECONDS
+

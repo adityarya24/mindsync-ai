@@ -173,8 +173,12 @@ def _resolve_source(value: str | None, warnings: list[str]) -> str | None:
 
 
 def _remaining_seconds(deadline: float, cap: float | None = None) -> float:
-    remaining = max(0.0, deadline - time.monotonic())
-    return remaining if cap is None else min(remaining, cap)
+    effective_cap = (
+        _HOOK_WORK_BUDGET_SECONDS
+        if cap is None
+        else min(cap, _HOOK_WORK_BUDGET_SECONDS)
+    )
+    return max(0.0, min(deadline - time.monotonic(), effective_cap))
 
 
 def _git(cwd: str, *args: str, timeout_seconds: float | None = None) -> str | None:
