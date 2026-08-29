@@ -8,8 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mindsync.config import settings
-from mindsync.dispatch.usage.config import load_usage_config
+from mindsync.dispatch.usage.config import effective_reserve_percent, load_usage_config
 from mindsync.dispatch.usage.evaluate import evaluate_threshold
 from mindsync.dispatch.usage.readers.codex import CodexOAuthUsageReader
 from mindsync.dispatch.usage.types import ThresholdEvaluation, UsageReadResult, UsageWindow
@@ -20,12 +19,18 @@ _MAX_CACHE_AGE_SECONDS = 600.0
 _MAX_PREFETCH_SECONDS = 0.8
 
 
+def _current_settings():
+    from mindsync.config import settings
+
+    return settings
+
+
 def _cache_path() -> Path:
-    return settings.home / _CACHE_NAME
+    return _current_settings().home / _CACHE_NAME
 
 
 def _warnings_path() -> Path:
-    return settings.home / _WARNINGS_NAME
+    return _current_settings().home / _WARNINGS_NAME
 
 
 def usage_checks_enabled(*, memory_mode: str) -> bool:
@@ -90,7 +95,7 @@ def _deserialize_result(raw: dict[str, Any]) -> UsageReadResult | None:
 
 
 def write_cache(result: UsageReadResult) -> None:
-    settings.ensure_dirs()
+    _current_settings().ensure_dirs()
     atomic_path = _cache_path()
     atomic_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_path.write_text(
@@ -181,7 +186,7 @@ def _load_warning_state() -> dict[str, str]:
 
 
 def _save_warning_state(state: dict[str, str]) -> None:
-    settings.ensure_dirs()
+    _current_settings().ensure_dirs()
     path = _warnings_path()
     path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
 
@@ -220,7 +225,7 @@ def maybe_append_reserve_warning(
         return
     evaluation = evaluate_threshold(
         cached,
-        threshold_percent=config.defaultThresholdPercent,
+        threshold_percent=effective_reserve_percent(usage_config=config),
     )
     if evaluation.status != "at_threshold":
         return

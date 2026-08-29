@@ -9,6 +9,7 @@ import sys
 import textwrap
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,11 @@ from mindsync.dispatch.adapters import user_config_path
 from mindsync.dispatch.usage.readers.codex import CodexOAuthUsageReader
 from mindsync.dispatch.usage.types import UsageReadResult, UsageWindow
 from tests.isolation_helpers import isolate_mindsync_home
+
+
+@pytest.fixture(autouse=True)
+def _isolate_standalone_usage_home(tmp_path, monkeypatch):
+    isolate_mindsync_home(tmp_path, monkeypatch, dispatch_home=True)
 
 
 def _enable_usage(tmp_path, monkeypatch) -> None:
@@ -189,3 +195,101 @@ def test_stop_warning_refreshes_stale_cache(tmp_path, monkeypatch):
 
     assert warnings
     assert "Codex seat nearing limit" in warnings[0]
+
+
+def test_stop_warning_uses_orchestrator_reserve_not_worker_threshold(
+    tmp_path, monkeypatch
+):
+    _enable_usage(tmp_path, monkeypatch)
+    user_config_path().write_text(
+        json.dumps(
+            {
+                "usage": {
+                    "enabled": True,
+                    "defaultThresholdPercent": 90,
+                    "orchestratorReservePercent": 80,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_cache(
+        UsageReadResult.available(
+            provider="codex",
+            account_scope="openai:test",
+            reader="codex-oauth",
+            source="test",
+            windows=[UsageWindow(id="primary", label="Primary", used_percent=85.0)],
+        )
+    )
+    monkeypatch.setattr(
+        "mindsync.codex_standalone_usage.prefetch_usage",
+        lambda **kwargs: None,
+    )
+    warnings: list[str] = []
+    maybe_append_reserve_warning(
+        f"reserve-{tmp_path.name}",
+        warnings,
+        memory_mode="auto",
+        timeout_seconds=0.2,
+    )
+
+    assert warnings
+    assert "85" in warnings[0]
+
+
+def test_stop_warning_below_orchestrator_reserve(tmp_path, monkeypatch):
+    _enable_usage(tmp_path, monkeypatch)
+    user_config_path().write_text(
+        json.dumps(
+            {
+                "usage": {
+                    "enabled": True,
+                    "defaultThresholdPercent": 90,
+                    "orchestratorReservePercent": 80,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_cache(
+        UsageReadResult.available(
+            provider="codex",
+            account_scope="openai:test",
+            reader="codex-oauth",
+            source="test",
+            windows=[UsageWindow(id="primary", label="Primary", used_percent=70.0)],
+        )
+    )
+    monkeypatch.setattr(
+        "mindsync.codex_standalone_usage.prefetch_usage",
+        lambda **kwargs: None,
+    )
+    warnings: list[str] = []
+    maybe_append_reserve_warning(
+        f"below-{tmp_path.name}",
+        warnings,
+        memory_mode="auto",
+        timeout_seconds=0.2,
+    )
+
+    assert warnings == []
+
+
+def test_usage_cache_paths_follow_rebound_home(tmp_path, monkeypatch):
+    home = isolate_mindsync_home(tmp_path, monkeypatch, dispatch_home=True)
+    write_cache(
+        UsageReadResult.available(
+            provider="codex",
+            account_scope="openai:test",
+            reader="codex-oauth",
+            source="test",
+            windows=[UsageWindow(id="primary", label="Primary", used_percent=10.0)],
+        )
+    )
+    cache = _cache_path().resolve()
+    live_home = (Path.home() / ".mindsync").resolve()
+    assert cache.is_file()
+    assert cache.parent == home.resolve()
+    assert live_home not in cache.parents
+    assert cache.parent != live_home

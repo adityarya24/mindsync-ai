@@ -221,28 +221,36 @@ def _publish_job_event(event_type: str, meta: dict[str, Any], agent_name: str = 
             "job.failed": EventType.JOB_FAILED,
             "job.cancelled": EventType.JOB_CANCELLED,
         }.get(event_type, event_type)
-        publish_event(
-            Event(
-                agent_name=agent_name,
-                event_type=et,
-                payload={
-                    "job_id": meta.get("id"),
-                    "agent": meta.get("agent"),
-                    "status": meta.get("status"),
-                    "execution_mode": meta.get("executionMode", "worker"),
-                    "delegation_depth": meta.get("delegationDepth", 1),
-                    "exit_code": meta.get("exitCode"),
-                    "timed_out": meta.get("timedOut"),
-                    "model": meta.get("model"),
-                    "write": meta.get("write"),
-                    "routed_automatically": bool(meta.get("routing")),
-                    "required_capabilities": (meta.get("routing") or {}).get(
-                        "requiredCapabilities", []
-                    ),
-                },
-                correlation_id=meta.get("id"),
-            )
+        event = Event(
+            agent_name=agent_name,
+            event_type=et,
+            payload={
+                "job_id": meta.get("id"),
+                "agent": meta.get("agent"),
+                "status": meta.get("status"),
+                "execution_mode": meta.get("executionMode", "worker"),
+                "delegation_depth": meta.get("delegationDepth", 1),
+                "exit_code": meta.get("exitCode"),
+                "timed_out": meta.get("timedOut"),
+                "model": meta.get("model"),
+                "write": meta.get("write"),
+                "routed_automatically": bool(meta.get("routing")),
+                "required_capabilities": (meta.get("routing") or {}).get(
+                    "requiredCapabilities", []
+                ),
+            },
+            correlation_id=meta.get("id"),
         )
+        publish_event(event)
+        try:
+            from mindsync.dispatch.sink import deliver_completion_event, drain_completion_outbox
+
+            if event_type in {"job.completed", "job.failed"}:
+                deliver_completion_event(event)
+            else:
+                drain_completion_outbox()
+        except Exception:
+            pass
     except Exception:
         # Event bus must never break dispatch.
         pass

@@ -90,10 +90,16 @@ to disabled:
   "usage": {
     "enabled": false,
     "defaultThresholdPercent": 90,
+    "orchestratorReservePercent": 80,
     "pollingIntervalSeconds": 60
   }
 }
 ```
+
+`defaultThresholdPercent` is the dispatched-worker handoff threshold.
+`orchestratorReservePercent` is a separate opt-in Codex standalone Stop
+warning line; when omitted it follows `defaultThresholdPercent` so existing
+configs keep working. Neither field is a live usage estimate.
 
 When enabled, dispatch polls at `pollingIntervalSeconds` during a running
 attempt, skips cooling or over-threshold provider accounts before spawn, and may
@@ -151,6 +157,16 @@ Nothing is pruned without `--yes`. See MCP tools on the server (`get_sync_contex
 `delegate_task`, `job_wait`, …) once a host is configured. Orchestrator MCP exposes
 29 tools; worker subprocesses started with `MINDSYNC_WORKER=1` expose 23 and omit
 orchestration-only dispatch tools.
+
+Optional `completionSinkCmd` in the orchestration policy is an argv list
+(no shell) that receives one JSON object on stdin after `job.completed` /
+`job.failed` is persisted: `event_id`, job id/status, bounded summary, optional
+privacy-screened task, optional PR URL. The allowlisted projection is written to
+an outbox before send; failed delivery stays pending and is retried on the next
+drain (later job events or process restart). Each drain stops after the first
+sink failure and is bounded by a short wall-clock budget and attempt cap.
+Duplicate `event_id`s are not resent.
+Sink failure never changes job status. Leave it empty to keep current behavior.
 
 ## Optional remote sync
 

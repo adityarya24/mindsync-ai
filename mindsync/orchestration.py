@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from mindsync.config import settings
 from mindsync.storage import atomic_private_write, file_lock
@@ -47,7 +47,19 @@ class OrchestrationPolicy(BaseModel):
     maxParallel: int = Field(default=3, ge=1, le=16)
     avoidHumanFacingAgent: bool = True
     onComplete: OnComplete = "branch"
+    completionSinkCmd: list[str] = Field(default_factory=list)
     projects: dict[str, ProjectPolicy] = Field(default_factory=dict)
+
+    @field_validator("completionSinkCmd", mode="before")
+    @classmethod
+    def _coerce_sink_cmd(cls, value: Any) -> list[str]:
+        if value is None or value == []:
+            return []
+        if not isinstance(value, list) or not all(
+            isinstance(item, str) and item.strip() for item in value
+        ):
+            raise ValueError("completionSinkCmd must be a JSON array of non-empty argv strings")
+        return [item.strip() for item in value]
 
 
 def project_key(repo_root: str | Path | None) -> str | None:

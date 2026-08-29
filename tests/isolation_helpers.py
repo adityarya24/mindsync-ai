@@ -17,6 +17,12 @@ def rebind_settings(home: Path) -> config_mod.Settings:
     storage_mod.settings = settings
     orchestration_mod.settings = settings
     memory_mod.settings = settings
+    try:
+        import mindsync.codex_standalone_usage as usage_mod
+
+        usage_mod.settings = settings
+    except ImportError:
+        pass
     settings.ensure_dirs()
     return settings
 
