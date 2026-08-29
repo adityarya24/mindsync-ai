@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🧠 MindSync AI
+<img src="assets/mark_transparent.png" alt="MindSync AI Logo" width="160" />
+
+# MindSync AI
 
 **Local-first MCP orchestration, persistent shared memory, and automatic task routing for coding agents.**
 
