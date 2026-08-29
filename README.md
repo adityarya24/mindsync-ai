@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/mark_transparent.png" alt="MindSync AI Logo" width="160" />
+<img src="assets/mindsync-logo.png" alt="MindSync AI Logo" width="420" />
 
 # MindSync AI
 
