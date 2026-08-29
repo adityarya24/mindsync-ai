@@ -8,8 +8,6 @@ from pathlib import Path
 
 import pytest
 
-import mindsync.config as config_mod
-import mindsync.storage as storage
 from mindsync.dispatch import store
 from mindsync.dispatch.adapters import load_adapters, user_config_path
 from mindsync.dispatch.cli import parse_run_args
@@ -19,17 +17,10 @@ from mindsync.server import delegate_task, list_agents, route_task
 
 
 def _configure_agents(tmp_path: Path, monkeypatch) -> None:
-    dispatch_home = tmp_path / "dispatch-home"
-    dispatch_home.mkdir(exist_ok=True)
-    monkeypatch.setenv("AGENT_DISPATCH_HOME", str(dispatch_home))
-    monkeypatch.setenv("MINDSYNC_HOME", str(tmp_path / "mindsync-home"))
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir(exist_ok=True)
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    from tests.isolation_helpers import isolate_mindsync_home
+
+    isolate_mindsync_home(tmp_path, monkeypatch, codex_home=True)
     monkeypatch.delenv("MINDSYNC_WORKER", raising=False)
-    config_mod.settings = config_mod.Settings()
-    storage.settings = config_mod.settings
-    config_mod.settings.ensure_dirs()
 
     user_config_path().write_text(
         json.dumps(

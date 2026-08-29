@@ -31,25 +31,14 @@ from mindsync.dispatch.runner import (
     supervise_job,
 )
 from mindsync.dispatch import store
-import mindsync.config as config_mod
-import mindsync.storage as storage
 
 
 def _isolate_dispatch(tmp_path: Path, monkeypatch):
-    home = tmp_path / "dispatch-home"
-    home.mkdir(exist_ok=True)
-    monkeypatch.setenv("AGENT_DISPATCH_HOME", str(home))
-    # Isolate event bus / mindsync home too
-    ms_home = tmp_path / "mindsync-home"
-    monkeypatch.setenv("MINDSYNC_HOME", str(ms_home))
-    codex_home = tmp_path / "codex-home"
-    codex_home.mkdir(exist_ok=True)
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    from tests.isolation_helpers import isolate_mindsync_home
+
+    isolate_mindsync_home(tmp_path, monkeypatch, codex_home=True)
     monkeypatch.delenv("MINDSYNC_WORKER", raising=False)
-    config_mod.settings = config_mod.Settings()
-    storage.settings = config_mod.settings
-    config_mod.settings.ensure_dirs()
-    return home
+    return tmp_path / "dispatch-home"
 
 
 def test_job_updates_are_atomic_and_preserve_concurrent_patches(tmp_path, monkeypatch):
