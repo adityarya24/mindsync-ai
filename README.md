@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/mindsync-logo.jpg" alt="MindSync AI" width="520" />
+  <img src="docs/mindsync-logo.png" alt="MindSync AI" width="460" />
 </p>
 
 <p align="center">
