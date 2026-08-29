@@ -704,6 +704,7 @@ keeps its own state.</span></pre>
         <div class="feat"><span class="n">04</span><div><h3>Session memory</h3><p>Decisions, blockers, and durable facts persist per project and replay into the next run instead of being re-explained.</p></div></div>
         <div class="feat"><span class="n">05</span><div><h3>Safe process control</h3><p>Tracked jobs, timeouts, cancellation, and process-tree cleanup — plus optional git worktree isolation per job.</p></div></div>
         <div class="feat"><span class="n">06</span><div><h3>Yours, locally</h3><p>No hosted control plane, no MindSync account. Remote sync is optional and runs through your own SSH host.</p></div></div>
+        <div class="feat"><span class="n">07</span><div><h3>Quota-aware handoff</h3><p>Opt-in <code>--on-limit handoff</code> or MCP <code>on_limit</code> rotates exhausted worktree jobs to the next agent. Pluggable usage readers support checkpoint-gated preemptive transfer when polling is enabled; default is <code>stop</code> with no forced checkpoint and no raw usage or auth persistence. Cooldowns: <code>mindsync-dispatch limits</code>.</p></div></div>
       </div>
     </div>
   </div>

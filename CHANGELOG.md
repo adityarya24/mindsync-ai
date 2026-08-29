@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Opt-in reactive provider-quota handoff for isolated dispatch jobs (#46). With
-  `--on-limit handoff`, a narrowly classified exhaustion failure cools the
+  `--on-limit handoff` on the CLI or `on_limit` on MCP `delegate_task`, a
+  narrowly classified exhaustion failure cools the
   configured provider/account, records a new attempt, and transfers the same
   worktree to the next available agent only after process-tree shutdown and an
   atomic worktree-lease handoff. The default remains `stop` and has no cooldown
