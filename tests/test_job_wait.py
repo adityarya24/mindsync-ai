@@ -74,5 +74,5 @@ async def test_job_wait_timeout_keeps_watch_instruction(tmp_path, monkeypatch):
     )
 
     assert "still pending" in result
-    assert "Call job_wait again" in result
+    assert "Call job(action='wait') again" in result
 

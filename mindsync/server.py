@@ -61,6 +61,27 @@ from mindsync.memory import (
     session_end as memory_session_end,
     session_start as memory_session_start,
 )
+from mindsync.mcp_bundles import (
+    CONSOLIDATION_ACTIONS,
+    CONSOLIDATION_FIELDS,
+    CONSOLIDATION_REQUIRED,
+    EVENT_ACTIONS,
+    EVENT_FIELDS,
+    EVENT_REQUIRED,
+    JOB_ACTIONS,
+    JOB_FIELDS,
+    JOB_REQUIRED,
+    LIST_FIELDS,
+    LIST_KINDS,
+    SESSION_ACTIONS,
+    SESSION_FIELDS,
+    SESSION_REQUIRED,
+    action_error,
+    extra_fields,
+    extras_error,
+    missing_error,
+    missing_fields,
+)
 from mindsync.memory_models import MemoryModelError
 from mindsync.orchestration import (
     caller_cli_from_context,
@@ -576,7 +597,6 @@ def pull_truth(agent_name: str) -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def publish_event(
     agent_name: str,
     event_type: str,
@@ -601,7 +621,6 @@ def publish_event(
     }
 
 
-@mcp.tool()
 def poll_events(
     agent_name: str,
     since_seq: int = 0,
@@ -619,7 +638,6 @@ def poll_events(
     }
 
 
-@mcp.tool()
 def subscribe_events(
     agent_name: str,
     event_types: Optional[list[str]] = None,
@@ -763,7 +781,7 @@ async def delegate_task(
         wt_info = f"\nworktree: {job['worktreePath']}  (branch: {job['branch']})" if job.get("worktreePath") else ""
         return (
             f"{route_line}{warning_line}Started background job {job['id']} (agent: {job['agent']}).{wt_info} "
-            f"Wait for completion now: job_wait('{job['id']}'). Do not end the turn "
+            f"Wait for completion now: job(action='wait', job_id='{job['id']}'). Do not end the turn "
             "while delegated work is still running."
         )
     wt_info = f"worktree: {job['worktreePath']}  (branch: {job['branch']})\n" if job.get("worktreePath") else ""
@@ -809,7 +827,6 @@ def get_orchestration_policy(
     return snapshot
 
 
-@_register_mcp_tool()
 def list_agents(agent_name: str = "default_agent") -> list[dict[str, Any]]:
     """List dispatch agents with live binary and routable status."""
     from mindsync.dispatch.adapters import load_adapters
@@ -842,7 +859,6 @@ def list_agents(agent_name: str = "default_agent") -> list[dict[str, Any]]:
     return agents
 
 
-@mcp.tool()
 def job_status(job_id: str, agent_name: str = "default_agent") -> str:
     """Check the status of a delegated job."""
     settings.ensure_dirs()
@@ -854,7 +870,6 @@ def job_status(job_id: str, agent_name: str = "default_agent") -> str:
     return _fmt_dispatch_job(reconciled)
 
 
-@mcp.tool()
 async def job_wait(
     job_id: str,
     timeout_seconds: float = 900.0,
@@ -864,7 +879,7 @@ async def job_wait(
     """Wait for a background job to finish and return its review as a completion ping.
 
     Call this immediately after delegate_task(background=True) instead of repeatedly
-    polling job_status or ending the turn. The pending MCP call resumes when the job
+    polling job status or ending the turn. The pending MCP call resumes when the job
     completes, fails, or is cancelled, so the orchestrator can review and report the
     outcome without the human babysitting it.
     """
@@ -894,12 +909,11 @@ async def job_wait(
             log_audit(agent_name, "job_wait", f"job={job_id} status={status} timeout")
             return (
                 f"Job {job_id} is still {status} after {timeout_seconds:g} seconds. "
-                "Call job_wait again to keep the completion watch active."
+                "Call job(action='wait') again to keep the completion watch active."
             )
         await asyncio.sleep(min(poll_interval_seconds, remaining))
 
 
-@mcp.tool()
 def job_review(job_id: str, agent_name: str = "default_agent") -> str:
     """Get a mechanical review verdict for a job, including check results and diff summary. Call this before job_result to skip reading the output of work that did not pass."""
     settings.ensure_dirs()
@@ -911,7 +925,6 @@ def job_review(job_id: str, agent_name: str = "default_agent") -> str:
     return dispatch_format_review(reconciled)
 
 
-@mcp.tool()
 def job_result(job_id: str, agent_name: str = "default_agent") -> str:
     """Fetch the result file content for a completed job."""
     settings.ensure_dirs()
@@ -924,7 +937,6 @@ def job_result(job_id: str, agent_name: str = "default_agent") -> str:
     return res_data["result"] or dispatch_describe_empty_result(meta)
 
 
-@mcp.tool()
 def job_cancel(job_id: str, agent_name: str = "default_agent") -> str:
     """Cancel a running job and kill its process tree."""
     settings.ensure_dirs()
@@ -936,7 +948,6 @@ def job_cancel(job_id: str, agent_name: str = "default_agent") -> str:
     return f"Job {meta['id']}: {meta['status']}"
 
 
-@_register_mcp_tool()
 def list_models(agent: str | None = None, agent_name: str = "default_agent") -> str:
     """List available models for the given agent or all agents. Use this for choosing a model before delegating a task."""
     settings.ensure_dirs()
@@ -960,7 +971,6 @@ def list_models(agent: str | None = None, agent_name: str = "default_agent") -> 
     return "\n".join(out)
 
 
-@_register_mcp_tool()
 def list_roles(agent_name: str = "default_agent") -> str:
     """List configured roles and their agent, model, and effort mappings.
 
@@ -1025,7 +1035,6 @@ def health(agent_name: str = "system") -> dict[str, Any]:
     }
 
 
-@mcp.tool()
 def session_start(
     agent_name: str,
     project_key: str,
@@ -1049,7 +1058,6 @@ def session_start(
         return {"ok": False, "error": str(exc)}
 
 
-@mcp.tool()
 def memory_checkpoint(
     agent_name: str,
     session_id: str,
@@ -1105,7 +1113,6 @@ def memory_checkpoint(
         return {"ok": False, "error": str(exc)}
 
 
-@mcp.tool()
 def session_end(
     agent_name: str,
     session_id: str,
@@ -1175,7 +1182,6 @@ def memory_recall(
         return {"ok": False, "error": str(exc)}
 
 
-@mcp.tool()
 def memory_consolidate_preview(
     agent_name: str,
     project_key: str,
@@ -1204,7 +1210,6 @@ def memory_consolidate_preview(
         return {"ok": False, "error": str(exc)}
 
 
-@mcp.tool()
 def memory_consolidation_apply(
     agent_name: str,
     proposal_id: str,
@@ -1223,7 +1228,6 @@ def memory_consolidation_apply(
         return {"ok": False, "error": str(exc)}
 
 
-@mcp.tool()
 def memory_consolidation_undo(
     agent_name: str,
     fact_id: str,
@@ -1242,7 +1246,6 @@ def memory_consolidation_undo(
         return {"ok": False, "error": str(exc)}
 
 
-@mcp.tool()
 def memory_consolidation_list(
     agent_name: str,
     project_key: Optional[str] = None,
@@ -1265,6 +1268,254 @@ def memory_consolidation_list(
         return {"ok": True, "data": data}
     except (ValueError, RuntimeError, sqlite3.Error) as exc:
         return {"ok": False, "error": str(exc)}
+
+
+@mcp.tool()
+async def job(
+    action: str,
+    job_id: str | None = None,
+    timeout_seconds: float | None = None,
+    poll_interval_seconds: float | None = None,
+    agent_name: str = "default_agent",
+) -> str:
+    """Job lifecycle: status, wait, result, review, or cancel."""
+    if action not in JOB_ACTIONS:
+        return f"Error: {action_error('job', action, JOB_ACTIONS)}"
+    provided = {
+        "job_id": job_id,
+        "timeout_seconds": timeout_seconds,
+        "poll_interval_seconds": poll_interval_seconds,
+    }
+    extras = extra_fields(action, JOB_FIELDS, provided)
+    if extras:
+        return f"Error: {extras_error('job', action, extras)}"
+    missing = missing_fields(action, JOB_REQUIRED, provided)
+    if missing:
+        return f"Error: {missing_error('job', action, missing)}"
+    assert job_id is not None
+    if action == "status":
+        return job_status(job_id, agent_name=agent_name)
+    if action == "wait":
+        wait_timeout = 900.0 if timeout_seconds is None else timeout_seconds
+        wait_poll = 0.5 if poll_interval_seconds is None else poll_interval_seconds
+        return await job_wait(
+            job_id,
+            timeout_seconds=wait_timeout,
+            poll_interval_seconds=wait_poll,
+            agent_name=agent_name,
+        )
+    if action == "result":
+        return job_result(job_id, agent_name=agent_name)
+    if action == "review":
+        return job_review(job_id, agent_name=agent_name)
+    return job_cancel(job_id, agent_name=agent_name)
+
+
+@mcp.tool()
+def events(
+    action: str,
+    agent_name: str,
+    event_type: str | None = None,
+    payload: dict[str, Any] | None = None,
+    correlation_id: str | None = None,
+    since_seq: int | None = None,
+    limit: int | None = None,
+    event_types: list[str] | None = None,
+) -> dict[str, Any]:
+    """Event bus: publish, poll, or subscribe."""
+    if action not in EVENT_ACTIONS:
+        return {"ok": False, "error": action_error("events", action, EVENT_ACTIONS)}
+    provided = {
+        "event_type": event_type,
+        "payload": payload,
+        "correlation_id": correlation_id,
+        "since_seq": since_seq,
+        "limit": limit,
+        "event_types": event_types,
+    }
+    extras = extra_fields(action, EVENT_FIELDS, provided)
+    if extras:
+        return {"ok": False, "error": extras_error("events", action, extras)}
+    missing = missing_fields(action, EVENT_REQUIRED, provided)
+    if missing:
+        return {"ok": False, "error": missing_error("events", action, missing)}
+    if action == "publish":
+        assert event_type is not None and payload is not None
+        return publish_event(
+            agent_name,
+            event_type,
+            payload,
+            correlation_id=correlation_id,
+        )
+    if action == "poll":
+        return poll_events(
+            agent_name,
+            since_seq=0 if since_seq is None else since_seq,
+            limit=50 if limit is None else limit,
+        )
+    return subscribe_events(agent_name, event_types=event_types)
+
+
+@mcp.tool()
+def session(
+    action: str,
+    agent_name: str,
+    project_key: str | None = None,
+    session_id: str | None = None,
+    workspace: str | None = None,
+    branch: str | None = None,
+    goal: str | None = None,
+    status: str | None = None,
+    decisions: Any = None,
+    files_changed: Any = None,
+    tests: Any = None,
+    pending: Any = None,
+    blockers: Any = None,
+    durable_facts: Any = None,
+) -> dict[str, Any]:
+    """Local memory session: start, checkpoint, or end."""
+    if action not in SESSION_ACTIONS:
+        return {"ok": False, "error": action_error("session", action, SESSION_ACTIONS)}
+    provided = {
+        "project_key": project_key,
+        "session_id": session_id,
+        "workspace": workspace,
+        "branch": branch,
+        "goal": goal,
+        "status": status,
+        "decisions": decisions,
+        "files_changed": files_changed,
+        "tests": tests,
+        "pending": pending,
+        "blockers": blockers,
+        "durable_facts": durable_facts,
+    }
+    extras = extra_fields(action, SESSION_FIELDS, provided)
+    if extras:
+        return {"ok": False, "error": extras_error("session", action, extras)}
+    missing = missing_fields(action, SESSION_REQUIRED, provided)
+    if missing:
+        return {"ok": False, "error": missing_error("session", action, missing)}
+    if action == "start":
+        assert project_key is not None
+        return session_start(
+            agent_name,
+            project_key,
+            workspace=workspace,
+            branch=branch,
+            goal=goal,
+        )
+    if action == "checkpoint":
+        assert session_id is not None
+        return memory_checkpoint(
+            agent_name,
+            session_id,
+            status=status,
+            decisions=decisions,
+            files_changed=files_changed,
+            tests=tests,
+            pending=pending,
+            blockers=blockers,
+            durable_facts=durable_facts,
+        )
+    assert session_id is not None
+    return session_end(
+        agent_name,
+        session_id,
+        status="completed" if status is None else status,
+    )
+
+
+@mcp.tool()
+def memory_consolidation(
+    action: str,
+    agent_name: str,
+    project_key: str | None = None,
+    limit: int | None = None,
+    min_similarity: float | None = None,
+    embedding_model: str | None = None,
+    consolidation_model: str | None = None,
+    proposal_id: str | None = None,
+    fact_id: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any]:
+    """Fact consolidation: preview, apply, undo, or list."""
+    if action not in CONSOLIDATION_ACTIONS:
+        return {
+            "ok": False,
+            "error": action_error("memory_consolidation", action, CONSOLIDATION_ACTIONS),
+        }
+    provided = {
+        "project_key": project_key,
+        "limit": limit,
+        "min_similarity": min_similarity,
+        "embedding_model": embedding_model,
+        "consolidation_model": consolidation_model,
+        "proposal_id": proposal_id,
+        "fact_id": fact_id,
+        "status": status,
+    }
+    extras = extra_fields(action, CONSOLIDATION_FIELDS, provided)
+    if extras:
+        return {
+            "ok": False,
+            "error": extras_error("memory_consolidation", action, extras),
+        }
+    missing = missing_fields(action, CONSOLIDATION_REQUIRED, provided)
+    if missing:
+        return {
+            "ok": False,
+            "error": missing_error("memory_consolidation", action, missing),
+        }
+    if action == "preview":
+        assert project_key is not None
+        return memory_consolidate_preview(
+            agent_name,
+            project_key,
+            limit=5 if limit is None else limit,
+            min_similarity=0.45 if min_similarity is None else min_similarity,
+            embedding_model=embedding_model,
+            consolidation_model=consolidation_model,
+        )
+    if action == "apply":
+        assert proposal_id is not None
+        return memory_consolidation_apply(agent_name, proposal_id)
+    if action == "undo":
+        assert fact_id is not None
+        return memory_consolidation_undo(agent_name, fact_id)
+    return memory_consolidation_list(
+        agent_name,
+        project_key=project_key,
+        status=status,
+        limit=50 if limit is None else limit,
+    )
+
+
+@_register_mcp_tool(name="list")
+def list_catalog(
+    kind: str,
+    agent: str | None = None,
+    agent_name: str = "default_agent",
+) -> list[dict[str, Any]] | str:
+    """Orchestrator catalog: agents, models, or roles."""
+    return _list_catalog(kind, agent=agent, agent_name=agent_name)
+
+
+def _list_catalog(
+    kind: str,
+    agent: str | None = None,
+    agent_name: str = "default_agent",
+) -> list[dict[str, Any]] | str:
+    if kind not in LIST_KINDS:
+        return f"Error: {action_error('list', kind, LIST_KINDS)}"
+    extras = extra_fields(kind, LIST_FIELDS, {"agent": agent})
+    if extras:
+        return f"Error: {extras_error('list', kind, extras)}"
+    if kind == "agents":
+        return list_agents(agent_name=agent_name)
+    if kind == "models":
+        return list_models(agent=agent, agent_name=agent_name)
+    return list_roles(agent_name=agent_name)
 
 
 def main() -> None:

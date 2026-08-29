@@ -154,9 +154,11 @@ mindsync memory recall --project my-repo --query "database decision"
 ```
 
 Nothing is pruned without `--yes`. See MCP tools on the server (`get_sync_context`,
-`delegate_task`, `job_wait`, …) once a host is configured. Orchestrator MCP exposes
-29 tools; worker subprocesses started with `MINDSYNC_WORKER=1` expose 23 and omit
-orchestration-only dispatch tools.
+`delegate_task`, `job(action='wait')`, …) once a host is configured. Orchestrator
+MCP exposes 16 tools; worker subprocesses started with `MINDSYNC_WORKER=1` expose
+12 and omit orchestration-only dispatch tools (`delegate_task`, `route_task`,
+`get_orchestration_policy`, `list`). Job/event/session/consolidation helpers are
+subject bundles with no old-name aliases.
 
 Optional `completionSinkCmd` in the orchestration policy is an argv list
 (no shell) that receives one JSON object on stdin after `job.completed` /
