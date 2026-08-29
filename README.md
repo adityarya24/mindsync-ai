@@ -1,21 +1,35 @@
-# MindSync AI
+<p align="center">
+  <img src="docs/mindsync-mark.svg" alt="MindSync AI" width="88" height="88" />
+</p>
 
-[![CI](https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml)
-[![PyPI version](https://img.shields.io/pypi/v/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
-[![Python versions](https://img.shields.io/pypi/pyversions/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<h1 align="center">MindSync AI</h1>
 
-**[adityarya24.github.io/mindsync-ai](https://adityarya24.github.io/mindsync-ai/)**
+<p align="center">
+  <a href="https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml"><img src="https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://pypi.org/project/mindsync-ai/"><img src="https://img.shields.io/pypi/v/mindsync-ai.svg" alt="PyPI version" /></a>
+  <a href="https://pypi.org/project/mindsync-ai/"><img src="https://img.shields.io/pypi/pyversions/mindsync-ai.svg" alt="Python versions" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
+</p>
 
-Local-first MCP orchestration for coding agents. The CLI already talking to you
-stays in charge: MindSync routes work by capability, blocks file collisions,
-and keeps session memory across runs. No MindSync account. Remote sync is optional.
+<p align="center"><strong><a href="https://adityarya24.github.io/mindsync-ai/">adityarya24.github.io/mindsync-ai</a></strong></p>
+
+Run a fleet of coding agents without them tripping over each other. MindSync is
+**local-first MCP orchestration**: the CLI already talking to you becomes the
+orchestrator, and everything else runs through it — no separate app, no account,
+no hosted control plane.
+
+- **Routes by capability** and tells you which agent it picked, and why.
+- **Blocks file collisions** by showing active file focus before work starts.
+- **Remembers across sessions** — decisions, blockers, and facts replay into the next run.
+- **Hands off before limits land** — a job cools an exhausted provider and moves to the next agent; the Codex seat warns before it runs out.
 
 ```text
 You → human-facing CLI (orchestrator) → MindSync → Codex / Claude / Gemini / AGY / Grok / Cursor / OpenCode / Aider
 ```
 
 Workers get bounded tasks. They cannot recursively delegate through MindSync.
+Remote sync is optional and runs through your own SSH host — your agents, your
+machine, your data.
 
 ## Quick start
 
