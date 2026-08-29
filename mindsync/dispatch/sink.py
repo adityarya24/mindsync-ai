@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,8 @@ _OUTBOX_NAME = "completion-sink-outbox.json"
 _MAX_DELIVERED = 200
 _MAX_OUTBOX = 200
 _SINK_TIMEOUT_SECONDS = 5.0
+_DRAIN_BUDGET_SECONDS = 5.0
+_MAX_DRAIN_ATTEMPTS = 8
 _MAX_SUMMARY_CHARS = 240
 _COMPLETION_TYPES = {EventType.JOB_COMPLETED.value, EventType.JOB_FAILED.value}
 _PROJECTION_KEYS = (
@@ -165,14 +168,16 @@ def public_completion_projection(event: Event, meta: dict[str, Any] | None) -> d
     return projection
 
 
-def _try_send(cmd: list[str], projection: dict[str, str]) -> bool:
+def _try_send(cmd: list[str], projection: dict[str, str], *, timeout: float) -> bool:
+    if timeout <= 0:
+        return False
     encoded = json.dumps(projection, ensure_ascii=True) + "\n"
     try:
         subprocess.run(
             cmd,
             input=encoded.encode("utf-8"),
             capture_output=True,
-            timeout=_SINK_TIMEOUT_SECONDS,
+            timeout=timeout,
             check=True,
             shell=False,
         )
@@ -183,15 +188,26 @@ def _try_send(cmd: list[str], projection: dict[str, str]) -> bool:
 
 def _drain_locked(cmd: list[str]) -> None:
     delivered = _load_delivered()
+    pending = [
+        projection
+        for projection in _load_outbox()
+        if projection["event_id"] not in delivered
+    ]
     remaining: list[dict[str, str]] = []
-    for projection in _load_outbox():
-        event_id = projection["event_id"]
-        if event_id in delivered:
+    deadline = time.monotonic() + _DRAIN_BUDGET_SECONDS
+    attempts = 0
+    for index, projection in enumerate(pending):
+        leftover = deadline - time.monotonic()
+        if attempts >= _MAX_DRAIN_ATTEMPTS or leftover <= 0:
+            remaining.extend(pending[index:])
+            break
+        timeout = min(_SINK_TIMEOUT_SECONDS, leftover)
+        attempts += 1
+        if _try_send(cmd, projection, timeout=timeout):
+            delivered.append(projection["event_id"])
             continue
-        if _try_send(cmd, projection):
-            delivered.append(event_id)
-        else:
-            remaining.append(projection)
+        remaining.extend(pending[index:])
+        break
     _save_outbox(remaining)
     if delivered:
         _save_delivered(delivered)

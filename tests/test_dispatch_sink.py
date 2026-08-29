@@ -210,3 +210,68 @@ def test_failed_sink_resends_once_on_drain_after_restart(tmp_path, monkeypatch):
     assert json.loads(lines[0])["event_id"] == "11" * 16
     assert json.loads(_delivered_path().read_text(encoding="utf-8")) == ["11" * 16]
     assert json.loads(_outbox_path().read_text(encoding="utf-8")) == []
+
+
+def test_drain_stops_on_first_failure_and_leaves_backlog(tmp_path, monkeypatch):
+    isolate_mindsync_home(tmp_path, monkeypatch, dispatch_home=True)
+    save_policy(OrchestrationPolicy(completionSinkCmd=[sys.executable, "-c", "pass"]))
+    pending = [
+        {
+            "event_id": f"{index:032x}",
+            "job_id": "job",
+            "status": "failed",
+            "summary": "Job job ended (failed).",
+        }
+        for index in range(200)
+    ]
+    _outbox_path().write_text(json.dumps(pending) + "\n", encoding="utf-8")
+    attempts = {"n": 0}
+
+    def boom(*args, **kwargs):
+        attempts["n"] += 1
+        raise subprocess.CalledProcessError(returncode=1, cmd=args[0])
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    drain_completion_outbox()
+
+    assert attempts["n"] == 1
+    remaining = json.loads(_outbox_path().read_text(encoding="utf-8"))
+    assert len(remaining) == 200
+    assert remaining[0]["event_id"] == pending[0]["event_id"]
+    assert remaining[-1]["event_id"] == pending[-1]["event_id"]
+    assert not _delivered_path().is_file()
+
+
+def test_drain_respects_attempt_cap_when_sink_is_healthy(tmp_path, monkeypatch):
+    isolate_mindsync_home(tmp_path, monkeypatch, dispatch_home=True)
+    save_policy(OrchestrationPolicy(completionSinkCmd=[sys.executable, "-c", "pass"]))
+    import mindsync.dispatch.sink as sink
+
+    monkeypatch.setattr(sink, "_MAX_DRAIN_ATTEMPTS", 2)
+    monkeypatch.setattr(sink, "_DRAIN_BUDGET_SECONDS", 30.0)
+    pending = [
+        {
+            "event_id": f"{index:032x}",
+            "job_id": "job",
+            "status": "done",
+            "summary": "Job job completed.",
+        }
+        for index in range(5)
+    ]
+    _outbox_path().write_text(json.dumps(pending) + "\n", encoding="utf-8")
+    attempts = {"n": 0}
+
+    def ok(*args, **kwargs):
+        attempts["n"] += 1
+        return subprocess.CompletedProcess(args[0], 0)
+
+    monkeypatch.setattr(subprocess, "run", ok)
+    drain_completion_outbox()
+
+    assert attempts["n"] == 2
+    remaining = json.loads(_outbox_path().read_text(encoding="utf-8"))
+    assert [row["event_id"] for row in remaining] == [item["event_id"] for item in pending[2:]]
+    assert json.loads(_delivered_path().read_text(encoding="utf-8")) == [
+        pending[0]["event_id"],
+        pending[1]["event_id"],
+    ]

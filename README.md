@@ -163,7 +163,9 @@ Optional `completionSinkCmd` in the orchestration policy is an argv list
 `job.failed` is persisted: `event_id`, job id/status, bounded summary, optional
 privacy-screened task, optional PR URL. The allowlisted projection is written to
 an outbox before send; failed delivery stays pending and is retried on the next
-drain (later job events or process restart). Duplicate `event_id`s are not resent.
+drain (later job events or process restart). Each drain stops after the first
+sink failure and is bounded by a short wall-clock budget and attempt cap.
+Duplicate `event_id`s are not resent.
 Sink failure never changes job status. Leave it empty to keep current behavior.
 
 ## Optional remote sync
