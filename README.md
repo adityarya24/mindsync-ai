@@ -114,6 +114,10 @@ auth, or source payloads.
 
 Per-adapter overrides use `usageReader` and optional `usageThresholdPercent`.
 The bundled Codex preset declares `usageReader: "codex-oauth"`.
+Near the Codex standalone usage threshold, Stop warns the operator, points at
+the ranked dispatch successor, and does **not** launch another CLI. Other
+adapters have no pre-emptive reader; `mindsync doctor` shows `usage_mode` and
+whether reactive cooldown uses a parsed stderr timestamp or `quotaCooldownSeconds`.
 
 Only configured provider-specific exhaustion messages rotate. Timeouts, auth
 errors, generic rate limits, failing tests, and ordinary agent failures stop the

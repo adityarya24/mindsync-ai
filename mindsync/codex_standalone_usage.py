@@ -194,14 +194,41 @@ def _save_warning_state(state: dict[str, str]) -> None:
 def _format_warning(evaluation: ThresholdEvaluation) -> str:
     window = evaluation.triggering_window
     if window is None:
-        return "Codex seat nearing configured usage threshold"
-    reset_bit = ""
-    if window.reset_at is not None:
-        reset_bit = f"; resets {window.reset_at.astimezone(timezone.utc).isoformat()}"
-    label = window.label or window.id
+        body = "Codex seat nearing configured usage threshold"
+    else:
+        reset_bit = ""
+        if window.reset_at is not None:
+            reset_bit = f"; resets {window.reset_at.astimezone(timezone.utc).isoformat()}"
+        label = window.label or window.id
+        body = (
+            f"Codex seat nearing limit: {label} "
+            f"{window.used_percent:.0f}% full{reset_bit}"
+        )
+    return body + _successor_clause()
+
+
+def _successor_clause() -> str:
+    """Name a ranked dispatch successor; never launch it from the Stop hook."""
+    try:
+        from mindsync.dispatch.routing import select_agent
+        from mindsync.orchestration import effective_exclusions, load_policy
+
+        decision = select_agent(
+            "continue the current task",
+            required_capabilities=["general"],
+            exclude_agents=effective_exclusions(["codex"], load_policy(), "codex"),
+        )
+        agent = str(decision.get("agent") or "").strip()
+    except Exception:
+        agent = ""
+    if not agent:
+        return (
+            ". Checkpoint written. No ranked dispatch successor is available. "
+            "MindSync will not auto-start another CLI."
+        )
     return (
-        f"Codex seat nearing limit: {label} "
-        f"{window.used_percent:.0f}% full{reset_bit}"
+        f". Checkpoint written. Ranked dispatch successor: {agent}. "
+        "MindSync will not auto-start it."
     )
 
 

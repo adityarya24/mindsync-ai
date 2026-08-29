@@ -101,6 +101,13 @@ def extract_reactive_reset_at(
     return None
 
 
+def reactive_reset_source(adapter: AdapterConfig) -> str:
+    """How this adapter cools after quota exhaustion: parser or operator guess."""
+    if any(pattern == _CLAUDE_RESET_PATTERN for pattern in adapter.quotaErrorPatterns):
+        return "claude-stderr-epoch"
+    return "quotaCooldownSeconds"
+
+
 def _parse_claude_epoch_seconds(raw: str) -> int | None:
     if len(raw) != 10 or not raw.isdigit():
         return None

@@ -1,8 +1,8 @@
 # Wave 2 evidence: issues #51 and #54
 
 Date: 2026-08-29  
-Base: `dfbb7a0` (PR #55 / v1.7.0 line)  
-Scope: research only. No new readers or reset parsers in this document's companion code.
+Base: `6adb1f9` (master after #55/#56/#57)  
+Scope: recorded wrap-up verdict. No new readers. Claude reset parser already shipped.
 
 Hard boundaries observed: no browser profiles, cookie databases, keychains, or
 pasted live tokens. MindSync sees CLI stdout/stderr, not provider HTTP headers.
@@ -21,10 +21,12 @@ pasted live tokens. MindSync sees CLI stdout/stderr, not provider HTTP headers.
 
 ### #51 conclusion
 
-Keep #51 open as a research umbrella. Do **not** add readers for Claude, Gemini,
-Grok, Cursor, OpenCode, or Aider in this wave. Codex remains the only
-implementable, already-shipped reader. Doctor already reports
-`preemptive` / `reactive-only` / `disabled` from config (Wave 1).
+**Closed as recorded verdict (2026-08-29).** Codex is the only implementable
+CLI-token reader. Other adapters stay `reactive-only` or blocked. MindSync will
+not harvest browser cookies or keychains. An operator-supplied credential path
+is a future product decision, not an open implementation checklist.
+
+Doctor reports `usage_mode` and `reactive_reset` per adapter.
 
 ## #54 reactive reset formats
 
@@ -42,7 +44,7 @@ implementable, already-shipped reader. Doctor already reports
 
 ### #54 conclusion
 
-Do not keep #54 open waiting for invented formats. Unsupported adapters are
-explicitly fallback-only until a real sanitized CLI line exists. Close #54 only
-when Aditya accepts this matrix as the recorded verdict (GitHub comment is
-out of band until authorized).
+**Closed as recorded verdict (2026-08-29).** Claude's 10-digit stderr epoch is
+the only allowlisted reactive reset parser. Every other adapter keeps
+`quotaCooldownSeconds` as an operator-set estimate, not provider truth. New
+parsers wait on a sanitized CLI exhaustion fixture — they are not guessed.

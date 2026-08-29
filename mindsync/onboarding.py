@@ -15,8 +15,9 @@ from typing import Any, Callable, Iterable
 
 from mindsync import __version__
 from mindsync.dispatch.adapters import load_adapters
-from mindsync.dispatch.usage.config import UsageConfig, load_usage_config
+from mindsync.dispatch.limits import reactive_reset_source
 from mindsync.dispatch.proc import resolve_bin, spawn_spec
+from mindsync.dispatch.usage.config import UsageConfig, load_usage_config
 from mindsync.orchestration import OrchestrationPolicy, load_policy, policy_path, save_policy
 from mindsync.storage import atomic_private_write
 
@@ -733,6 +734,7 @@ def doctor(
             "capabilities": adapter.capabilities or ["general"],
             "usage_mode": _usage_mode_for_adapter(adapter, usage_config=usage_config),
             "usage_reader": adapter.usageReader,
+            "reactive_reset": reactive_reset_source(adapter),
             "provider": adapter.family or adapter.name,
         })
     configured_hosts = [item["cli"] for item in clis if item["configured"]]
