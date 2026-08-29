@@ -15,6 +15,7 @@ from typing import Any, Callable, Iterable
 
 from mindsync import __version__
 from mindsync.dispatch.adapters import load_adapters
+from mindsync.dispatch.usage.config import UsageConfig, load_usage_config
 from mindsync.dispatch.proc import resolve_bin, spawn_spec
 from mindsync.orchestration import OrchestrationPolicy, load_policy, policy_path, save_policy
 from mindsync.storage import atomic_private_write
@@ -689,6 +690,19 @@ def setup(
     }
 
 
+def _usage_mode_for_adapter(
+    adapter: Any,
+    *,
+    usage_config: UsageConfig | None = None,
+) -> str:
+    config = usage_config or load_usage_config()
+    if adapter.usageReader and config.enabled:
+        return "preemptive"
+    if adapter.quotaErrorPatterns:
+        return "reactive-only"
+    return "disabled"
+
+
 def doctor(
     *,
     runner: CommandRunner = _run_command,
@@ -709,6 +723,7 @@ def doctor(
         for name in CLI_SPECS
     ]
     workers = []
+    usage_config = load_usage_config()
     for adapter in load_adapters().values():
         workers.append({
             "name": adapter.name,
@@ -716,6 +731,9 @@ def doctor(
             "family": adapter.family or adapter.name,
             "available": bool(resolver(adapter.bin)),
             "capabilities": adapter.capabilities or ["general"],
+            "usage_mode": _usage_mode_for_adapter(adapter, usage_config=usage_config),
+            "usage_reader": adapter.usageReader,
+            "provider": adapter.family or adapter.name,
         })
     configured_hosts = [item["cli"] for item in clis if item["configured"]]
     available_workers = [item["name"] for item in workers if item["available"]]

@@ -38,10 +38,12 @@ class CodexOAuthUsageReader:
         codex_home: Path | None = None,
         account_scope: str | None = None,
         fetch_fn: FetchFn | None = None,
+        request_timeout_seconds: float | None = None,
     ) -> None:
         self._codex_home = codex_home
         self._account_scope = account_scope
         self._fetch_fn = fetch_fn
+        self._request_timeout_seconds = request_timeout_seconds
 
     @property
     def reader(self) -> str:
@@ -215,10 +217,15 @@ class CodexOAuthUsageReader:
             return payload
         return self._http_get_json(url, headers)
 
+    def _request_timeout(self) -> float:
+        if self._request_timeout_seconds is None:
+            return REQUEST_TIMEOUT_SECONDS
+        return max(0.05, min(float(self._request_timeout_seconds), REQUEST_TIMEOUT_SECONDS))
+
     def _http_get_json(self, url: str, headers: dict[str, str]) -> dict[str, Any]:
         request = Request(url, headers=headers, method="GET")
         try:
-            with urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            with urlopen(request, timeout=self._request_timeout()) as response:
                 body = response.read(_MAX_RESPONSE_BYTES + 1)
         except HTTPError as exc:
             if exc.code in {401, 403}:

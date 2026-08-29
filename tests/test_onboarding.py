@@ -292,6 +292,8 @@ def test_doctor_reports_hosts_policy_and_worker_inventory(tmp_path, monkeypatch)
     assert "codex" in report["configured_hosts"]
     assert any(worker["available"] for worker in report["workers"])
     assert report["available_worker_families"]["gemini-antigravity"] == ["agy", "gemini"]
+    codex = next(worker for worker in report["workers"] if worker["name"] == "codex")
+    assert codex["usage_mode"] in {"preemptive", "reactive-only", "disabled"}
 
 
 def test_doctor_fails_when_no_host_is_configured(tmp_path, monkeypatch):

@@ -1,4 +1,8 @@
-"""Narrow reactive quota classification and provider-account cooldowns."""
+"""Narrow reactive quota classification and provider-account cooldowns.
+
+When a provider CLI does not expose an authoritative reset timestamp, adapters fall
+back to ``quotaCooldownSeconds`` as an operator-set estimate — not provider truth.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +15,13 @@ from typing import Any
 from mindsync.config import dispatch_home
 from mindsync.dispatch.adapters import AdapterConfig
 from mindsync.storage import atomic_private_write, file_lock
+
+_MAX_STDERR_TAIL = 16_000
+_MAX_RESET_HORIZON = timedelta(days=7)
+_CLAUDE_RESET_PATTERN = r"(?im)^Claude AI usage limit reached\|[0-9]{10}\s*$"
+_CLAUDE_RESET_LINE = re.compile(
+    r"(?im)^Claude AI usage limit reached\|([0-9]{10})\s*$"
+)
 
 
 def _cooldown_path() -> Path:
@@ -69,6 +80,64 @@ def classify_quota_exhaustion(
                 "pattern": pattern,
             }
     return None
+
+
+def extract_reactive_reset_at(
+    adapter: AdapterConfig, *, stderr: str = ""
+) -> datetime | None:
+    """Parse an authoritative provider reset timestamp from bounded stderr only."""
+    if not adapter.quotaErrorPatterns:
+        return None
+    text = stderr[-_MAX_STDERR_TAIL:]
+    if not text.strip():
+        return None
+
+    for pattern in adapter.quotaErrorPatterns:
+        if not re.search(pattern, text):
+            continue
+        reset_at = _parse_allowlisted_reset(text, pattern)
+        if reset_at is not None:
+            return reset_at
+    return None
+
+
+def _parse_claude_epoch_seconds(raw: str) -> int | None:
+    if len(raw) != 10 or not raw.isdigit():
+        return None
+    timestamp = int(raw)
+    # Reject millisecond-shaped values and other non-second epochs early.
+    if timestamp < 1_000_000_000 or timestamp >= 10_000_000_000:
+        return None
+    return timestamp
+
+
+def _parse_allowlisted_reset(text: str, matched_pattern: str) -> datetime | None:
+    if matched_pattern != _CLAUDE_RESET_PATTERN:
+        return None
+    match = _CLAUDE_RESET_LINE.search(text)
+    if match is None:
+        return None
+    timestamp = _parse_claude_epoch_seconds(match.group(1))
+    if timestamp is None:
+        return None
+    try:
+        reset_at = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+    return _validate_future_reset(reset_at)
+
+
+def _validate_future_reset(value: datetime) -> datetime | None:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    now = datetime.now(timezone.utc)
+    if value <= now:
+        return None
+    if value - now > _MAX_RESET_HORIZON:
+        return None
+    return value
 
 
 def list_cooldowns() -> list[dict[str, str]]:

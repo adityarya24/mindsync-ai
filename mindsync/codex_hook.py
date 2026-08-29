@@ -336,8 +336,9 @@ def _handle_session_start(
         warnings.append("SessionStart ignored: payload had no session_id")
         return ""
 
+    memory_mode = _resolve_memory_mode(warnings)
     kwargs: dict[str, Any] = {
-        "memory_mode": _resolve_memory_mode(warnings),
+        "memory_mode": memory_mode,
         "memory_project": None,
     }
     # Omitted rather than passed as None when Codex sends nothing usable, so the
@@ -362,6 +363,7 @@ def _handle_session_start(
     context = _bounded_context(_result_field(result, "context"), warnings)
     if context is None:
         return ""
+    _maybe_prefetch_codex_usage(memory_mode, deadline)
     return json.dumps(
         {
             "hookSpecificOutput": {
@@ -371,6 +373,17 @@ def _handle_session_start(
         },
         ensure_ascii=False,
     )
+
+
+def _maybe_prefetch_codex_usage(memory_mode: str, deadline: float) -> None:
+    try:
+        from mindsync.codex_standalone_usage import prefetch_usage, usage_checks_enabled
+
+        if not usage_checks_enabled(memory_mode=memory_mode):
+            return
+        prefetch_usage(timeout_seconds=_remaining_seconds(deadline, cap=0.8))
+    except Exception:
+        return
 
 
 def _handle_stop(
@@ -398,7 +411,24 @@ def _handle_stop(
         warnings.append(
             f"session memory checkpoint degraded: {type(exc).__name__}: {exc}"
         )
+    _maybe_warn_codex_reserve(session_id, warnings, deadline)
     return _STOP_OUTPUT
+
+
+def _maybe_warn_codex_reserve(
+    session_id: str, warnings: list[str], deadline: float
+) -> None:
+    try:
+        from mindsync.codex_standalone_usage import maybe_append_reserve_warning
+
+        maybe_append_reserve_warning(
+            session_id,
+            warnings,
+            memory_mode=_resolve_memory_mode([]),
+            timeout_seconds=_remaining_seconds(deadline),
+        )
+    except Exception:
+        return
 
 
 def _handle_session_end(

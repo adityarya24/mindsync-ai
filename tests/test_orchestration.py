@@ -12,7 +12,6 @@ import pytest
 
 import mindsync.config as config_mod
 import mindsync.orchestration as orchestration
-import mindsync.storage as storage
 from mindsync.dispatch import store
 from mindsync.dispatch.adapters import user_config_path
 from mindsync.dispatch.runner import (
@@ -25,14 +24,11 @@ from mindsync.server import delegate_task
 
 
 def _isolate(tmp_path: Path, monkeypatch) -> Path:
-    monkeypatch.setenv("MINDSYNC_HOME", str(tmp_path / "mindsync-home"))
-    monkeypatch.setenv("AGENT_DISPATCH_HOME", str(tmp_path / "dispatch-home"))
+    from tests.isolation_helpers import isolate_mindsync_home
+
+    isolate_mindsync_home(tmp_path, monkeypatch)
     monkeypatch.delenv("MINDSYNC_CALLER_CLI", raising=False)
-    settings = config_mod.Settings()
-    config_mod.settings = settings
-    storage.settings = settings
-    orchestration.settings = settings
-    settings.ensure_dirs()
+    settings = config_mod.settings
     user_config_path().parent.mkdir(parents=True, exist_ok=True)
     user_config_path().write_text(
         json.dumps(
