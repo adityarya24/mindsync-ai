@@ -7,8 +7,13 @@ on:
     branches: [master]
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  # PRs: one slot per PR ref, and a new run cancels the previous one — so a run
+  # that hangs (a stuck runner leaves it 'in_progress' forever) is cleared by the
+  # next push instead of blocking every later PR run in the same group.
+  # Pushes to master: one slot per commit SHA, never cancelled, so each commit
+  # keeps its own CI conclusion for the release workflow's gate to read.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lock:

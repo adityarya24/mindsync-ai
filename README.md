@@ -1,8 +1,6 @@
 <p align="center">
-  <img src="docs/mindsync-mark.svg" alt="MindSync AI" width="88" height="88" />
+  <img src="docs/mindsync-logo.jpg" alt="MindSync AI" width="520" />
 </p>
-
-<h1 align="center">MindSync AI</h1>
 
 <p align="center">
   <a href="https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml"><img src="https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
