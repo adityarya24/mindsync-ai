@@ -78,6 +78,24 @@ mindsync-dispatch limits                 # inspect provider/account cooldowns
 mindsync-dispatch limits clear           # clear cooldowns after operator verification
 ```
 
+Pre-emptive usage readers are pluggable per provider. The Codex adapter can
+read primary and weekly OAuth usage windows from the local `~/.codex/auth.json`
+source when a reader is configured, but dispatch does not poll or hand off on
+that signal yet. Global usage settings live in `agents.json` under `usage` and
+default to disabled:
+
+```json
+{
+  "usage": {
+    "enabled": false,
+    "defaultThresholdPercent": 90
+  }
+}
+```
+
+Per-adapter overrides use `usageReader` and optional `usageThresholdPercent`.
+The bundled Codex preset declares `usageReader: "codex-oauth"`.
+
 Only configured provider-specific exhaustion messages rotate. Timeouts, auth
 errors, generic rate limits, failing tests, and ordinary agent failures stop the
 job. A successor receives the same worktree, the original task, and the latest

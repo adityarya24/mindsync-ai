@@ -15,6 +15,7 @@
   "capabilityWeights": {"coding": 100, "debugging": 95, "testing": 95, "devops": 90, "repository": 90, "review": 75, "refactoring": 80},
   "routingPriority": 80,
   "quotaScope": "openai:default",
+  "usageReader": "codex-oauth",
   "quotaCooldownSeconds": 18000,
   "quotaErrorPatterns": [
     "(?is)\\byou(?:'|’)ve hit your usage limit\\b",

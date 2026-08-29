@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Pluggable dispatch usage readers with a native Codex OAuth implementation.
+  Readers return a safe unavailable state for missing, malformed, or
+  unauthenticated sources and never affect reactive quota handoff until a
+  later worker wires pre-emptive polling. Configure global thresholds in
+  `agents.json` `usage` (disabled by default) and per-adapter `usageReader`.
 - Opt-in reactive provider-quota handoff for isolated dispatch jobs. With
   `--on-limit handoff`, a narrowly classified exhaustion failure cools the
   configured provider/account, records a new attempt, and transfers the same
