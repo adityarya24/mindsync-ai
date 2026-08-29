@@ -1,101 +1,141 @@
-<p align="center">
-  <img src="docs/mindsync-logo.png" alt="MindSync AI" width="520" />
-</p>
+<div align="center">
 
-<p align="center">
-  <a href="https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml"><img src="https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://pypi.org/project/mindsync-ai/"><img src="https://img.shields.io/pypi/v/mindsync-ai.svg" alt="PyPI version" /></a>
-  <a href="https://pypi.org/project/mindsync-ai/"><img src="https://img.shields.io/pypi/pyversions/mindsync-ai.svg" alt="Python versions" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-</p>
+<img src="assets/mindsync-logo.png" alt="MindSync AI Logo" width="420" />
 
-<p align="center"><strong><a href="https://adityarya24.github.io/mindsync-ai/">adityarya24.github.io/mindsync-ai</a></strong></p>
+# MindSync AI
 
-Run a fleet of coding agents without them tripping over each other. MindSync is
-**local-first MCP orchestration**: the CLI already talking to you becomes the
-orchestrator, and everything else runs through it — no separate app, no account,
-no hosted control plane.
+**Local-first MCP orchestration, persistent shared memory, and automatic task routing for coding agents.**
 
-- **Routes by capability** and tells you which agent it picked, and why.
-- **Blocks file collisions** by showing active file focus before work starts.
-- **Remembers across sessions** — decisions, blockers, and facts replay into the next run.
-- **Hands off before limits land** — a job cools an exhausted provider and moves to the next agent; the Codex seat warns before it runs out.
+[![CI](https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
+[![Python versions](https://img.shields.io/pypi/pyversions/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Protocol%201.27+-purple.svg)](https://modelcontextprotocol.io/)
 
-```text
-You → human-facing CLI (orchestrator) → MindSync → Codex / Claude / Gemini / AGY / Grok / Cursor / OpenCode / Aider
+### 🌐 [adityarya24.github.io/mindsync-ai](https://adityarya24.github.io/mindsync-ai/)
+
+</div>
+
+---
+
+## 💡 What is MindSync?
+
+MindSync connects disparate AI coding agents (**Codex, Claude Code, Gemini CLI, Antigravity, Grok, Cursor, OpenCode, Aider**) into a single, coordinated local ecosystem without requiring a cloud SaaS account or third-party servers.
+
+The human-facing CLI session you are talking to **remains in charge as the orchestrator**. MindSync routes subtasks by domain capability, enforces file locks to prevent multi-agent collisions, tracks rate limits for seamless quota handoff across providers, and preserves long-term factual memory across sessions.
+
+```
+                    ┌────────────────────────┐
+                    │   You (Human Prompt)   │
+                    └───────────┬────────────┘
+                                │
+                                ▼
+         ┌────────────────────────────────────────────────┐
+         │     Human-Facing CLI Session (Orchestrator)    │
+         │  (e.g., Codex / Claude / Gemini / Grok / ...)   │
+         └──────────────────────┬─────────────────────────┘
+                                │ (MCP Protocol)
+                                ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │                        MINDSYNC CORE                        │
+  │  ┌───────────────────────┬───────────────────────────────┐  │
+  │  │  Capability Router    │  Conflict Prevention Shield   │  │
+  │  ├───────────────────────┼───────────────────────────────┤  │
+  │  │  Quota & Handoff Tier │  Vector Memory (`sqlite-vec`) │  │
+  │  └───────────────────────┴───────────────────────────────┘  │
+  └─────────────────────────────┬───────────────────────────────┘
+                                │ (Isolated Worktrees)
+         ┌──────────────────────┼──────────────────────┐
+         ▼                      ▼                      ▼
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│   Codex Worker   │  │  Claude Worker   │  │  Gemini / Grok   │
+│  (Implementation)│  │ (Deep Reasoning) │  │ (Audit & Search) │
+└──────────────────┘  └──────────────────┘  └──────────────────┘
 ```
 
-Workers get bounded tasks. They cannot recursively delegate through MindSync.
-Remote sync is optional and runs through your own SSH host — your agents, your
-machine, your data.
+> **Key Guarantee**: Dispatched workers receive bounded tasks inside isolated Git worktrees and cannot recursively re-delegate through MindSync.
 
-## Quick start
+---
 
+## ⚡ Quick Start
+
+### 1. Installation
 ```bash
 pip install mindsync-ai
+```
+*(Requires Python 3.10+)*
+
+### 2. Automated Auto-Discovery & Setup
+```bash
+# Auto-detects installed MCP hosts and PATH coding CLIs
 mindsync setup --mode auto
+
+# Verify system health, lock engines, and adapter status
 mindsync doctor
+
+# Inspect available agent roster and capabilities
 mindsync agents
 ```
-
-Requires Python 3.10+. Restart the configured CLI sessions after setup.
-
-`setup` registers known MCP hosts (Codex, Claude, Gemini, Grok, Cursor, OpenCode)
-and recognised PATH agent CLIs. MCP is installed only when MindSync has a real
-recipe — it will not guess `mcp add` flags. Unknown binaries are suggested, not
-registered, and never executed. Use `mindsync register` for an unusual name.
+*Restart your CLI sessions after setup to load the registered MCP servers.*
 
 ```bash
-mindsync setup --dry-run          # preview
-mindsync setup --cli grok         # one known host, no PATH scan
-mindsync setup --no-discover      # hosts only
-mindsync setup --no-hooks         # skip Codex standalone hooks
+# Additional setup options
+mindsync setup --dry-run          # Preview changes without modifying host configs
+mindsync setup --cli grok         # Target a specific host only
+mindsync setup --no-discover      # Register hosts without PATH CLI scanning
+mindsync setup --no-hooks         # Skip Codex standalone hooks
 ```
 
-Install from source: `python -m pip install -e ".[dev]"`
+---
 
-## Supported clients
+## 🤖 Supported Clients & Roster
 
-A CLI may be an **MCP host**, a **worker**, or both.
+A CLI may act as an **MCP Host** (orchestrator), a **Worker** (dispatched execution), or both:
 
-| CLI | MCP host | Worker | Notes |
-| --- | --- | --- | --- |
-| OpenAI Codex | Native | Yes | Also gets standalone memory hooks |
-| Anthropic Claude | Native | Yes | Architecture, review, large context |
-| Google Gemini CLI | Native | Yes | Gemini/Antigravity family |
-| Antigravity (`agy`) | Via Gemini | Yes | Preferred worker in that family |
-| Grok CLI | Native | Yes | Research, review, security |
-| Cursor Agent | JSON | Yes | `~/.cursor/mcp.json` |
-| OpenCode | JSON | Yes | `~/.config/opencode/opencode.jsonc` |
-| Aider | — | Yes | Focused editing |
+| CLI / Engine | MCP Host | Dispatched Worker | Domain Strength / Role |
+| :--- | :---: | :---: | :--- |
+| **OpenAI Codex** | Native | Yes | Fast implementation, refactoring, standalone memory hooks |
+| **Anthropic Claude Code** | Native | Yes | Architecture, comprehensive reviews, massive context |
+| **Google Gemini CLI** | Native | Yes | Research, multimodal analysis, tool integrations |
+| **Antigravity (`agy`)** | Via Gemini | Yes | Preferred execution worker in Gemini family |
+| **Grok CLI (xAI)** | Native | Yes | Codebase exploration, security audit, rapid synthesis |
+| **Cursor Agent** | JSON (`mcp.json`) | Yes | In-IDE pair programming, file editing |
+| **OpenCode** | JSON (`opencode.jsonc`)| Yes | Context-first systems counseling & multi-model routing |
+| **Aider** | — | Yes | Surgical git diffs & local file edits |
 
-Gemini CLI and `agy` are one family. When either is the human-facing orchestrator,
-both are excluded from automatic worker selection.
+> ℹ️ **Family Isolation**: Gemini CLI and `agy` share the `gemini-antigravity` family. When either is the human-facing orchestrator, both are excluded from automatic worker selection to protect orchestrator bandwidth.
 
-## Orchestration
+---
 
-Policy lives in `~/.mindsync/orchestration.json`. Modes: `auto`, `suggest`, `off`.
+## 🎯 Orchestration & Capability Dispatch
 
+Policy configuration is located at `~/.mindsync/orchestration.json` (Modes: `auto`, `suggest`, `off`).
+
+### Run Dispatched Jobs
 ```bash
-mindsync config orchestration.mode auto
-mindsync-dispatch run auto "implement and test the fix" --capability coding
+# Route task automatically to best suited agent by capability
+mindsync-dispatch run auto "implement and test the auth fix" --capability coding
+
+# Check status of running or completed jobs
 mindsync-dispatch status
 ```
 
-Provider quota handoff is opt-in and requires an isolated worktree:
+### Automatic Provider Quota Handoff
+MindSync prevents blocked workflows when an LLM provider's quota exhausts mid-task. When enabled with an isolated worktree, MindSync transfers the working state, task prompt, and latest checkpoint to a ranked successor agent:
 
 ```bash
-mindsync-dispatch run auto "implement and test the fix" --write --worktree --on-limit handoff
-mindsync-dispatch limits                 # inspect provider/account cooldowns
-mindsync-dispatch limits clear           # clear cooldowns after operator verification
+# Run with worktree isolation and automatic quota handoff
+mindsync-dispatch run auto "refactor database schema" --write --worktree --on-limit handoff
+
+# Inspect provider and account cooldowns
+mindsync-dispatch limits
+
+# Clear cooldowns manually after operator verification
+mindsync-dispatch limits clear
 ```
 
-Pre-emptive usage readers are pluggable per provider. The Codex adapter can
-read primary and weekly OAuth usage windows from the local `~/.codex/auth.json`
-source when a reader is configured. Pre-emptive polling and threshold handoff are
-opt-in: they require both `usage.enabled: true` in `agents.json` and
-`--on-limit handoff` on an isolated worktree job. Global usage settings default
-to disabled:
+### Pre-emptive Usage Evaluation
+MindSync includes pluggable usage readers. For example, the bundled **Codex OAuth Reader** (`codex-oauth`) reads local OAuth tokens from `~/.codex/auth.json` and evaluates primary and weekly usage windows before spawning tasks.
 
 ```json
 {
@@ -108,118 +148,90 @@ to disabled:
 }
 ```
 
-`defaultThresholdPercent` is the dispatched-worker handoff threshold.
-`orchestratorReservePercent` is a separate opt-in Codex standalone Stop
-warning line; when omitted it follows `defaultThresholdPercent` so existing
-configs keep working. Neither field is a live usage estimate.
+* **`defaultThresholdPercent`**: Dispatched worker handoff threshold.
+* **`orchestratorReservePercent`**: Threshold for warning the operator before starting large runs.
+* If a provider reaches threshold and a MindSync checkpoint exists, dispatch safely transfers the worktree diff to the successor agent.
 
-When enabled, dispatch polls at `pollingIntervalSeconds` during a running
-attempt, skips cooling or over-threshold provider accounts before spawn, and may
-transfer only when a privacy-safe MindSync checkpoint already exists for that
-attempt (plus the worktree diff and original task). There is no generic CLI
-control channel: dispatch does not ask arbitrary agents to write `HANDOFF.md`.
-Without a checkpoint, threshold hits are recorded as `preemptiveBlocked` and
-the attempt keeps running so reactive quota handoff remains the floor. Job
-status shows usage evaluation, skips, blocks, and handoffs; only percentages,
-window labels, reset times, scope, and reasons are persisted — never raw usage,
-auth, or source payloads.
-
-Per-adapter overrides use `usageReader` and optional `usageThresholdPercent`.
-The bundled Codex preset declares `usageReader: "codex-oauth"`.
-Near the Codex standalone usage threshold, Stop warns the operator, points at
-the ranked dispatch successor, and does **not** launch another CLI. Other
-adapters have no pre-emptive reader; `mindsync doctor` shows `usage_mode` and
-whether reactive cooldown uses a parsed stderr timestamp or `quotaCooldownSeconds`.
-
-Only configured provider-specific exhaustion messages rotate. Timeouts, auth
-errors, generic rate limits, failing tests, and ordinary agent failures stop the
-job. A successor receives the same worktree, the original task, and the latest
-structured MindSync checkpoint; because routing may select another provider,
-enable handoff only when that cross-provider context transfer is acceptable.
-
-Completed jobs keep their branch by default. To push a successful isolated
-job and open a pull request for review, enable it for that repository:
-
+### Automated Pull Request Workflow
+Configure MindSync to automatically publish branches and open PRs upon successful task completion:
 ```bash
+# Enable PR creation upon successful completion for current repository
 mindsync config onComplete pr --project .
 ```
+*(MindSync never auto-merges PRs and strictly declines to publish if checks fail or if secrets/sensitive tokens are detected in diffs).*
 
-MindSync never merges the pull request. It also declines to publish when a
-requested check failed or did not report, private prompt framing cannot be
-separated safely, commit hooks refuse the work, or changed paths look like
-secrets. Use `MINDSYNC_ON_COMPLETE=pr` for a one-run override.
+---
 
-Custom worker:
+## 🧠 Persistent Memory & Shared Facts
 
-```bash
-mindsync register --name my-worker --bin my-cli --capability coding
-```
-
-Heavy tags (`security`, `large-context`, `multimodal`) need `--confirm`.
-Roster and jobs: `~/.mindsync/dispatch/` (`AGENT_DISPATCH_HOME` overrides).
-
-## Memory
-
-Dispatch memory defaults to `auto` in git checkouts (opaque git identity, never
-a path or repo name). Failures warn; they do not fail the job.
+MindSync embeds a lightweight, local vector and relational database powered by `sqlite-vec` for cross-session knowledge retention:
 
 ```bash
+# View memory database statistics
 mindsync memory stats
+
+# List recorded facts for a specific repository
 mindsync memory list --project my-repo
-mindsync memory recall --project my-repo --query "database decision"
+
+# Semantic search across historical decisions and architecture facts
+mindsync memory recall --project my-repo --query "database migration decision"
 ```
 
-Nothing is pruned without `--yes`. See MCP tools on the server (`get_sync_context`,
-`delegate_task`, `job(action='wait')`, …) once a host is configured. Orchestrator
-MCP exposes 16 tools; worker subprocesses started with `MINDSYNC_WORKER=1` expose
-12 and omit orchestration-only dispatch tools (`delegate_task`, `route_task`,
-`get_orchestration_policy`, `list`). Job/event/session/consolidation helpers are
-subject bundles with no old-name aliases.
+### MCP Tool Bundles
+* **Orchestrator Hosts (16 Tools)**: Exposes full orchestration (`delegate_task`, `route_task`, `get_sync_context`, `update_focus`, `memory_checkpoint`, `memory_recall`, `queue_durable_fact`, etc.).
+* **Dispatched Workers (12 Tools)**: Runs with `MINDSYNC_WORKER=1`, omitting recursive delegation tools while retaining shared context, focus locks, and fact retrieval.
 
-Optional `completionSinkCmd` in the orchestration policy is an argv list
-(no shell) that receives one JSON object on stdin after `job.completed` /
-`job.failed` is persisted: `event_id`, job id/status, bounded summary, optional
-privacy-screened task, optional PR URL. The allowlisted projection is written to
-an outbox before send; failed delivery stays pending and is retried on the next
-drain (later job events or process restart). Each drain stops after the first
-sink failure and is bounded by a short wall-clock budget and attempt cap.
-Duplicate `event_id`s are not resent.
-Sink failure never changes job status. Leave it empty to keep current behavior.
+---
 
-## Optional remote sync
+## 🔒 Safety & Security Architecture
 
-```bash
-export MINDSYNC_SSH_HOST=my-server
-export MINDSYNC_REMOTE_ROOT=/opt/mindsync
-```
+1. **Human-in-the-Loop Authority**: The human-facing orchestrator CLI always retains final approval and verification.
+2. **Explicit Binary Execution**: `mindsync setup` only configures known recipes. Unknown binaries are suggested, never executed blindly.
+3. **Crash-Safe Locking**: State updates use atomic writes and file locks. On Windows, lock contention timeouts are configurable via environment variables.
+4. **Secret-Safe Serialization**: Job status, telemetry, and handoff payloads strictly strip access tokens, auth headers, and raw credential structures before logging.
 
-Worker loop and VPS scripts: [`examples/remote/`](examples/remote/).
-Environment variables: [`.env.example`](.env.example).
+---
 
-## Safety
+## ⚙️ Advanced Configuration & Environment Variables
 
-- The human-facing CLI owns authorization and the final answer.
-- Setup never executes a binary it cannot name.
-- Existing MCP registrations are preserved unless `--force`.
-- Local state uses crash-safe locks and atomic writes. On Windows, tune queue
-  lock deadlines and OS-lock contention backoff via
-  `MINDSYNC_QUEUE_LOCK_TIMEOUT`, `MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE`, and
-  `MINDSYNC_LOCK_CONTENTION_BACKOFF_MAX` (see [`.env.example`](.env.example)).
+<details>
+<summary><b>Click to expand Environment Variables</b></summary>
 
-Runs with the current user's privileges. See [`SECURITY.md`](SECURITY.md).
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `MINDSYNC_HOME` | Root configuration directory | `~/.mindsync` |
+| `AGENT_DISPATCH_HOME` | Storage for dispatch jobs and rosters | `~/.mindsync/dispatch` |
+| `MINDSYNC_CALLER_CLI` | Declares calling CLI engine identity | Auto-detected |
+| `MINDSYNC_QUEUE_LOCK_TIMEOUT` | Max wait time for file locks (seconds) | `10.0` |
+| `MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE` | Backoff base for Windows lock contention | `0.05` |
+| `MINDSYNC_SSH_HOST` | Remote VPS host for optional sync | — |
+| `MINDSYNC_REMOTE_ROOT` | Remote VPS sync directory | — |
 
-## Development
+</details>
+
+---
+
+## 🛠️ Development & Testing
 
 ```bash
-python -m venv .venv && . .venv/bin/activate   # Windows: .venv\Scripts\activate
+# 1. Clone repository
+git clone https://github.com/adityarya24/mindsync-ai.git
+cd mindsync-ai
+
+# 2. Set up virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# 3. Install in editable mode with development dependencies
 python -m pip install -e ".[dev]"
+
+# 4. Run linter & test suite
 python -m ruff check .
 python -m pytest -q
 ```
 
-Use the venv. `sqlite-vec` is a package dependency; a bare system Python will
-fail the Tier 2 tests.
+---
 
-## License
+## 📄 License
 
-[MIT](LICENSE)
+Distributed under the [MIT License](LICENSE). Open-source and free for personal and commercial use.
