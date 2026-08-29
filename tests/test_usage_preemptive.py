@@ -6,6 +6,7 @@ import asyncio
 import json
 import subprocess
 import sys
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -20,8 +21,14 @@ from mindsync.dispatch.routing import select_agent
 from mindsync.dispatch.usage.preemptive import preflight_skip_reason
 from mindsync.dispatch.usage.registry import evaluate_adapter_threshold
 from mindsync.dispatch.usage.types import UsageReadResult, UsageWindow
+import mindsync.config as config_mod
+import mindsync.orchestration as orchestration
 from mindsync.dispatch import store
-from mindsync.dispatch.runner import cancel_job, run_task
+from mindsync.dispatch.runner import (
+    AutoDelegationSuggestion,
+    cancel_job,
+    run_task,
+)
 from tests.test_dispatch import _isolate_dispatch
 
 
@@ -77,6 +84,11 @@ def _usage_agents_config(*, usage_enabled: bool = True) -> dict:
     }
 
 
+def _sync_orchestration_home() -> None:
+    orchestration.settings = config_mod.settings
+    orchestration.save_policy(orchestration.OrchestrationPolicy(mode="auto"))
+
+
 def _write_usage_agents(
     tmp_path: Path,
     monkeypatch,
@@ -85,6 +97,7 @@ def _write_usage_agents(
     extra: dict | None = None,
 ) -> None:
     _isolate_dispatch(tmp_path, monkeypatch)
+    _sync_orchestration_home()
     config = _usage_agents_config(usage_enabled=usage_enabled)
     if extra:
         config.update(extra)
@@ -131,6 +144,49 @@ def _below_threshold_result(adapter_name: str, scope: str) -> UsageReadResult:
             )
         ],
     )
+
+
+def _sequenced_evaluator(
+    *,
+    agents: dict[str, list[str]] | None = None,
+    default: str = "at_threshold",
+):
+    """Per-agent evaluation sequences for routing vs spawn/poll phases.
+
+    States: ``below``, ``at_threshold``, ``unavailable``. The last state repeats.
+    Bundled presets default to ``at_threshold`` so isolated tests stay deterministic.
+    """
+    sequences = agents or {}
+    counts: dict[str, int] = defaultdict(int)
+
+    def evaluate(adapter, **kwargs):
+        name = adapter.name
+        scope = adapter.quotaScope or f"agent:{name}"
+        seq = sequences.get(name)
+        if seq is None:
+            state = default
+        else:
+            idx = counts[name]
+            counts[name] += 1
+            state = seq[min(idx, len(seq) - 1)]
+        if state == "at_threshold":
+            return evaluate_adapter_threshold(
+                adapter, result=_at_threshold_result(name, scope)
+            )
+        if state == "unavailable":
+            return evaluate_adapter_threshold(
+                adapter,
+                result=UsageReadResult.unavailable(
+                    provider=name,
+                    account_scope=scope,
+                    reason="usage reader failed",
+                ),
+            )
+        return evaluate_adapter_threshold(
+            adapter, result=_below_threshold_result(name, scope)
+        )
+
+    return evaluate
 
 
 @pytest.mark.asyncio
@@ -217,18 +273,14 @@ async def test_preflight_skips_over_threshold_provider(
 ):
     _write_usage_agents(tmp_path, monkeypatch)
 
-    def fake_evaluate(adapter, **kwargs):
-        scope = adapter.quotaScope or f"agent:{adapter.name}"
-        if adapter.name == "primary":
-            return evaluate_adapter_threshold(
-                adapter,
-                result=_at_threshold_result(adapter.name, scope),
-            )
-        return evaluate_adapter_threshold(
-            adapter, result=_below_threshold_result(adapter.name, scope)
-        )
-
-    monkeypatch.setattr(runner_mod, "evaluate_adapter_threshold", fake_evaluate)
+    monkeypatch.setattr(
+        runner_mod,
+        "evaluate_adapter_threshold",
+        _sequenced_evaluator(
+            agents={"primary": ["below", "at_threshold"], "backup": ["below"]},
+            default="at_threshold",
+        ),
+    )
     calls: list[str] = []
 
     async def fake_spawn(*args, **kwargs):
@@ -322,13 +374,23 @@ async def test_running_threshold_with_checkpoint_transfers_once(
     fake_repo: Path, tmp_path: Path, monkeypatch
 ):
     _write_usage_agents(tmp_path, monkeypatch)
-    poll_count = 0
     handoff_triggered = False
 
     monkeypatch.setattr(
         runner_mod,
         "has_usable_checkpoint",
         lambda meta: (True, None),
+    )
+    monkeypatch.setattr(
+        runner_mod,
+        "evaluate_adapter_threshold",
+        _sequenced_evaluator(
+            agents={
+                "primary": ["below", "below", "at_threshold"],
+                "backup": ["below"],
+            },
+            default="at_threshold",
+        ),
     )
 
     async def fake_spawn(*args, **kwargs):
@@ -355,20 +417,6 @@ async def test_running_threshold_with_checkpoint_transfers_once(
             "preemptiveThreshold": False,
         }
 
-    def fake_evaluate(adapter, **kwargs):
-        nonlocal poll_count
-        poll_count += 1
-        scope = adapter.quotaScope or f"agent:{adapter.name}"
-        if adapter.name == "primary" and poll_count >= 1:
-            return evaluate_adapter_threshold(
-                adapter,
-                result=_at_threshold_result(adapter.name, scope),
-            )
-        return evaluate_adapter_threshold(
-            adapter, result=_below_threshold_result(adapter.name, scope)
-        )
-
-    monkeypatch.setattr(runner_mod, "evaluate_adapter_threshold", fake_evaluate)
     monkeypatch.setattr(runner_mod, "spawn_foreground", fake_spawn)
     result = await run_task(
         agent="auto",
@@ -397,25 +445,22 @@ async def test_reader_failure_degrades_to_reactive_handoff(
     fake_repo: Path, tmp_path: Path, monkeypatch
 ):
     _write_usage_agents(tmp_path, monkeypatch)
-    calls = 0
 
-    def fake_evaluate(adapter, **kwargs):
-        nonlocal calls
-        calls += 1
-        scope = adapter.quotaScope or f"agent:{adapter.name}"
-        return evaluate_adapter_threshold(
-            adapter,
-            result=UsageReadResult.unavailable(
-                provider=adapter.name,
-                account_scope=scope,
-                reason="usage reader failed",
-            ),
-        )
+    monkeypatch.setattr(
+        runner_mod,
+        "evaluate_adapter_threshold",
+        _sequenced_evaluator(
+            agents={"primary": ["unavailable"], "backup": ["unavailable"]},
+            default="unavailable",
+        ),
+    )
 
-    monkeypatch.setattr(runner_mod, "evaluate_adapter_threshold", fake_evaluate)
+    spawn_calls = 0
 
     async def fake_spawn(*args, **kwargs):
-        if calls <= 1:
+        nonlocal spawn_calls
+        spawn_calls += 1
+        if spawn_calls == 1:
             return {
                 "stdout": "",
                 "stderr": "Usage window exhausted; resets at 17:00",
@@ -554,11 +599,9 @@ async def test_no_successor_retains_work_on_preflight(
     monkeypatch.setattr(
         runner_mod,
         "evaluate_adapter_threshold",
-        lambda adapter, **kwargs: evaluate_adapter_threshold(
-            adapter,
-            result=_at_threshold_result(
-                adapter.name, adapter.quotaScope or f"agent:{adapter.name}"
-            ),
+        _sequenced_evaluator(
+            agents={"primary": ["below", "at_threshold"]},
+            default="at_threshold",
         ),
     )
 
@@ -633,6 +676,7 @@ async def test_three_agent_transfer_race_updates_worktree_lease(
 ):
     """F1: If successor cools before preflight, ensure lease is consistently updated to tertiary."""
     _isolate_dispatch(tmp_path, monkeypatch)
+    _sync_orchestration_home()
     config = {
         "usage": {
             "enabled": True,
@@ -963,18 +1007,11 @@ async def test_hermetic_preemptive_isolation_poisons_unmocked_live_reader(
 
     _write_usage_agents(tmp_path, monkeypatch)
 
-    # 1. Verify injected evaluator seam works end-to-end without touching live reader
-    def fake_evaluate(adapter, **kwargs):
-        scope = adapter.quotaScope or f"agent:{adapter.name}"
-        if adapter.name == "primary":
-            return evaluate_adapter_threshold(
-                adapter, result=_at_threshold_result(adapter.name, scope)
-            )
-        return evaluate_adapter_threshold(
-            adapter, result=_below_threshold_result(adapter.name, scope)
-        )
-
-    monkeypatch.setattr(runner_mod, "evaluate_adapter_threshold", fake_evaluate)
+    sequenced = _sequenced_evaluator(
+        agents={"primary": ["at_threshold"], "backup": ["below"]},
+        default="at_threshold",
+    )
+    monkeypatch.setattr(runner_mod, "evaluate_adapter_threshold", sequenced)
 
     async def fake_spawn(*args, **kwargs):
         return {
@@ -1001,7 +1038,7 @@ async def test_hermetic_preemptive_isolation_poisons_unmocked_live_reader(
     job = result["job"]
     assert job["status"] == "done"
     assert job["agent"] == "backup"
-    assert any(row["agent"] == "primary" for row in job.get("usageSkips") or [])
+    assert not (job.get("usageSkips") or [])
 
     # 2. Verify select_agent with explicit evaluator respects fake without hitting poison
     decision = select_agent(
@@ -1023,9 +1060,28 @@ async def test_hermetic_preemptive_isolation_poisons_unmocked_live_reader(
         },
         usage_aware=True,
         on_limit="handoff",
-        evaluator=fake_evaluate,
+        evaluator=sequenced,
     )
     assert decision["agent"] == "backup"
+    assert "primary" in decision["unavailableReasons"]
+
+    orchestration.save_policy(orchestration.OrchestrationPolicy(mode="suggest"))
+    try:
+        with pytest.raises(AutoDelegationSuggestion) as exc_info:
+            await run_task(
+                agent="auto",
+                prompt="suggest routing only",
+                required_capabilities=["coding"],
+                cwd=str(fake_repo),
+                worktree=True,
+                on_limit="handoff",
+                memory_mode="off",
+            )
+        suggest = exc_info.value.decision
+        assert suggest["agent"] == "backup"
+        assert "primary" in suggest["unavailableReasons"]
+    finally:
+        orchestration.save_policy(orchestration.OrchestrationPolicy(mode="auto"))
 
     # 3. Verify that calling the un-faked live reader with credentials triggers the poison guard
     fake_codex_home = tmp_path / "poison-codex-home"

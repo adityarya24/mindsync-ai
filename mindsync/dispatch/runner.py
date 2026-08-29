@@ -690,8 +690,9 @@ async def run_task(
                 required_capabilities=required_capabilities,
                 exclude_agents=exclusions,
                 usage_config=usage_config,
-                usage_aware=False,
+                usage_aware=True,
                 on_limit=on_limit,
+                evaluator=evaluate_adapter_threshold,
             )
             if policy.mode == "suggest":
                 raise AutoDelegationSuggestion(routing)
