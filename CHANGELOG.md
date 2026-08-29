@@ -16,6 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outbox retry on drain/restart, first-failure stop plus a bounded drain budget,
   idempotent `event_id` delivery, and no effect on job status (#52).
 
+### Changed
+
+- **Breaking (#53):** MCP tools that shared a subject are bundled. Fresh
+  orchestrator processes advertise **16** tools; `MINDSYNC_WORKER=1` advertises
+  **12**. Old names (`job_status`, `job_wait`, `job_result`, `job_review`,
+  `job_cancel`, `publish_event`, `poll_events`, `subscribe_events`,
+  `session_start`, `memory_checkpoint`, `session_end`,
+  `memory_consolidate_preview`, `memory_consolidation_apply`,
+  `memory_consolidation_undo`, `memory_consolidation_list`, `list_agents`,
+  `list_models`, `list_roles`) are not registered. There are no aliases.
+  Stale MCP clients must reconnect and call `job`, `events`, `session`,
+  `memory_consolidation`, and `list` (`kind=agents|models|roles`). Each action
+  rejects fields that belong to a different action. Worker gating and the
+  runtime recursive-delegation refusal are unchanged. Python helpers keep the
+  old function names for in-process tests.
+
 ## [1.7.0] - 2026-08-29
 
 ### Added
