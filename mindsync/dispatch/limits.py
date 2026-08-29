@@ -1,4 +1,8 @@
-"""Narrow reactive quota classification and provider-account cooldowns."""
+"""Narrow reactive quota classification and provider-account cooldowns.
+
+When a provider CLI does not expose an authoritative reset timestamp, adapters fall
+back to ``quotaCooldownSeconds`` as an operator-set estimate — not provider truth.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +15,12 @@ from typing import Any
 from mindsync.config import dispatch_home
 from mindsync.dispatch.adapters import AdapterConfig
 from mindsync.storage import atomic_private_write, file_lock
+
+_MAX_STDERR_TAIL = 16_000
+_MAX_RESET_HORIZON = timedelta(days=7)
+_CLAUDE_RESET_LINE = re.compile(
+    r"(?im)^Claude AI usage limit reached\|([0-9]{9,13})\s*$"
+)
 
 
 def _cooldown_path() -> Path:
@@ -69,6 +79,51 @@ def classify_quota_exhaustion(
                 "pattern": pattern,
             }
     return None
+
+
+def extract_reactive_reset_at(
+    adapter: AdapterConfig, *, stderr: str = ""
+) -> datetime | None:
+    """Parse an authoritative provider reset timestamp from bounded stderr only."""
+    if not adapter.quotaErrorPatterns:
+        return None
+    text = stderr[-_MAX_STDERR_TAIL:]
+    if not text.strip():
+        return None
+
+    for pattern in adapter.quotaErrorPatterns:
+        if not re.search(pattern, text):
+            continue
+        reset_at = _parse_allowlisted_reset(text, pattern)
+        if reset_at is not None:
+            return reset_at
+    return None
+
+
+def _parse_allowlisted_reset(text: str, matched_pattern: str) -> datetime | None:
+    if matched_pattern == r"(?im)^Claude AI usage limit reached\|[0-9]{9,13}\s*$":
+        match = _CLAUDE_RESET_LINE.search(text)
+        if match is None:
+            return None
+        try:
+            timestamp = int(match.group(1))
+        except ValueError:
+            return None
+        return _validate_future_reset(datetime.fromtimestamp(timestamp, tz=timezone.utc))
+    return None
+
+
+def _validate_future_reset(value: datetime) -> datetime | None:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    now = datetime.now(timezone.utc)
+    if value <= now:
+        return None
+    if value - now > _MAX_RESET_HORIZON:
+        return None
+    return value
 
 
 def list_cooldowns() -> list[dict[str, str]]:

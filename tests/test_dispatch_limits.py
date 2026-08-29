@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from mindsync.dispatch.cli import fmt_job, parse_run_args
 from mindsync.dispatch.limits import (
     classify_quota_exhaustion,
     clear_cooldowns,
+    extract_reactive_reset_at,
     list_cooldowns,
     mark_cooling,
 )
@@ -116,6 +118,40 @@ def test_claude_captured_usage_message_matches_narrow_signature():
     )
     assert classify_quota_exhaustion(
         adapter, stderr="Claude AI rate limit reached|1787949999"
+    ) is None
+
+
+def test_claude_reactive_reset_parses_future_epoch_from_stderr():
+    adapter = AdapterConfig(
+        name="claude",
+        bin="claude",
+        quotaErrorPatterns=[r"(?im)^Claude AI usage limit reached\|[0-9]{9,13}\s*$"],
+    )
+    future = int((datetime.now(timezone.utc) + timedelta(hours=2)).timestamp())
+    reset_at = extract_reactive_reset_at(
+        adapter, stderr=f"Claude AI usage limit reached|{future}"
+    )
+
+    assert reset_at is not None
+    assert reset_at == datetime.fromtimestamp(future, tz=timezone.utc)
+
+
+def test_reactive_reset_rejects_past_malformed_and_stdout_only_values():
+    adapter = AdapterConfig(
+        name="claude",
+        bin="claude",
+        quotaErrorPatterns=[r"(?im)^Claude AI usage limit reached\|[0-9]{9,13}\s*$"],
+    )
+    past = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp())
+    assert extract_reactive_reset_at(adapter, stderr=f"Claude AI usage limit reached|{past}") is None
+    assert extract_reactive_reset_at(adapter, stderr="Claude AI usage limit reached|not-a-ts") is None
+    assert extract_reactive_reset_at(
+        adapter,
+        stderr="",
+    ) is None
+    far_future = int((datetime.now(timezone.utc) + timedelta(days=30)).timestamp())
+    assert extract_reactive_reset_at(
+        adapter, stderr=f"Claude AI usage limit reached|{far_future}"
     ) is None
 
 

@@ -1116,7 +1116,12 @@ async def supervise_job(
                 break
             continue
 
-        from mindsync.dispatch.limits import classify_quota_exhaustion, mark_cooling
+        from mindsync.dispatch.limits import (
+            classify_quota_exhaustion,
+            extract_reactive_reset_at,
+            mark_cooling,
+            mark_cooling_until,
+        )
 
         quota = classify_quota_exhaustion(
             adapter, stdout=result["stdout"], stderr=result["stderr"]
@@ -1132,7 +1137,17 @@ async def supervise_job(
             return current
         quota_failure = dict(quota)
         if current.get("onLimit") == "handoff":
-            cooling = mark_cooling(adapter)
+            reset_at = extract_reactive_reset_at(
+                adapter, stderr=result.get("stderr") or ""
+            )
+            if reset_at is not None:
+                cooling = mark_cooling_until(
+                    adapter,
+                    reset_at,
+                    reason="provider quota exhausted",
+                )
+            else:
+                cooling = mark_cooling(adapter)
             quota_failure["cooldownUntil"] = cooling["until"]
         current = store.update_job(
             job_id,
