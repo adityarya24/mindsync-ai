@@ -931,3 +931,112 @@ async def test_usage_poll_runs_in_thread_and_handles_cancellation(
 
     job = result["job"]
     assert job["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_hermetic_preemptive_isolation_poisons_unmocked_live_reader(
+    fake_repo: Path, tmp_path: Path, monkeypatch
+):
+    """Regression: Poison live network and ~/.codex access; verify hermetic preflight & routing."""
+    from mindsync.dispatch.usage.readers.codex import CodexOAuthUsageReader
+
+    # Poison live network HTTP access
+    def poisoned_http(*args, **kwargs):
+        raise AssertionError("PoisonedLiveReader: Live HTTP GET invoked during hermetic test!")
+
+    monkeypatch.setattr(CodexOAuthUsageReader, "_http_get_json", poisoned_http)
+
+    # Poison unisolated host ~/.codex resolution
+    orig_resolve = CodexOAuthUsageReader._resolve_codex_dir
+
+    def guarded_resolve_codex_dir(self) -> Path:
+        resolved = orig_resolve(self)
+        if resolved == Path.home() / ".codex":
+            raise AssertionError(
+                f"PoisonedLiveReader: Host ~/.codex directory accessed! Expected isolated dir, got {resolved}"
+            )
+        return resolved
+
+    monkeypatch.setattr(
+        CodexOAuthUsageReader, "_resolve_codex_dir", guarded_resolve_codex_dir
+    )
+
+    _write_usage_agents(tmp_path, monkeypatch)
+
+    # 1. Verify injected evaluator seam works end-to-end without touching live reader
+    def fake_evaluate(adapter, **kwargs):
+        scope = adapter.quotaScope or f"agent:{adapter.name}"
+        if adapter.name == "primary":
+            return evaluate_adapter_threshold(
+                adapter, result=_at_threshold_result(adapter.name, scope)
+            )
+        return evaluate_adapter_threshold(
+            adapter, result=_below_threshold_result(adapter.name, scope)
+        )
+
+    monkeypatch.setattr(runner_mod, "evaluate_adapter_threshold", fake_evaluate)
+
+    async def fake_spawn(*args, **kwargs):
+        return {
+            "stdout": "hermetic pass",
+            "stderr": "",
+            "exitCode": 0,
+            "timedOut": False,
+            "processTreeDead": True,
+            "preemptiveThreshold": False,
+        }
+
+    monkeypatch.setattr(runner_mod, "spawn_foreground", fake_spawn)
+
+    result = await run_task(
+        agent="auto",
+        prompt="implement with poison guard active",
+        required_capabilities=["coding"],
+        cwd=str(fake_repo),
+        worktree=True,
+        on_limit="handoff",
+        memory_mode="off",
+    )
+
+    job = result["job"]
+    assert job["status"] == "done"
+    assert job["agent"] == "backup"
+    assert any(row["agent"] == "primary" for row in job.get("usageSkips") or [])
+
+    # 2. Verify select_agent with explicit evaluator respects fake without hitting poison
+    decision = select_agent(
+        "implement",
+        required_capabilities=["coding"],
+        adapters={
+            "primary": AdapterConfig(
+                name="primary",
+                bin=sys.executable,
+                capabilities=["coding"],
+                usageReader="codex-oauth",
+            ),
+            "backup": AdapterConfig(
+                name="backup",
+                bin=sys.executable,
+                capabilities=["coding"],
+                usageReader="codex-oauth",
+            ),
+        },
+        usage_aware=True,
+        on_limit="handoff",
+        evaluator=fake_evaluate,
+    )
+    assert decision["agent"] == "backup"
+
+    # 3. Verify that calling the un-faked live reader with credentials triggers the poison guard
+    fake_codex_home = tmp_path / "poison-codex-home"
+    fake_codex_home.mkdir()
+    (fake_codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "valid-token"}}), encoding="utf-8"
+    )
+    reader_with_auth = CodexOAuthUsageReader(codex_home=fake_codex_home)
+    with pytest.raises(AssertionError, match="PoisonedLiveReader: Live HTTP GET invoked"):
+        reader_with_auth._fetch_usage(
+            base_url="https://chatgpt.com/backend-api",
+            access_token="valid-token",
+            account_id=None,
+        )

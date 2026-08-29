@@ -465,6 +465,7 @@ def _ensure_spawnable_agent(
                 usage_config=usage_config,
                 usage_aware=True,
                 on_limit=meta.get("onLimit"),
+                evaluator=evaluate_adapter_threshold,
             )
         except (RuntimeError, ValueError) as exc:
             failure_patch = {
@@ -534,6 +535,7 @@ def _transfer_to_successor(
             usage_config=usage_config,
             usage_aware=True,
             on_limit=meta.get("onLimit"),
+            evaluator=evaluate_adapter_threshold,
         )
     except (RuntimeError, ValueError) as exc:
         store.update_job(
@@ -688,7 +690,7 @@ async def run_task(
                 required_capabilities=required_capabilities,
                 exclude_agents=exclusions,
                 usage_config=usage_config,
-                usage_aware=True,
+                usage_aware=False,
                 on_limit=on_limit,
             )
             if policy.mode == "suggest":
