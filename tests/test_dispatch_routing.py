@@ -20,9 +20,13 @@ from mindsync.server import delegate_task, list_agents, route_task
 
 def _configure_agents(tmp_path: Path, monkeypatch) -> None:
     dispatch_home = tmp_path / "dispatch-home"
-    dispatch_home.mkdir()
+    dispatch_home.mkdir(exist_ok=True)
     monkeypatch.setenv("AGENT_DISPATCH_HOME", str(dispatch_home))
     monkeypatch.setenv("MINDSYNC_HOME", str(tmp_path / "mindsync-home"))
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(exist_ok=True)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.delenv("MINDSYNC_WORKER", raising=False)
     config_mod.settings = config_mod.Settings()
     storage.settings = config_mod.settings
     config_mod.settings.ensure_dirs()

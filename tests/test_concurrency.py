@@ -1,6 +1,10 @@
+import json
+import os
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 import mindsync.config as config_mod
 import mindsync.storage as storage
@@ -35,6 +39,66 @@ def test_concurrent_enqueue(tmp_path, monkeypatch):
 
     facts = storage.read_queue()
     assert len(facts) == 50
+
+
+def test_concurrent_enqueue_stress_high_contention(tmp_path, monkeypatch):
+    """50 same-process writers must all persist under the queue lock deadline."""
+    settings = _isolate(tmp_path, monkeypatch)
+    errors: list[BaseException] = []
+
+    def worker(i: int):
+        try:
+            storage.enqueue_fact({"entity": "a", "attribute": "b", "text": f"stress-{i}"})
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    facts = storage.read_queue()
+    assert not errors, f"unexpected enqueue failures: {errors[:3]}"
+    assert len(facts) == 50
+    raw = settings.offline_queue_file.read_text(encoding="utf-8")
+    for line in raw.strip().splitlines():
+        json.loads(line)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows msvcrt thread contention path")
+def test_concurrent_enqueue_bounded_timeout_on_insufficient_deadline(tmp_path, monkeypatch):
+    """When the queue deadline is too short, failures surface as TimeoutError."""
+    settings = _isolate(tmp_path, monkeypatch)
+    settings.queue_lock_timeout_seconds = 0.3
+    successes = 0
+    errors: list[TimeoutError] = []
+    lock = threading.Lock()
+
+    def worker(i: int):
+        nonlocal successes
+        try:
+            storage.enqueue_fact({"entity": "a", "attribute": "b", "text": f"bound-{i}"})
+        except TimeoutError as exc:
+            with lock:
+                errors.append(exc)
+            return
+        with lock:
+            successes += 1
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(50)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors, "expected some writers to hit the bounded queue lock deadline"
+    assert successes + len(errors) == 50
+    facts = storage.read_queue()
+    assert len(facts) == successes
+    raw = settings.offline_queue_file.read_text(encoding="utf-8")
+    for line in raw.strip().splitlines():
+        json.loads(line)
 
 
 def test_concurrent_claim(tmp_path, monkeypatch):

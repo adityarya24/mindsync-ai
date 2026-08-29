@@ -1,5 +1,7 @@
 from mindsync.config import Settings
 
+import pytest
+
 
 _MINDSYNC_ENV = (
     "MINDSYNC_HOME",
@@ -13,6 +15,9 @@ _MINDSYNC_ENV = (
     "MINDSYNC_MEMORY_EMBEDDING_MODEL",
     "MINDSYNC_MEMORY_CONSOLIDATION_MODEL",
     "MINDSYNC_MEMORY_MODEL_TIMEOUT",
+    "MINDSYNC_QUEUE_LOCK_TIMEOUT",
+    "MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE",
+    "MINDSYNC_LOCK_CONTENTION_BACKOFF_MAX",
 )
 
 
@@ -73,3 +78,23 @@ def test_memory_model_timeout_names_invalid_numeric_setting(monkeypatch):
         assert str(exc) == "MINDSYNC_MEMORY_MODEL_TIMEOUT must be a number"
     else:  # pragma: no cover
         raise AssertionError("non-numeric timeout should be rejected")
+
+
+@pytest.mark.parametrize(
+    ("env_name", "value"),
+    [
+        ("MINDSYNC_QUEUE_LOCK_TIMEOUT", "0"),
+        ("MINDSYNC_QUEUE_LOCK_TIMEOUT", "-1"),
+        ("MINDSYNC_QUEUE_LOCK_TIMEOUT", "nan"),
+        ("MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE", "0"),
+        ("MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE", "-0.01"),
+        ("MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE", "inf"),
+        ("MINDSYNC_LOCK_CONTENTION_BACKOFF_MAX", "0"),
+        ("MINDSYNC_LOCK_CONTENTION_BACKOFF_MAX", "not-a-number"),
+    ],
+)
+def test_lock_contention_settings_reject_invalid_values(monkeypatch, env_name, value):
+    _clear_mindsync_env(monkeypatch)
+    monkeypatch.setenv(env_name, value)
+    with pytest.raises(ValueError, match=env_name):
+        Settings()

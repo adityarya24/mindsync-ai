@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any, Iterable
 
 from mindsync.dispatch.adapters import AdapterConfig, load_adapters
@@ -10,6 +11,7 @@ from mindsync.dispatch.limits import cooldown_reason
 from mindsync.dispatch.proc import resolve_bin
 from mindsync.dispatch.usage.config import UsageConfig, load_usage_config
 from mindsync.dispatch.usage.preemptive import preflight_skip_reason, preemptive_usage_active
+from mindsync.dispatch.usage.types import ThresholdEvaluation
 
 
 KNOWN_CAPABILITIES = frozenset({
@@ -101,6 +103,7 @@ def select_agent(
     usage_config: UsageConfig | None = None,
     usage_aware: bool = False,
     on_limit: str | None = None,
+    evaluator: Callable[..., ThresholdEvaluation] | None = None,
 ) -> dict[str, Any]:
     """Choose the best installed agent and return an explainable ranked decision."""
     required = normalize_capabilities(required_capabilities) or infer_capabilities(prompt)
@@ -122,7 +125,11 @@ def select_agent(
             unavailable_reasons[adapter.name] = cooling
             continue
         if usage_filter:
-            skip = preflight_skip_reason(adapter, usage_config=config)
+            skip = preflight_skip_reason(
+                adapter,
+                usage_config=config,
+                evaluator=evaluator,
+            )
             if skip:
                 unavailable.append(adapter.name)
                 unavailable_reasons[adapter.name] = skip

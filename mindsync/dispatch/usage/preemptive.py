@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from mindsync.dispatch.adapters import AdapterConfig
@@ -60,13 +61,15 @@ def preflight_skip_reason(
     usage_config: UsageConfig | None = None,
     evaluation: ThresholdEvaluation | None = None,
     result: UsageReadResult | None = None,
+    evaluator: Callable[..., ThresholdEvaluation] | None = None,
 ) -> str | None:
     """Return a visible skip reason when an agent must not start yet."""
     cooling = cooldown_reason(adapter)
     if cooling:
         return cooling
     if evaluation is None:
-        evaluation = evaluate_adapter_threshold(
+        evaluate_fn = evaluator or evaluate_adapter_threshold
+        evaluation = evaluate_fn(
             adapter,
             usage_config=usage_config,
             result=result,
