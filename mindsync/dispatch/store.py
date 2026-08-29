@@ -255,8 +255,15 @@ def claim_worktree_lease(
         if existing.get("status") != "running":
             return existing
         if existing.get("worktreePath"):
-            lease = existing.get("worktreeLease") or {}
-            if lease.get("agent") != agent or lease.get("state") != "owned":
+            lease = existing.get("worktreeLease")
+            job_agent = existing.get("agent")
+            if not isinstance(lease, dict) or not lease:
+                # A worktree can exist before the first lease record is written
+                # (fresh jobs, or older jobs that predate lease tracking).
+                if attempt != 1 or agent != job_agent:
+                    raise RuntimeError("worktree lease is not available for this attempt")
+                lease = {"attempt": attempt, "agent": agent, "state": "owned"}
+            elif lease.get("agent") != agent or lease.get("state") != "owned":
                 raise RuntimeError("worktree lease is not available for this attempt")
             lease = {**lease, "attempt": attempt, "state": "running"}
         else:

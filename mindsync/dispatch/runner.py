@@ -484,7 +484,7 @@ async def run_task(
             "worktreePath": wt_info["path"],
             "branch": wt_info["branch"],
             "baseCommit": wt_info["baseCommit"],
-            "worktreeLease": {"attempt": 1, "agent": eff_agent, "state": "owned"},
+            "worktreeLease": {"attempt": 1, "agent": adapter.name, "state": "owned"},
         })
     else:
         # Every job needs a base, not just isolated ones: the review gate diffs the

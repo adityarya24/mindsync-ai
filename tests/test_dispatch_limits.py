@@ -20,6 +20,7 @@ from mindsync.dispatch.limits import (
     mark_cooling,
 )
 from mindsync.dispatch.routing import select_agent
+from mindsync.dispatch import store
 from mindsync.dispatch.runner import run_task
 from mindsync.dispatch.runner import _reactive_handoff_prompt
 from tests.test_dispatch import _isolate_dispatch
@@ -173,6 +174,82 @@ def test_cooldown_applies_to_every_entry_for_one_provider_account(tmp_path, monk
         )
     assert clear_cooldowns("provider:shared") == 1
     assert list_cooldowns() == []
+
+
+def test_claim_bootstraps_missing_lease_on_first_worktree_attempt(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    meta = store.create_job(agent="primary", prompt="x", cwd=str(tmp_path))
+    store.update_job(
+        meta["id"],
+        {
+            "status": "running",
+            "worktreePath": str(tmp_path / "wt"),
+        },
+    )
+
+    claimed = store.claim_worktree_lease(
+        meta["id"],
+        agent="primary",
+        attempt=1,
+        attempts=[{"number": 1, "agent": "primary", "status": "running"}],
+    )
+
+    assert claimed["worktreeLease"] == {
+        "attempt": 1,
+        "agent": "primary",
+        "state": "running",
+    }
+
+
+def test_claim_rejects_conflicting_worktree_owner(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
+    meta = store.create_job(agent="primary", prompt="x", cwd=str(tmp_path))
+    store.update_job(
+        meta["id"],
+        {
+            "status": "running",
+            "worktreePath": str(tmp_path / "wt"),
+            "worktreeLease": {"attempt": 1, "agent": "primary", "state": "owned"},
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="worktree lease is not available"):
+        store.claim_worktree_lease(
+            meta["id"],
+            agent="backup",
+            attempt=1,
+            attempts=[{"number": 1, "agent": "backup", "status": "running"}],
+        )
+
+
+@pytest.mark.asyncio
+async def test_supervise_claims_worktree_lease_before_first_spawn(
+    fake_repo: Path, tmp_path: Path, monkeypatch
+):
+    _write_agents(tmp_path, monkeypatch)
+
+    async def fake_spawn(*args, **kwargs):
+        job = store.list_jobs()[0]
+        assert job["worktreeLease"]["state"] == "running"
+        return {
+            "stdout": "ok",
+            "stderr": "",
+            "exitCode": 0,
+            "timedOut": False,
+            "processTreeDead": True,
+        }
+
+    monkeypatch.setattr(runner_mod, "spawn_foreground", fake_spawn)
+    result = await run_task(
+        agent="primary",
+        prompt="implement",
+        cwd=str(fake_repo),
+        worktree=True,
+        memory_mode="off",
+    )
+
+    assert result["job"]["status"] == "done"
+    assert result["job"]["worktreeLease"]["state"] == "released"
 
 
 @pytest.mark.asyncio
