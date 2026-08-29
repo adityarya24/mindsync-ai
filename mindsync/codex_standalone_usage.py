@@ -17,6 +17,7 @@ from mindsync.dispatch.usage.types import ThresholdEvaluation, UsageReadResult, 
 _CACHE_NAME = "codex-standalone-usage-cache.json"
 _WARNINGS_NAME = "codex-standalone-usage-warnings.json"
 _MAX_CACHE_AGE_SECONDS = 600.0
+_MAX_PREFETCH_SECONDS = 0.8
 
 
 def _cache_path() -> Path:
@@ -123,21 +124,29 @@ def read_cache(*, max_age_seconds: float = _MAX_CACHE_AGE_SECONDS) -> UsageReadR
     return _deserialize_result(raw)
 
 
+def _bounded_prefetch_seconds(timeout_seconds: float) -> float:
+    if timeout_seconds <= 0:
+        return 0.0
+    return max(0.05, min(timeout_seconds, _MAX_PREFETCH_SECONDS))
+
+
 def prefetch_usage(*, timeout_seconds: float) -> None:
     """Best-effort usage refresh with a strict deadline; never raises."""
-    if timeout_seconds <= 0:
+    bounded = _bounded_prefetch_seconds(timeout_seconds)
+    if bounded <= 0:
         return
-    reader = CodexOAuthUsageReader()
-
-    def _read() -> UsageReadResult:
-        return reader.read()
-
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(_read)
-        try:
-            result = future.result(timeout=timeout_seconds)
-        except (FuturesTimeoutError, OSError):
-            return
+    reader = CodexOAuthUsageReader(request_timeout_seconds=bounded)
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="codex-usage-prefetch")
+    future = pool.submit(reader.read)
+    try:
+        result = future.result(timeout=bounded)
+    except FuturesTimeoutError:
+        pool.shutdown(wait=False, cancel_futures=True)
+        return
+    except Exception:
+        pool.shutdown(wait=False, cancel_futures=True)
+        return
+    pool.shutdown(wait=False, cancel_futures=True)
     if isinstance(result, UsageReadResult) and result.status == "available":
         write_cache(result)
 
@@ -188,10 +197,10 @@ def maybe_append_reserve_warning(
     memory_mode: str,
     timeout_seconds: float,
 ) -> None:
-    """Append one deduplicated reserve warning using cached usage only."""
-    del timeout_seconds  # Stop must not block on network; cache is read-only here.
+    """Refresh usage when budget allows, then append one deduplicated warning."""
     if not usage_checks_enabled(memory_mode=memory_mode):
         return
+    prefetch_usage(timeout_seconds=timeout_seconds)
     cached = read_cache()
     if cached is None:
         return

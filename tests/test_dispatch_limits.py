@@ -111,7 +111,7 @@ def test_claude_captured_usage_message_matches_narrow_signature():
     adapter = AdapterConfig(
         name="claude",
         bin="claude",
-        quotaErrorPatterns=[r"(?im)^Claude AI usage limit reached\|[0-9]{9,13}\s*$"],
+        quotaErrorPatterns=[r"(?im)^Claude AI usage limit reached\|[0-9]{10}\s*$"],
     )
     assert classify_quota_exhaustion(
         adapter, stderr="Claude AI usage limit reached|1787949999"
@@ -125,7 +125,7 @@ def test_claude_reactive_reset_parses_future_epoch_from_stderr():
     adapter = AdapterConfig(
         name="claude",
         bin="claude",
-        quotaErrorPatterns=[r"(?im)^Claude AI usage limit reached\|[0-9]{9,13}\s*$"],
+        quotaErrorPatterns=[r"(?im)^Claude AI usage limit reached\|[0-9]{10}\s*$"],
     )
     future = int((datetime.now(timezone.utc) + timedelta(hours=2)).timestamp())
     reset_at = extract_reactive_reset_at(
@@ -140,7 +140,7 @@ def test_reactive_reset_rejects_past_malformed_and_stdout_only_values():
     adapter = AdapterConfig(
         name="claude",
         bin="claude",
-        quotaErrorPatterns=[r"(?im)^Claude AI usage limit reached\|[0-9]{9,13}\s*$"],
+        quotaErrorPatterns=[r"(?im)^Claude AI usage limit reached\|[0-9]{10}\s*$"],
     )
     past = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp())
     assert extract_reactive_reset_at(adapter, stderr=f"Claude AI usage limit reached|{past}") is None
@@ -153,6 +153,19 @@ def test_reactive_reset_rejects_past_malformed_and_stdout_only_values():
     assert extract_reactive_reset_at(
         adapter, stderr=f"Claude AI usage limit reached|{far_future}"
     ) is None
+
+
+def test_reactive_reset_rejects_millisecond_shaped_values_without_crashing():
+    adapter = AdapterConfig(
+        name="claude",
+        bin="claude",
+        quotaErrorPatterns=[r"(?im)^Claude AI usage limit reached\|[0-9]{10}\s*$"],
+    )
+    milliseconds = int((datetime.now(timezone.utc) + timedelta(hours=2)).timestamp() * 1000)
+    stderr = f"Claude AI usage limit reached|{milliseconds}"
+
+    assert classify_quota_exhaustion(adapter, stderr=stderr) is None
+    assert extract_reactive_reset_at(adapter, stderr=stderr) is None
 
 
 def test_successor_prompt_uses_public_task_not_injected_agent_prompt(monkeypatch):

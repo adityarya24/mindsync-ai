@@ -877,6 +877,10 @@ def test_stop_emits_one_bounded_reserve_warning_from_cache(
             ],
         )
     )
+    monkeypatch.setattr(
+        "mindsync.codex_standalone_usage.prefetch_usage",
+        lambda **kwargs: None,
+    )
 
     code, out, err = run_hook(monkeypatch, capsys, payload_for("Stop"))
 
@@ -915,4 +919,62 @@ def test_stop_skips_usage_warning_when_feature_disabled(
 
     assert code == 0
     assert "Codex seat nearing limit" not in err
+
+
+def test_stop_refreshes_stale_cache_before_warning(
+    monkeypatch, capsys, lifecycle, tmp_path
+):
+    from datetime import datetime, timedelta, timezone
+
+    from mindsync.codex_standalone_usage import _cache_path
+    from mindsync.dispatch.adapters import user_config_path
+    from mindsync.dispatch.usage.readers.codex import CodexOAuthUsageReader
+    from mindsync.dispatch.usage.types import UsageReadResult, UsageWindow
+    from tests.isolation_helpers import isolate_mindsync_home
+
+    isolate_mindsync_home(tmp_path, monkeypatch, dispatch_home=True)
+    user_config_path().parent.mkdir(parents=True, exist_ok=True)
+    user_config_path().write_text(
+        json.dumps({"usage": {"enabled": True, "defaultThresholdPercent": 90}}),
+        encoding="utf-8",
+    )
+    stale = datetime.now(timezone.utc) - timedelta(minutes=20)
+    _cache_path().write_text(
+        json.dumps(
+            {
+                "fetched_at": stale.isoformat(),
+                "status": "available",
+                "provider": "codex",
+                "account_scope": "openai:test",
+                "reader": "codex-oauth",
+                "source": "test",
+                "windows": [
+                    {
+                        "id": "primary",
+                        "label": "Primary",
+                        "used_percent": 40.0,
+                        "reset_at": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fresh_read(self):
+        return UsageReadResult.available(
+            provider="codex",
+            account_scope="openai:test",
+            reader="codex-oauth",
+            source="test",
+            windows=[UsageWindow(id="primary", label="Primary", used_percent=96.0)],
+        )
+
+    monkeypatch.setattr(CodexOAuthUsageReader, "read", fresh_read)
+    code, out, err = run_hook(monkeypatch, capsys, payload_for("Stop"))
+
+    assert code == 0
+    assert json.loads(out) == {"continue": True}
+    assert "Codex seat nearing limit" in err
+    assert len(lifecycle.named("checkpoint")) == 1
 

@@ -18,8 +18,9 @@ from mindsync.storage import atomic_private_write, file_lock
 
 _MAX_STDERR_TAIL = 16_000
 _MAX_RESET_HORIZON = timedelta(days=7)
+_CLAUDE_RESET_PATTERN = r"(?im)^Claude AI usage limit reached\|[0-9]{10}\s*$"
 _CLAUDE_RESET_LINE = re.compile(
-    r"(?im)^Claude AI usage limit reached\|([0-9]{9,13})\s*$"
+    r"(?im)^Claude AI usage limit reached\|([0-9]{10})\s*$"
 )
 
 
@@ -100,17 +101,30 @@ def extract_reactive_reset_at(
     return None
 
 
+def _parse_claude_epoch_seconds(raw: str) -> int | None:
+    if len(raw) != 10 or not raw.isdigit():
+        return None
+    timestamp = int(raw)
+    # Reject millisecond-shaped values and other non-second epochs early.
+    if timestamp < 1_000_000_000 or timestamp >= 10_000_000_000:
+        return None
+    return timestamp
+
+
 def _parse_allowlisted_reset(text: str, matched_pattern: str) -> datetime | None:
-    if matched_pattern == r"(?im)^Claude AI usage limit reached\|[0-9]{9,13}\s*$":
-        match = _CLAUDE_RESET_LINE.search(text)
-        if match is None:
-            return None
-        try:
-            timestamp = int(match.group(1))
-        except ValueError:
-            return None
-        return _validate_future_reset(datetime.fromtimestamp(timestamp, tz=timezone.utc))
-    return None
+    if matched_pattern != _CLAUDE_RESET_PATTERN:
+        return None
+    match = _CLAUDE_RESET_LINE.search(text)
+    if match is None:
+        return None
+    timestamp = _parse_claude_epoch_seconds(match.group(1))
+    if timestamp is None:
+        return None
+    try:
+        reset_at = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+    return _validate_future_reset(reset_at)
 
 
 def _validate_future_reset(value: datetime) -> datetime | None:
