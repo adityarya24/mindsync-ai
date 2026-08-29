@@ -528,7 +528,6 @@ async def test_cancel_during_poll_does_not_transfer(
                 worktree=True,
                 on_limit="handoff",
                 memory_mode="off",
-                background=True,
             )
         )
         await asyncio.sleep(0.01)

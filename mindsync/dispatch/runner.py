@@ -799,11 +799,6 @@ async def run_task(
         meta = store.get_job(meta["id"]) or meta
 
     if background:
-        # Under pytest, supervise inline so spawn/poll hooks apply to the test process.
-        if os.environ.get("PYTEST_CURRENT_TEST"):
-            done = await supervise_job(meta["id"], publisher_agent=publisher_agent)
-            return {"job": done, "result": job_result(meta["id"])["result"]}
-
         paths = store.job_paths(meta["id"])
         # Re-enter via CLI supervise so the MCP server process is not blocked.
         py = sys.executable
