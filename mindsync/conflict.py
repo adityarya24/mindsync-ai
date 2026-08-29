@@ -115,3 +115,27 @@ def detect_focus_conflicts(
         )
 
     return warnings
+
+
+def list_active_agents(
+    agents_focus: dict[str, Any],
+    *,
+    stale_seconds: int = 7200,
+    now: datetime | None = None,
+) -> list[str]:
+    """Return agent names whose focus entries are fresh enough to count as active."""
+    now = now or datetime.now(timezone.utc)
+    active: list[str] = []
+    for agent_name, entry in agents_focus.items():
+        if not isinstance(entry, dict):
+            continue
+        ts = _parse_ts(entry.get("timestamp"))
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        age = (now - ts).total_seconds()
+        if age < 0 or age > stale_seconds:
+            continue
+        active.append(agent_name)
+    return sorted(active)

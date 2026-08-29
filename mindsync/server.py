@@ -38,7 +38,7 @@ from mindsync.bus import (
     subscribe as bus_subscribe,
 )
 from mindsync.config import settings
-from mindsync.conflict import detect_focus_conflicts
+from mindsync.conflict import detect_focus_conflicts, list_active_agents
 from mindsync.dispatch import store as dispatch_store
 from mindsync.dispatch.memory_lifecycle import DEFAULT_MEMORY_MODE
 from mindsync.dispatch.review import format_review as dispatch_format_review
@@ -85,6 +85,21 @@ mcp = FastMCP("MindSync", instructions=server_instructions())
 # FastMCP falls back to the `mcp` SDK's package version for serverInfo.version
 # unless we override it explicitly; report MindSync's own version instead.
 mcp._mcp_server.version = __version__
+
+
+def _register_mcp_tool(*args, **kwargs):
+    """Register a tool for orchestrator MCP processes only.
+
+    Worker subprocesses keep the underlying functions importable for tests while
+    exposing a reduced MCP surface.
+    """
+
+    def decorator(fn):
+        if is_worker_process():
+            return fn
+        return mcp.tool(*args, **kwargs)(fn)
+
+    return decorator
 
 
 def _utc_now() -> str:
@@ -650,7 +665,7 @@ def _fmt_dispatch_job(m: dict[str, Any]) -> str:
     )
 
 
-@mcp.tool()
+@_register_mcp_tool()
 async def delegate_task(
     agent: str | None = None,
     prompt: str = "",
@@ -755,7 +770,7 @@ async def delegate_task(
     return f"{route_line}{warning_line}{wt_info}{res.get('result') or '(no output)'}"
 
 
-@mcp.tool()
+@_register_mcp_tool()
 def route_task(
     prompt: str,
     required_capabilities: list[str] | None = None,
@@ -780,7 +795,7 @@ def route_task(
     return decision
 
 
-@mcp.tool()
+@_register_mcp_tool()
 def get_orchestration_policy(
     agent_name: str = "default_agent",
     ctx: Context | None = None,
@@ -794,7 +809,7 @@ def get_orchestration_policy(
     return snapshot
 
 
-@mcp.tool()
+@_register_mcp_tool()
 def list_agents(agent_name: str = "default_agent") -> list[dict[str, Any]]:
     """List dispatch agents with live binary and routable status."""
     from mindsync.dispatch.adapters import load_adapters
@@ -921,7 +936,7 @@ def job_cancel(job_id: str, agent_name: str = "default_agent") -> str:
     return f"Job {meta['id']}: {meta['status']}"
 
 
-@mcp.tool()
+@_register_mcp_tool()
 def list_models(agent: str | None = None, agent_name: str = "default_agent") -> str:
     """List available models for the given agent or all agents. Use this for choosing a model before delegating a task."""
     settings.ensure_dirs()
@@ -945,7 +960,7 @@ def list_models(agent: str | None = None, agent_name: str = "default_agent") -> 
     return "\n".join(out)
 
 
-@mcp.tool()
+@_register_mcp_tool()
 def list_roles(agent_name: str = "default_agent") -> str:
     """List configured roles and their agent, model, and effort mappings.
 
@@ -989,7 +1004,11 @@ def health(agent_name: str = "system") -> dict[str, Any]:
     remote_status = get_remote_status(force=True) if settings.remote_enabled else {"status": "unknown"}
     remote_online = (remote_status.get("status") == "online") if settings.remote_enabled else False
     with locked_state() as state:
-        agents = list((state.get("agents_focus") or {}).keys())
+        agents_focus = state.get("agents_focus") or {}
+        agents = list_active_agents(
+            agents_focus,
+            stale_seconds=settings.focus_stale_seconds,
+        )
     return {
         "ok": True,
         "home": str(settings.home),
