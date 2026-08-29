@@ -376,6 +376,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = sub.add_parser("doctor", help="Diagnose policy, CLI registration, workers, and memory")
     doctor_parser.add_argument("--json", action="store_true")
+    doctor_parser.add_argument(
+        "--no-probe",
+        action="store_true",
+        help="Skip probing host CLIs for MCP registration (does not start any CLI; "
+             "MCP columns report 'not probed'). Use on a machine running a bound chat channel.",
+    )
 
     register_parser = sub.add_parser(
         "register",
@@ -406,6 +412,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show whether each roster agent is binary-present, MCP-installed, and routable",
     )
     agents_parser.add_argument("--json", action="store_true")
+    agents_parser.add_argument(
+        "--check-mcp",
+        action="store_true",
+        help="Also probe each host CLI for MindSync MCP registration (starts the CLI; "
+             "may disrupt a running host such as a bound chat channel)",
+    )
 
     config_parser = sub.add_parser("config", help="Read or change orchestration policy")
     config_parser.add_argument("key", nargs="?")
@@ -580,7 +592,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         try:
-            report = doctor()
+            report = doctor(probe_hosts=not getattr(args, "no_probe", False))
         except (OSError, TimeoutError, ValueError) as exc:
             print(f"Doctor failed: {exc}", file=sys.stderr)
             return 1
@@ -614,7 +626,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "agents":
         try:
-            rows = describe_agents()
+            rows = describe_agents(probe_hosts=getattr(args, "check_mcp", False))
         except (OSError, ValueError) as exc:
             print(f"Agents failed: {exc}", file=sys.stderr)
             return 1

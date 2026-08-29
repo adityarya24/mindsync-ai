@@ -229,6 +229,7 @@ def cli_status(
     runner: CommandRunner = _run_command,
     resolver: Resolver = resolve_bin,
     user_home: Path | None = None,
+    probe_hosts: bool = True,
 ) -> dict[str, Any]:
     if cli_name not in CLI_SPECS:
         raise ValueError(f"Unknown CLI '{cli_name}'")
@@ -236,6 +237,17 @@ def cli_status(
     resolved = resolver(spec.bin)
     if not resolved:
         return {"cli": cli_name, "installed": False, "supported": spec.add_style is not None, "configured": False}
+    if not probe_hosts and spec.add_style not in (None, "cursor-json", "opencode-json"):
+        # Reporting registration means running `<cli> mcp list`, which starts the
+        # host CLI (and everything it loads, e.g. a bound chat-channel plugin).
+        # Config-file hosts (cursor/opencode) are read from disk and stay cheap.
+        return {
+            "cli": cli_name,
+            "installed": True,
+            "supported": True,
+            "configured": False,
+            "detail": "not probed",
+        }
     if spec.add_style is None:
         detail = "Installed CLI exposes no supported MCP registration surface."
         if cli_name == "agy":
@@ -711,6 +723,7 @@ def doctor(
     user_home: Path | None = None,
     policy_file: Path | None = None,
     cwd: Path | None = None,
+    probe_hosts: bool = True,
 ) -> dict[str, Any]:
     policy_error = None
     try:
@@ -720,7 +733,10 @@ def doctor(
         policy_error = str(exc)
         policy_data = None
     clis = [
-        cli_status(name, runner=runner, resolver=resolver, user_home=user_home)
+        cli_status(
+            name, runner=runner, resolver=resolver, user_home=user_home,
+            probe_hosts=probe_hosts,
+        )
         for name in CLI_SPECS
     ]
     workers = []

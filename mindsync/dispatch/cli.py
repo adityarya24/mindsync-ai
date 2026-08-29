@@ -291,7 +291,7 @@ async def _async_main(argv: list[str]) -> int:
     if cmd == "agents":
         from mindsync.roster import describe_agents
 
-        rows = describe_agents()
+        rows = describe_agents(probe_hosts=False)
         for row in rows:
             binary = "yes" if row["binary_present"] else "no"
             mcp = "yes" if row["mcp_installed"] else "no"
