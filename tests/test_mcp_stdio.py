@@ -18,7 +18,6 @@ from mcp.client.stdio import get_default_environment, stdio_client
 from mindsync import __version__
 
 EXPECTED_TOOLS = {
-    # Core memory / focus
     "get_sync_context",
     "update_focus",
     "queue_durable_fact",
@@ -53,9 +52,24 @@ EXPECTED_TOOLS = {
 }
 
 
-async def _run_handshake(home: str):
+WORKER_EXCLUDED_TOOLS = frozenset(
+    {
+        "delegate_task",
+        "route_task",
+        "get_orchestration_policy",
+        "list_agents",
+        "list_models",
+        "list_roles",
+    }
+)
+EXPECTED_WORKER_TOOLS = EXPECTED_TOOLS - WORKER_EXCLUDED_TOOLS
+
+
+async def _run_handshake(home: str, *, worker: bool = False):
     env = get_default_environment()
     env["MINDSYNC_HOME"] = home
+    if worker:
+        env["MINDSYNC_WORKER"] = "1"
 
     params = StdioServerParameters(
         command=sys.executable,
@@ -95,3 +109,14 @@ def test_stdio_handshake_lists_all_mindsync_tools(tmp_path):
     assert tool_names == EXPECTED_TOOLS, (
         f"unexpected extra tools exposed: {tool_names - EXPECTED_TOOLS}"
     )
+
+
+def test_stdio_worker_handshake_excludes_orchestrator_tools(tmp_path):
+    _, tools_result = asyncio.run(
+        _run_handshake(str(tmp_path / "worker-home"), worker=True)
+    )
+
+    tool_names = {tool.name for tool in tools_result.tools}
+    assert tool_names == EXPECTED_WORKER_TOOLS
+    assert WORKER_EXCLUDED_TOOLS.isdisjoint(tool_names)
+    assert len(tool_names) == 23

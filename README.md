@@ -148,7 +148,9 @@ mindsync memory recall --project my-repo --query "database decision"
 ```
 
 Nothing is pruned without `--yes`. See MCP tools on the server (`get_sync_context`,
-`delegate_task`, `job_wait`, …) once a host is configured.
+`delegate_task`, `job_wait`, …) once a host is configured. Orchestrator MCP exposes
+29 tools; worker subprocesses started with `MINDSYNC_WORKER=1` expose 23 and omit
+orchestration-only dispatch tools.
 
 ## Optional remote sync
 
