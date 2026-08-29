@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -135,18 +135,28 @@ def prefetch_usage(*, timeout_seconds: float) -> None:
     bounded = _bounded_prefetch_seconds(timeout_seconds)
     if bounded <= 0:
         return
-    reader = CodexOAuthUsageReader(request_timeout_seconds=bounded)
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="codex-usage-prefetch")
-    future = pool.submit(reader.read)
-    try:
-        result = future.result(timeout=bounded)
-    except FuturesTimeoutError:
-        pool.shutdown(wait=False, cancel_futures=True)
+
+    result_box: list[UsageReadResult | None] = [None]
+    finished = threading.Event()
+
+    def _run() -> None:
+        try:
+            reader = CodexOAuthUsageReader(request_timeout_seconds=bounded)
+            result_box[0] = reader.read()
+        except Exception:
+            result_box[0] = None
+        finally:
+            finished.set()
+
+    worker = threading.Thread(
+        target=_run,
+        name="codex-usage-prefetch",
+        daemon=True,
+    )
+    worker.start()
+    if not finished.wait(bounded):
         return
-    except Exception:
-        pool.shutdown(wait=False, cancel_futures=True)
-        return
-    pool.shutdown(wait=False, cancel_futures=True)
+    result = result_box[0]
     if isinstance(result, UsageReadResult) and result.status == "available":
         write_cache(result)
 
