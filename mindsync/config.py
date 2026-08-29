@@ -212,6 +212,18 @@ class Settings:
             _env("MINDSYNC_REMOTE_CACHE_TTL", "30") or "30"
         )
         self.lock_timeout_seconds: float = float(_env("MINDSYNC_LOCK_TIMEOUT", "5") or "5")
+        # Queue writers (enqueue / claim / requeue) can see bursts of same-process
+        # threads on Windows where msvcrt locking is slow; give them a longer,
+        # still bounded, contention deadline than generic locks.
+        self.queue_lock_timeout_seconds: float = float(
+            _env("MINDSYNC_QUEUE_LOCK_TIMEOUT", "30") or "30"
+        )
+        self.lock_contention_backoff_base_seconds: float = float(
+            _env("MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE", "0.01") or "0.01"
+        )
+        self.lock_contention_backoff_max_seconds: float = float(
+            _env("MINDSYNC_LOCK_CONTENTION_BACKOFF_MAX", "0.25") or "0.25"
+        )
         # Kept for compatibility with pre-1.3 deployments. Locks are now
         # kernel-managed and released automatically when a process exits, so
         # storage.file_lock no longer uses an age threshold.

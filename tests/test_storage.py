@@ -1,6 +1,7 @@
 import json
 import os
 import stat
+import time
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,15 @@ def test_file_lock_does_not_write_owner_token_before_acquiring(tmp_path, monkeyp
             pass
 
     assert writes == []
+
+
+def test_contention_sleep_respects_deadline(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr(storage.settings, "lock_contention_backoff_base_seconds", 1.0)
+    monkeypatch.setattr(storage.settings, "lock_contention_backoff_max_seconds", 1.0)
+    deadline = time.monotonic() + 0.05
+    storage._contention_sleep(0, deadline)
+    assert time.monotonic() <= deadline + 0.05
 
 
 def test_queue_enqueue_and_claim(tmp_path, monkeypatch):

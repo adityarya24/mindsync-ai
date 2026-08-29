@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import uuid
 import warnings
@@ -13,6 +14,38 @@ from pathlib import Path
 from typing import Any, Generator
 
 from mindsync.config import chmod_tree_0600, settings
+
+# On Windows, ``msvcrt`` file locks do not reliably contend between threads in
+# one process. A per-name thread mutex serialises same-process access before
+# the OS lock loop without changing cross-process semantics.
+_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _get_thread_lock(name: str) -> threading.Lock:
+    with _THREAD_LOCKS_GUARD:
+        lock = _THREAD_LOCKS.get(name)
+        if lock is None:
+            lock = threading.Lock()
+            _THREAD_LOCKS[name] = lock
+        return lock
+
+
+def _contention_sleep(attempt: int, deadline: float) -> None:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return
+    base = settings.lock_contention_backoff_base_seconds
+    cap = settings.lock_contention_backoff_max_seconds
+    delay = min(base * (2**attempt), cap, remaining)
+    if delay > 0:
+        time.sleep(delay)
+
+
+@contextmanager
+def _queue_file_lock() -> Generator[None, None, None]:
+    with file_lock("queue", timeout=settings.queue_lock_timeout_seconds):
+        yield
 
 
 def atomic_private_write(path: Path, text: str, *, mode: int = 0o600) -> None:
@@ -100,38 +133,51 @@ def file_lock(
     lock_path = settings.lock_dir / f"{name}.lock"
     token = f"{os.getpid()}-{uuid.uuid4().hex}"
     deadline = time.monotonic() + timeout
-    fd: int | None = None
+    thread_lock = _get_thread_lock(name) if os.name == "nt" else None
+    thread_lock_acquired = False
+    if thread_lock is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not thread_lock.acquire(timeout=remaining):
+            raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
+        thread_lock_acquired = True
 
-    while True:
-        try:
-            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
-            if _try_os_lock(fd):
-                os.lseek(fd, 0, os.SEEK_SET)
-                os.write(fd, f"{token}\n".encode("ascii"))
-                os.ftruncate(fd, len(token) + 1)
-                os.fsync(fd)
-                break
-            os.close(fd)
-            fd = None
-        except OSError:
-            if fd is not None:
+    fd: int | None = None
+    attempt = 0
+    try:
+        while True:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+                if _try_os_lock(fd):
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    os.write(fd, f"{token}\n".encode("ascii"))
+                    os.ftruncate(fd, len(token) + 1)
+                    os.fsync(fd)
+                    break
                 os.close(fd)
                 fd = None
-            if os.name != "nt":
-                raise
+            except OSError:
+                if fd is not None:
+                    os.close(fd)
+                    fd = None
+                if os.name != "nt":
+                    raise
 
-        if time.monotonic() >= deadline:
-            raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
-        time.sleep(0.05)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Could not acquire lock: {lock_path}") from None
+            _contention_sleep(attempt, deadline)
+            attempt += 1
 
-    try:
-        yield
+        try:
+            yield
+        finally:
+            if fd is not None:
+                try:
+                    _release_os_lock(fd)
+                finally:
+                    os.close(fd)
     finally:
-        if fd is not None:
-            try:
-                _release_os_lock(fd)
-            finally:
-                os.close(fd)
+        if thread_lock_acquired and thread_lock is not None:
+            thread_lock.release()
 
 
 def _default_state() -> dict[str, Any]:
@@ -210,7 +256,7 @@ def log_audit(agent_name: str, action: str, details: str) -> None:
 
 
 def enqueue_fact(fact: dict[str, Any]) -> None:
-    with file_lock("queue"):
+    with _queue_file_lock():
         append_jsonl(settings.offline_queue_file, fact)
 
 
@@ -241,7 +287,7 @@ def claim_offline_queue() -> tuple[str, list[dict[str, Any]], int]:
     """
     settings.ensure_dirs()
     path = settings.offline_queue_file
-    with file_lock("queue"):
+    with _queue_file_lock():
         if not path.exists() or path.stat().st_size == 0:
             return "", [], 0
         spool_id = uuid.uuid4().hex
@@ -268,7 +314,7 @@ def claim_offline_queue() -> tuple[str, list[dict[str, Any]], int]:
                     "error": "malformed_json",
                     "raw_record": line,
                 }
-                with file_lock("queue"):
+                with _queue_file_lock():
                     append_jsonl(settings.dead_letter_file, record)
                 malformed_count += 1
                 continue
@@ -281,12 +327,12 @@ def requeue_failed_facts(
     settings.ensure_dirs()
     if dead_letter:
         # We don't have a specific file_lock for dead_letter, but we can use queue lock or just append
-        with file_lock("queue"):
+        with _queue_file_lock():
             for fact in dead_letter:
                 append_jsonl(settings.dead_letter_file, fact)
 
     if failed:
-        with file_lock("queue"):
+        with _queue_file_lock():
             for fact in failed:
                 append_jsonl(settings.offline_queue_file, fact)
 
@@ -313,11 +359,11 @@ def recover_orphan_spools() -> None:
                             "error": "malformed_json",
                             "raw_record": line,
                         }
-                        with file_lock("queue"):
+                        with _queue_file_lock():
                             append_jsonl(settings.dead_letter_file, record)
                         continue
             if facts:
-                with file_lock("queue"):
+                with _queue_file_lock():
                     for fact in facts:
                         append_jsonl(settings.offline_queue_file, fact)
             spool_path.unlink(missing_ok=True)
