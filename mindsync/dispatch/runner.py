@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import re
@@ -326,6 +327,32 @@ def _record_usage_evaluation(job_id: str, evaluation: Any) -> None:
     )
 
 
+def _evaluate_and_check_usage(
+    job_id: str,
+    adapter: Any,
+    usage_config: UsageConfig,
+) -> str:
+    """Evaluate adapter threshold and checkpoint gating in a worker thread."""
+    current = store.get_job(job_id)
+    if not current or current.get("status") != "running":
+        return "cancelled"
+    evaluation = evaluate_adapter_threshold(adapter, usage_config=usage_config)
+    _record_usage_evaluation(job_id, evaluation)
+    if evaluation.status == "unavailable":
+        return "continue"
+    if evaluation.status != "at_threshold":
+        return "continue"
+    usable, block_reason = has_usable_checkpoint(current)
+    if not usable:
+        store.update_job(
+            job_id,
+            {"preemptiveBlocked": block_reason},
+            expected_status="running",
+        )
+        return "blocked"
+    return "handoff"
+
+
 def _spawn_skip_reason(
     adapter: Any,
     evaluation: Any,
@@ -345,32 +372,13 @@ def _spawn_skip_reason(
     if evaluation.status != "at_threshold":
         return None
 
-    threshold_skip = _threshold_skip_reason(evaluation)
+    # Explicit selection must not silently change agent; at soft threshold
+    # with quota remaining, continue explicit and record visible reason
+    # (no cooldown/rotation), regardless of unrelated agents.
+    if not meta.get("routing") and not meta.get("handoffRouting"):
+        return None
 
-    # For explicit agent: only preflight-skip when no successor can run the job.
-    if not meta.get("routing"):
-        routing_meta = meta.get("routing") or {}
-        excluded = list(
-            dict.fromkeys(
-                [
-                    *routing_meta.get("excludedAgents", []),
-                    *attempted_agents,
-                    adapter.name,
-                ]
-            )
-        )
-        try:
-            select_agent(
-                str(meta.get("taskPrompt") or ""),
-                required_capabilities=routing_meta.get("requiredCapabilities"),
-                exclude_agents=excluded,
-                usage_config=usage_config,
-                usage_aware=True,
-                on_limit=meta.get("onLimit"),
-            )
-            return None
-        except (RuntimeError, ValueError):
-            return threshold_skip
+    threshold_skip = _threshold_skip_reason(evaluation)
 
     # For routed agent on attempt 1: if a checkpoint is already usable (mocked for running handoff tests),
     # allow initial spawn so the poller runs; otherwise skip over-threshold provider at preflight.
@@ -425,6 +433,20 @@ def _ensure_spawnable_agent(
                 "at": store.utc_now(),
             }
         )
+        if not meta.get("routing") and not meta.get("handoffRouting"):
+            failure_patch: dict[str, Any] = {
+                "usageSkips": usage_skips,
+                "handoffBlocked": f"explicit agent '{adapter.name}' cannot run: {skip}",
+            }
+            if meta.get("worktreePath"):
+                failure_patch["worktreeKept"] = True
+            store.update_job(
+                job_id,
+                failure_patch,
+                expected_status="running",
+            )
+            return meta, False
+
         attempted_agents = list(dict.fromkeys([*attempted_agents, adapter.name]))
         routing_meta = meta.get("routing") or {}
         excluded = list(
@@ -445,7 +467,7 @@ def _ensure_spawnable_agent(
                 on_limit=meta.get("onLimit"),
             )
         except (RuntimeError, ValueError) as exc:
-            failure_patch: dict[str, Any] = {
+            failure_patch = {
                 "usageSkips": usage_skips,
                 "handoffBlocked": f"no successor available: {exc}",
             }
@@ -473,7 +495,6 @@ def _ensure_spawnable_agent(
             meta.get("worktreePath")
             and isinstance(lease, dict)
             and lease.get("state") == "owned"
-            and not meta.get("attempts")
         ):
             successor_patch["worktreeLease"] = {**lease, "agent": successor_name}
         meta = store.update_job(
@@ -934,12 +955,33 @@ async def supervise_job(
                 "startedAt": store.utc_now(),
             }
         )
-        meta = store.claim_worktree_lease(
-            job_id,
-            agent=adapter.name,
-            attempt=attempt_number,
-            attempts=attempts,
-        )
+        try:
+            meta = store.claim_worktree_lease(
+                job_id,
+                agent=adapter.name,
+                attempt=attempt_number,
+                attempts=attempts,
+            )
+        except Exception as exc:
+            result = {
+                "exitCode": -1,
+                "stdout": "",
+                "stderr": f"Failed to claim worktree lease: {exc}",
+                "timedOut": False,
+                "processTreeDead": True,
+            }
+            status = "failed"
+            failure_patch: dict[str, Any] = {
+                "handoffBlocked": f"worktree lease claim failed: {exc}",
+            }
+            if meta.get("worktreePath"):
+                failure_patch["worktreeKept"] = True
+            store.update_job(
+                job_id,
+                failure_patch,
+                expected_status="running",
+            )
+            break
 
         child_env = dict(os.environ)
         if execution_mode == "worker":
@@ -966,23 +1008,19 @@ async def supervise_job(
                 current = store.get_job(job_id) or meta
                 if current.get("status") != "running":
                     return "cancelled"
-                evaluation = evaluate_adapter_threshold(
-                    adapter, usage_config=usage_config
-                )
-                _record_usage_evaluation(job_id, evaluation)
-                if evaluation.status == "unavailable":
-                    return "continue"
-                if evaluation.status != "at_threshold":
-                    return "continue"
-                usable, block_reason = has_usable_checkpoint(current)
-                if not usable:
-                    store.update_job(
-                        job_id,
-                        {"preemptiveBlocked": block_reason},
-                        expected_status="running",
+                try:
+                    action = await asyncio.to_thread(
+                        _evaluate_and_check_usage, job_id, adapter, usage_config
                     )
-                    return "blocked"
-                return "handoff"
+                except asyncio.CancelledError:
+                    return "cancelled"
+                except Exception:
+                    return "continue"
+
+                current = store.get_job(job_id)
+                if not current or current.get("status") != "running":
+                    return "cancelled"
+                return action
 
             poll_callback = usage_poll
 

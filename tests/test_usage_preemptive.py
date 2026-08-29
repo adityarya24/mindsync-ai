@@ -563,7 +563,7 @@ async def test_no_successor_retains_work_on_preflight(
     )
 
     result = await run_task(
-        agent="primary",
+        agent="auto",
         prompt="implement",
         cwd=str(fake_repo),
         worktree=True,
@@ -625,3 +625,309 @@ async def test_process_tree_must_be_dead_before_preemptive_transfer(
     assert job["status"] == "failed"
     assert "process tree" in job["handoffBlocked"]
     assert len(job.get("handoffs") or []) == 0
+
+
+@pytest.mark.asyncio
+async def test_three_agent_transfer_race_updates_worktree_lease(
+    fake_repo: Path, tmp_path: Path, monkeypatch
+):
+    """F1: If successor cools before preflight, ensure lease is consistently updated to tertiary."""
+    _isolate_dispatch(tmp_path, monkeypatch)
+    config = {
+        "usage": {
+            "enabled": True,
+            "defaultThresholdPercent": 90,
+            "pollingIntervalSeconds": 5,
+        },
+        "agents": [
+            {
+                "name": "primary",
+                "bin": sys.executable,
+                "input": "stdin",
+                "capabilities": ["coding"],
+                "capabilityWeights": {"coding": 100},
+                "routingPriority": 100,
+                "quotaScope": "provider:account-a",
+                "quotaErrorPatterns": ["(?i)usage window exhausted; resets at"],
+                "quotaCooldownSeconds": 300,
+            },
+            {
+                "name": "secondary",
+                "bin": sys.executable,
+                "input": "stdin",
+                "capabilities": ["coding"],
+                "capabilityWeights": {"coding": 90},
+                "routingPriority": 90,
+                "quotaScope": "provider:account-b",
+                "quotaErrorPatterns": ["(?i)usage window exhausted; resets at"],
+                "quotaCooldownSeconds": 300,
+            },
+            {
+                "name": "tertiary",
+                "bin": sys.executable,
+                "input": "stdin",
+                "capabilities": ["coding"],
+                "capabilityWeights": {"coding": 80},
+                "routingPriority": 80,
+                "quotaScope": "provider:account-c",
+            },
+        ],
+    }
+    user_config_path().write_text(json.dumps(config), encoding="utf-8")
+
+    def only_python(value: str) -> str | None:
+        return sys.executable if value == sys.executable else None
+
+    monkeypatch.setattr(runner_mod, "resolve_bin", only_python)
+    monkeypatch.setattr(routing_mod, "resolve_bin", only_python)
+
+    calls = []
+
+    async def fake_spawn(*args, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "stdout": "",
+                "stderr": "Usage window exhausted; resets at 17:00",
+                "exitCode": 1,
+                "timedOut": False,
+                "processTreeDead": True,
+                "preemptiveThreshold": False,
+            }
+        return {
+            "stdout": "done by tertiary",
+            "stderr": "",
+            "exitCode": 0,
+            "timedOut": False,
+            "processTreeDead": True,
+            "preemptiveThreshold": False,
+        }
+
+    monkeypatch.setattr(runner_mod, "spawn_foreground", fake_spawn)
+
+    orig_ensure = runner_mod._ensure_spawnable_agent
+
+    def hook_ensure(job_id, meta, usage_config):
+        if meta.get("agent") == "secondary":
+            from mindsync.dispatch.adapters import resolve_adapter
+            from mindsync.dispatch.limits import mark_cooling
+
+            mark_cooling(resolve_adapter("secondary"))
+        return orig_ensure(job_id, meta, usage_config)
+
+    monkeypatch.setattr(runner_mod, "_ensure_spawnable_agent", hook_ensure)
+
+    result = await run_task(
+        agent="auto",
+        prompt="implement the feature",
+        required_capabilities=["coding"],
+        cwd=str(fake_repo),
+        worktree=True,
+        on_limit="handoff",
+        memory_mode="off",
+    )
+
+    job = result["job"]
+    assert job["status"] == "done"
+    assert job["agent"] == "tertiary"
+    assert [(row["agent"], row["status"]) for row in job["attempts"]] == [
+        ("primary", "quota_exhausted"),
+        ("tertiary", "done"),
+    ]
+    assert any(row["agent"] == "secondary" for row in job.get("usageSkips") or [])
+    assert job["worktreeLease"]["agent"] == "tertiary"
+    assert job["worktreeLease"]["state"] == "released"
+
+
+@pytest.mark.asyncio
+async def test_impossible_worktree_lease_claim_safely_finalizes(
+    fake_repo: Path, tmp_path: Path, monkeypatch
+):
+    """F1: Catch/finalize impossible claim safely without leaving job running."""
+    _write_usage_agents(tmp_path, monkeypatch)
+
+    def failing_claim(*args, **kwargs):
+        raise RuntimeError("simulated corrupted worktree lease state")
+
+    monkeypatch.setattr(store, "claim_worktree_lease", failing_claim)
+
+    result = await run_task(
+        agent="primary",
+        prompt="implement",
+        cwd=str(fake_repo),
+        worktree=True,
+        on_limit="handoff",
+        memory_mode="off",
+    )
+
+    job = result["job"]
+    assert job["status"] == "failed"
+    assert "worktree lease claim failed" in job.get("handoffBlocked", "")
+    assert job.get("worktreeKept") is True
+    # Ensure job in store is also failed, not left in running state
+    stored = store.get_job(job["id"])
+    assert stored["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_explicit_agent_at_threshold_continues_without_rotation(
+    fake_repo: Path, tmp_path: Path, monkeypatch
+):
+    """F2: Explicit selection at soft threshold continues without rotation or cooldown."""
+    _write_usage_agents(tmp_path, monkeypatch)
+
+    monkeypatch.setattr(
+        runner_mod,
+        "evaluate_adapter_threshold",
+        lambda adapter, **kwargs: evaluate_adapter_threshold(
+            adapter,
+            result=_at_threshold_result(
+                adapter.name, adapter.quotaScope or f"agent:{adapter.name}"
+            ),
+        ),
+    )
+
+    executed_agent = []
+
+    async def fake_spawn(*args, **kwargs):
+        job = store.list_jobs()[0]
+        executed_agent.append(job["agent"])
+        return {
+            "stdout": "executed explicit",
+            "stderr": "",
+            "exitCode": 0,
+            "timedOut": False,
+            "processTreeDead": True,
+            "preemptiveThreshold": False,
+        }
+
+    monkeypatch.setattr(runner_mod, "spawn_foreground", fake_spawn)
+
+    # 1. With successor available in config (backup exists):
+    result_with_backup = await run_task(
+        agent="primary",
+        prompt="implement",
+        cwd=str(fake_repo),
+        worktree=True,
+        on_limit="handoff",
+        memory_mode="off",
+    )
+    job1 = result_with_backup["job"]
+    assert job1["status"] == "done"
+    assert job1["agent"] == "primary"
+    assert executed_agent == ["primary"]
+    assert job1.get("usageEvaluation", {}).get("status") == "at_threshold"
+    assert list_cooldowns() == []
+
+    # 2. Without successor available in config (only primary exists):
+    config = json.loads(user_config_path().read_text(encoding="utf-8"))
+    config["agents"] = [row for row in config["agents"] if row["name"] == "primary"]
+    user_config_path().write_text(json.dumps(config), encoding="utf-8")
+
+    executed_agent.clear()
+    result_alone = await run_task(
+        agent="primary",
+        prompt="implement alone",
+        cwd=str(fake_repo),
+        worktree=True,
+        on_limit="handoff",
+        memory_mode="off",
+    )
+    job2 = result_alone["job"]
+    assert job2["status"] == "done"
+    assert job2["agent"] == "primary"
+    assert executed_agent == ["primary"]
+    assert job2.get("usageEvaluation", {}).get("status") == "at_threshold"
+    assert list_cooldowns() == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_agent_cooling_fails_closed_without_silent_switch(
+    fake_repo: Path, tmp_path: Path, monkeypatch
+):
+    """F2: Explicit selection for cooling agent must not silently switch to backup."""
+    _write_usage_agents(tmp_path, monkeypatch)
+    from mindsync.dispatch.adapters import resolve_adapter
+    from mindsync.dispatch.limits import mark_cooling
+
+    mark_cooling(resolve_adapter("primary"))
+
+    result = await run_task(
+        agent="primary",
+        prompt="implement",
+        cwd=str(fake_repo),
+        worktree=True,
+        on_limit="handoff",
+        memory_mode="off",
+    )
+
+    job = result["job"]
+    assert job["status"] == "failed"
+    assert job["agent"] == "primary"
+    assert "explicit agent 'primary' cannot run" in job.get("handoffBlocked", "")
+    assert job.get("worktreeKept") is True
+    clear_cooldowns()
+
+
+@pytest.mark.asyncio
+async def test_usage_poll_runs_in_thread_and_handles_cancellation(
+    fake_repo: Path, tmp_path: Path, monkeypatch
+):
+    """F4: usage_poll executes in worker thread and cleanly handles cancellation/idempotency."""
+    _write_usage_agents(tmp_path, monkeypatch)
+    import threading
+
+    poll_threads = []
+    main_thread = threading.current_thread()
+
+    def thread_tracking_evaluate(adapter, **kwargs):
+        poll_threads.append(threading.current_thread())
+        scope = adapter.quotaScope or f"agent:{adapter.name}"
+        return evaluate_adapter_threshold(
+            adapter, result=_at_threshold_result(adapter.name, scope)
+        )
+
+    monkeypatch.setattr(
+        runner_mod, "evaluate_adapter_threshold", thread_tracking_evaluate
+    )
+    monkeypatch.setattr(
+        runner_mod, "has_usable_checkpoint", lambda meta: (False, "no checkpoint")
+    )
+
+    async def fake_spawn(*args, **kwargs):
+        callback = kwargs.get("poll_callback")
+        assert callback is not None
+        poll_threads.clear()
+        action = await callback()
+        assert action == "blocked"
+        assert len(poll_threads) == 1
+        assert poll_threads[0] != main_thread
+
+        # Test cancellation idempotency
+        job_id = store.list_jobs()[0]["id"]
+        store.update_job(job_id, {"status": "cancelled"})
+        action_after_cancel = await callback()
+        assert action_after_cancel == "cancelled"
+
+        return {
+            "stdout": "done",
+            "stderr": "",
+            "exitCode": 0,
+            "timedOut": False,
+            "processTreeDead": True,
+            "preemptiveThreshold": False,
+        }
+
+    monkeypatch.setattr(runner_mod, "spawn_foreground", fake_spawn)
+
+    result = await run_task(
+        agent="primary",
+        prompt="implement",
+        cwd=str(fake_repo),
+        worktree=True,
+        on_limit="handoff",
+        memory_mode="off",
+    )
+
+    job = result["job"]
+    assert job["status"] == "cancelled"
