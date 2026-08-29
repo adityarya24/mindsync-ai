@@ -242,13 +242,15 @@ def _publish_job_event(event_type: str, meta: dict[str, Any], agent_name: str = 
             correlation_id=meta.get("id"),
         )
         publish_event(event)
-        if event_type in {"job.completed", "job.failed"}:
-            try:
-                from mindsync.dispatch.sink import deliver_completion_event
+        try:
+            from mindsync.dispatch.sink import deliver_completion_event, drain_completion_outbox
 
+            if event_type in {"job.completed", "job.failed"}:
                 deliver_completion_event(event)
-            except Exception:
-                pass
+            else:
+                drain_completion_outbox()
+        except Exception:
+            pass
     except Exception:
         # Event bus must never break dispatch.
         pass

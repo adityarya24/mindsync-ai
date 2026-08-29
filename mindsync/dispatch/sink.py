@@ -13,16 +13,32 @@ from mindsync.orchestration import load_policy
 from mindsync.storage import atomic_private_write, file_lock
 
 _DELIVERED_NAME = "completion-sink-delivered.json"
+_OUTBOX_NAME = "completion-sink-outbox.json"
 _MAX_DELIVERED = 200
+_MAX_OUTBOX = 200
 _SINK_TIMEOUT_SECONDS = 5.0
 _MAX_SUMMARY_CHARS = 240
 _COMPLETION_TYPES = {EventType.JOB_COMPLETED.value, EventType.JOB_FAILED.value}
+_PROJECTION_KEYS = (
+    "event_id",
+    "job_id",
+    "status",
+    "summary",
+    "public_task_summary",
+    "pr_url",
+)
 
 
 def _delivered_path() -> Path:
     from mindsync.config import settings
 
     return settings.home / _DELIVERED_NAME
+
+
+def _outbox_path() -> Path:
+    from mindsync.config import settings
+
+    return settings.home / _OUTBOX_NAME
 
 
 def _load_delivered() -> list[str]:
@@ -50,6 +66,66 @@ def _save_delivered(ids: list[str]) -> None:
         _delivered_path(),
         json.dumps(ids[-_MAX_DELIVERED:], indent=2) + "\n",
     )
+
+
+def _normalize_projection(raw: Any) -> dict[str, str] | None:
+    if not isinstance(raw, dict):
+        return None
+    event_id = raw.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        return None
+    projection: dict[str, str] = {}
+    for key in _PROJECTION_KEYS:
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            projection[key] = value
+    if "event_id" not in projection:
+        return None
+    return projection
+
+
+def _load_outbox() -> list[dict[str, str]]:
+    path = _outbox_path()
+    if not path.is_file():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        projection = _normalize_projection(item)
+        if projection is None:
+            continue
+        event_id = projection["event_id"]
+        if event_id in seen:
+            continue
+        seen.add(event_id)
+        items.append(projection)
+    return items[-_MAX_OUTBOX:]
+
+
+def _save_outbox(items: list[dict[str, str]]) -> None:
+    from mindsync.config import settings
+
+    settings.ensure_dirs()
+    atomic_private_write(
+        _outbox_path(),
+        json.dumps(items[-_MAX_OUTBOX:], indent=2, ensure_ascii=True) + "\n",
+    )
+
+
+def _sink_cmd() -> list[str] | None:
+    try:
+        cmd = load_policy().completionSinkCmd
+    except ValueError:
+        return None
+    if not cmd:
+        return None
+    return cmd
 
 
 def _bounded(value: Any, limit: int) -> str | None:
@@ -89,15 +165,71 @@ def public_completion_projection(event: Event, meta: dict[str, Any] | None) -> d
     return projection
 
 
-def deliver_completion_event(event: Event) -> None:
-    """Best-effort sink after the event is already persisted. Never raises."""
-    event_type = str(event.event_type)
-    if event_type not in _COMPLETION_TYPES:
+def _try_send(cmd: list[str], projection: dict[str, str]) -> bool:
+    encoded = json.dumps(projection, ensure_ascii=True) + "\n"
+    try:
+        subprocess.run(
+            cmd,
+            input=encoded.encode("utf-8"),
+            capture_output=True,
+            timeout=_SINK_TIMEOUT_SECONDS,
+            check=True,
+            shell=False,
+        )
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError, ValueError):
+        return False
+    return True
+
+
+def _drain_locked(cmd: list[str]) -> None:
+    delivered = _load_delivered()
+    remaining: list[dict[str, str]] = []
+    for projection in _load_outbox():
+        event_id = projection["event_id"]
+        if event_id in delivered:
+            continue
+        if _try_send(cmd, projection):
+            delivered.append(event_id)
+        else:
+            remaining.append(projection)
+    _save_outbox(remaining)
+    if delivered:
+        _save_delivered(delivered)
+
+
+def _enqueue_locked(projection: dict[str, str]) -> None:
+    event_id = projection.get("event_id")
+    if not event_id:
+        return
+    delivered = _load_delivered()
+    if event_id in delivered:
+        return
+    pending = _load_outbox()
+    if any(item.get("event_id") == event_id for item in pending):
+        return
+    pending.append(projection)
+    _save_outbox(pending)
+
+
+def drain_completion_outbox() -> None:
+    """Retry pending allowlisted projections. Never raises."""
+    cmd = _sink_cmd()
+    if not cmd:
         return
     try:
-        cmd = load_policy().completionSinkCmd
-    except ValueError:
+        with file_lock("completion-sink"):
+            _drain_locked(cmd)
+    except Exception:
         return
+
+
+def deliver_completion_event(event: Event) -> None:
+    """Persist-before-send, then drain. Never raises. Never changes job status."""
+    event_type = str(event.event_type)
+    if event_type not in _COMPLETION_TYPES:
+        drain_completion_outbox()
+        return
+    cmd = _sink_cmd()
     if not cmd:
         return
     event_id = event.event_id
@@ -116,22 +248,9 @@ def deliver_completion_event(event: Event) -> None:
             meta = None
 
     projection = public_completion_projection(event, meta)
-    encoded = json.dumps(projection, ensure_ascii=True) + "\n"
-
-    with file_lock("completion-sink"):
-        delivered = _load_delivered()
-        if event_id in delivered:
-            return
-        try:
-            subprocess.run(
-                cmd,
-                input=encoded.encode("utf-8"),
-                capture_output=True,
-                timeout=_SINK_TIMEOUT_SECONDS,
-                check=True,
-                shell=False,
-            )
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError, ValueError):
-            return
-        delivered.append(event_id)
-        _save_delivered(delivered)
+    try:
+        with file_lock("completion-sink"):
+            _enqueue_locked(projection)
+            _drain_locked(cmd)
+    except Exception:
+        return

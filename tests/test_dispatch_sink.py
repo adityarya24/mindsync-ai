@@ -10,7 +10,13 @@ from pathlib import Path
 from mindsync.bus.models import Event, EventType
 from mindsync.dispatch import store
 from mindsync.dispatch.publish import _CONTEXT_END, _CONTEXT_START
-from mindsync.dispatch.sink import _delivered_path, deliver_completion_event, public_completion_projection
+from mindsync.dispatch.sink import (
+    _delivered_path,
+    _outbox_path,
+    deliver_completion_event,
+    drain_completion_outbox,
+    public_completion_projection,
+)
 from mindsync.orchestration import OrchestrationPolicy, save_policy
 from tests.isolation_helpers import isolate_mindsync_home
 
@@ -96,6 +102,8 @@ def test_sink_failure_does_not_mark_delivered(tmp_path, monkeypatch):
     deliver_completion_event(event)
 
     assert not _delivered_path().is_file()
+    outbox = json.loads(_outbox_path().read_text(encoding="utf-8"))
+    assert outbox[0]["event_id"] == "bb" * 16
 
 
 def test_sink_timeout_degrades_without_raising(tmp_path, monkeypatch):
@@ -114,6 +122,7 @@ def test_sink_timeout_degrades_without_raising(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "run", boom)
     deliver_completion_event(event)
     assert not _delivered_path().is_file()
+    assert json.loads(_outbox_path().read_text(encoding="utf-8"))[0]["event_id"] == "cc" * 16
 
 
 def test_malformed_sink_config_is_a_noop(tmp_path, monkeypatch):
@@ -170,3 +179,34 @@ def test_projection_strips_injected_memory_and_never_copies_logs():
     assert "SECRET_" not in blob
     assert projection["public_task_summary"] == "fix the flaky test"
     assert "stdout" not in projection
+
+
+def test_failed_sink_resends_once_on_drain_after_restart(tmp_path, monkeypatch):
+    isolate_mindsync_home(tmp_path, monkeypatch, dispatch_home=True)
+    fail = tmp_path / "fail.py"
+    fail.write_text("import sys; sys.exit(1)\n", encoding="utf-8")
+    save_policy(OrchestrationPolicy(completionSinkCmd=[sys.executable, str(fail)]))
+    event = Event(
+        event_type=EventType.JOB_FAILED,
+        agent_name="dispatch",
+        event_id="11" * 16,
+        payload={"job_id": "no-such-job", "status": "failed"},
+    )
+    deliver_completion_event(event)
+    assert not _delivered_path().is_file()
+
+    out_file = tmp_path / "sink.jsonl"
+    monkeypatch.setenv("MOCK_SINK_OUT", str(out_file))
+    save_policy(
+        OrchestrationPolicy(
+            completionSinkCmd=[sys.executable, str(_sink_script(tmp_path))]
+        )
+    )
+    drain_completion_outbox()
+    drain_completion_outbox()
+
+    lines = out_file.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    assert json.loads(lines[0])["event_id"] == "11" * 16
+    assert json.loads(_delivered_path().read_text(encoding="utf-8")) == ["11" * 16]
+    assert json.loads(_outbox_path().read_text(encoding="utf-8")) == []

@@ -9,6 +9,7 @@ import sys
 import textwrap
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,11 @@ from mindsync.dispatch.adapters import user_config_path
 from mindsync.dispatch.usage.readers.codex import CodexOAuthUsageReader
 from mindsync.dispatch.usage.types import UsageReadResult, UsageWindow
 from tests.isolation_helpers import isolate_mindsync_home
+
+
+@pytest.fixture(autouse=True)
+def _isolate_standalone_usage_home(tmp_path, monkeypatch):
+    isolate_mindsync_home(tmp_path, monkeypatch, dispatch_home=True)
 
 
 def _enable_usage(tmp_path, monkeypatch) -> None:
@@ -268,3 +274,22 @@ def test_stop_warning_below_orchestrator_reserve(tmp_path, monkeypatch):
     )
 
     assert warnings == []
+
+
+def test_usage_cache_paths_follow_rebound_home(tmp_path, monkeypatch):
+    home = isolate_mindsync_home(tmp_path, monkeypatch, dispatch_home=True)
+    write_cache(
+        UsageReadResult.available(
+            provider="codex",
+            account_scope="openai:test",
+            reader="codex-oauth",
+            source="test",
+            windows=[UsageWindow(id="primary", label="Primary", used_percent=10.0)],
+        )
+    )
+    cache = _cache_path().resolve()
+    live_home = (Path.home() / ".mindsync").resolve()
+    assert cache.is_file()
+    assert cache.parent == home.resolve()
+    assert live_home not in cache.parents
+    assert cache.parent != live_home

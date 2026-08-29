@@ -161,7 +161,9 @@ orchestration-only dispatch tools.
 Optional `completionSinkCmd` in the orchestration policy is an argv list
 (no shell) that receives one JSON object on stdin after `job.completed` /
 `job.failed` is persisted: `event_id`, job id/status, bounded summary, optional
-privacy-screened task, optional PR URL. Duplicate `event_id`s are not resent.
+privacy-screened task, optional PR URL. The allowlisted projection is written to
+an outbox before send; failed delivery stays pending and is retried on the next
+drain (later job events or process restart). Duplicate `event_id`s are not resent.
 Sink failure never changes job status. Leave it empty to keep current behavior.
 
 ## Optional remote sync
