@@ -112,11 +112,24 @@ def clear_cooldowns(scope: str | None = None) -> int:
 def mark_cooling(adapter: AdapterConfig) -> dict[str, str]:
     now = datetime.now(timezone.utc)
     until = now + timedelta(seconds=adapter.quotaCooldownSeconds)
+    return mark_cooling_until(adapter, until, reason="provider quota exhausted")
+
+
+def mark_cooling_until(
+    adapter: AdapterConfig,
+    until: datetime,
+    *,
+    reason: str = "usage threshold reached",
+) -> dict[str, str]:
+    if until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    else:
+        until = until.astimezone(timezone.utc)
     scope = quota_scope(adapter)
     entry = {
         "scope": scope,
         "until": until.isoformat(),
-        "reason": "provider quota exhausted",
+        "reason": reason,
     }
     with file_lock("dispatch-quota-cooldowns"):
         data = _read()

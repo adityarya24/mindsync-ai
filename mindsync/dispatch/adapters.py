@@ -40,6 +40,8 @@ _DEFAULTS: dict[str, Any] = {
     "quotaScope": None,
     "quotaErrorPatterns": [],
     "quotaCooldownSeconds": 18_000,
+    "usageReader": None,
+    "usageThresholdPercent": None,
 }
 
 
@@ -104,6 +106,8 @@ class AdapterConfig(BaseModel):
     quotaScope: str | None = None
     quotaErrorPatterns: list[str] = Field(default_factory=list)
     quotaCooldownSeconds: int = Field(default=18_000, ge=60, le=604_800)
+    usageReader: str | None = None
+    usageThresholdPercent: int | None = Field(default=None, ge=1, le=100)
 
     @model_validator(mode="after")
     def _require_prompt_placeholder(self) -> AdapterConfig:
@@ -127,6 +131,10 @@ class AdapterConfig(BaseModel):
             self.family = self.family.strip().lower() or None
         if self.quotaScope is not None:
             self.quotaScope = self.quotaScope.strip().lower() or None
+        if self.usageReader is not None:
+            from mindsync.dispatch.usage.config import validate_reader_name
+
+            self.usageReader = validate_reader_name(self.usageReader)
         for pattern in self.quotaErrorPatterns:
             try:
                 re.compile(pattern)

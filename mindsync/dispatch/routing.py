@@ -8,6 +8,8 @@ from typing import Any, Iterable
 from mindsync.dispatch.adapters import AdapterConfig, load_adapters
 from mindsync.dispatch.limits import cooldown_reason
 from mindsync.dispatch.proc import resolve_bin
+from mindsync.dispatch.usage.config import UsageConfig, load_usage_config
+from mindsync.dispatch.usage.preemptive import preflight_skip_reason, preemptive_usage_active
 
 
 KNOWN_CAPABILITIES = frozenset({
@@ -96,10 +98,17 @@ def select_agent(
     required_capabilities: Iterable[str] | None = None,
     exclude_agents: Iterable[str] | None = None,
     adapters: dict[str, AdapterConfig] | None = None,
+    usage_config: UsageConfig | None = None,
+    usage_aware: bool = False,
+    on_limit: str | None = None,
 ) -> dict[str, Any]:
     """Choose the best installed agent and return an explainable ranked decision."""
     required = normalize_capabilities(required_capabilities) or infer_capabilities(prompt)
     excluded = {name.strip().lower() for name in (exclude_agents or []) if name.strip()}
+    config = usage_config or load_usage_config()
+    usage_filter = usage_aware and preemptive_usage_active(
+        usage_config=config, on_limit=on_limit
+    )
     available: list[AdapterConfig] = []
     unavailable: list[str] = []
     unavailable_reasons: dict[str, str] = {}
@@ -112,6 +121,12 @@ def select_agent(
             unavailable.append(adapter.name)
             unavailable_reasons[adapter.name] = cooling
             continue
+        if usage_filter:
+            skip = preflight_skip_reason(adapter, usage_config=config)
+            if skip:
+                unavailable.append(adapter.name)
+                unavailable_reasons[adapter.name] = skip
+                continue
         if resolve_bin(adapter.bin):
             available.append(adapter)
         else:
