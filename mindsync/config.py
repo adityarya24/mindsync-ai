@@ -6,6 +6,7 @@ The default install is local-only; remote sync is opt-in.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -18,6 +19,16 @@ def _env(name: str, default: str = "") -> str:
     if value is None:
         return default
     return value.strip()
+
+
+def _positive_float_env(name: str, default: str) -> float:
+    try:
+        value = float(_env(name, default) or default)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a number") from exc
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be greater than 0")
+    return value
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -215,14 +226,14 @@ class Settings:
         # Queue writers (enqueue / claim / requeue) can see bursts of same-process
         # threads on Windows where msvcrt locking is slow; give them a longer,
         # still bounded, contention deadline than generic locks.
-        self.queue_lock_timeout_seconds: float = float(
-            _env("MINDSYNC_QUEUE_LOCK_TIMEOUT", "30") or "30"
+        self.queue_lock_timeout_seconds: float = _positive_float_env(
+            "MINDSYNC_QUEUE_LOCK_TIMEOUT", "30"
         )
-        self.lock_contention_backoff_base_seconds: float = float(
-            _env("MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE", "0.01") or "0.01"
+        self.lock_contention_backoff_base_seconds: float = _positive_float_env(
+            "MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE", "0.01"
         )
-        self.lock_contention_backoff_max_seconds: float = float(
-            _env("MINDSYNC_LOCK_CONTENTION_BACKOFF_MAX", "0.25") or "0.25"
+        self.lock_contention_backoff_max_seconds: float = _positive_float_env(
+            "MINDSYNC_LOCK_CONTENTION_BACKOFF_MAX", "0.25"
         )
         # Kept for compatibility with pre-1.3 deployments. Locks are now
         # kernel-managed and released automatically when a process exits, so

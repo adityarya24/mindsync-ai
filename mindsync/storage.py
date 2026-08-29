@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 import warnings
+import weakref
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,11 +19,20 @@ from mindsync.config import chmod_tree_0600, settings
 # On Windows, ``msvcrt`` file locks do not reliably contend between threads in
 # one process. A per-name thread mutex serialises same-process access before
 # the OS lock loop without changing cross-process semantics.
-_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_THREAD_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = (
+    weakref.WeakValueDictionary()
+)
 _THREAD_LOCKS_GUARD = threading.Lock()
 
 
 def _get_thread_lock(name: str) -> threading.Lock:
+    """Return the per-name thread mutex used on Windows.
+
+    Ephemeral lock names (for example per-job dispatch locks) must not pin
+    mutexes for the process lifetime. ``WeakValueDictionary`` drops entries
+    once no ``file_lock`` call still holds a strong reference, while
+    concurrent waiters for the same name still share one live ``Lock``.
+    """
     with _THREAD_LOCKS_GUARD:
         lock = _THREAD_LOCKS.get(name)
         if lock is None:

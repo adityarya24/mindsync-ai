@@ -165,7 +165,10 @@ Environment variables: [`.env.example`](.env.example).
 - The human-facing CLI owns authorization and the final answer.
 - Setup never executes a binary it cannot name.
 - Existing MCP registrations are preserved unless `--force`.
-- Local state uses crash-safe locks and atomic writes.
+- Local state uses crash-safe locks and atomic writes. On Windows, tune queue
+  lock deadlines and OS-lock contention backoff via
+  `MINDSYNC_QUEUE_LOCK_TIMEOUT`, `MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE`, and
+  `MINDSYNC_LOCK_CONTENTION_BACKOFF_MAX` (see [`.env.example`](.env.example)).
 
 Runs with the current user's privileges. See [`SECURITY.md`](SECURITY.md).
 

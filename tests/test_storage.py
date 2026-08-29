@@ -1,7 +1,9 @@
 import json
 import os
 import stat
+import threading
 import time
+import gc
 from pathlib import Path
 
 import pytest
@@ -70,6 +72,53 @@ def test_contention_sleep_respects_deadline(tmp_path, monkeypatch):
     deadline = time.monotonic() + 0.05
     storage._contention_sleep(0, deadline)
     assert time.monotonic() <= deadline + 0.05
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows per-name thread lock registry")
+def test_ephemeral_thread_locks_not_retained_after_gc(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    storage._THREAD_LOCKS.clear()
+
+    def acquire_once(job_id: int) -> None:
+        with storage.file_lock(f"dispatch-job-ephemeral-{job_id}", timeout=5):
+            pass
+
+    threads = [threading.Thread(target=acquire_once, args=(i,)) for i in range(50)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    gc.collect()
+    assert len(storage._THREAD_LOCKS) == 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows per-name thread lock registry")
+def test_thread_lock_serializes_same_name_contention(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr(storage, "_try_os_lock", lambda _fd: True)
+    monkeypatch.setattr(storage, "_release_os_lock", lambda _fd: None)
+    concurrent = 0
+    max_concurrent = 0
+    counter_guard = threading.Lock()
+
+    def worker() -> None:
+        nonlocal concurrent, max_concurrent
+        with storage.file_lock("dispatch-job-shared"):
+            with counter_guard:
+                concurrent += 1
+                max_concurrent = max(max_concurrent, concurrent)
+            time.sleep(0.02)
+            with counter_guard:
+                concurrent -= 1
+
+    threads = [threading.Thread(target=worker) for _ in range(12)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert max_concurrent == 1
 
 
 def test_queue_enqueue_and_claim(tmp_path, monkeypatch):
