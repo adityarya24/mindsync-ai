@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    import tomli as tomllib
 
 from mindsync.dispatch.usage.types import UsageReadResult, UsageWindow
 
@@ -131,45 +136,55 @@ class CodexOAuthUsageReader:
         if not isinstance(raw, dict):
             return None
 
+        tokens = raw.get("tokens")
+        if isinstance(tokens, dict):
+            access_token = tokens.get("access_token")
+            if isinstance(access_token, str) and access_token.strip():
+                account_id = tokens.get("account_id")
+                if isinstance(account_id, str) and not account_id.strip():
+                    account_id = None
+                return {
+                    "access_token": access_token.strip(),
+                    "account_id": account_id if isinstance(account_id, str) else None,
+                }
+
         api_key = raw.get("OPENAI_API_KEY")
         if isinstance(api_key, str) and api_key.strip():
-            return {"access_token": api_key.strip(), "account_id": None}
+            return None
 
-        tokens = raw.get("tokens")
-        if not isinstance(tokens, dict):
-            return None
-        access_token = tokens.get("access_token")
-        if not isinstance(access_token, str) or not access_token.strip():
-            return None
-        account_id = tokens.get("account_id")
-        if isinstance(account_id, str) and not account_id.strip():
-            account_id = None
-        return {
-            "access_token": access_token.strip(),
-            "account_id": account_id if isinstance(account_id, str) else None,
-        }
+        return None
 
     def _resolve_base_url(self, codex_dir: Path) -> str:
         config_path = codex_dir / "config.toml"
         if not config_path.is_file():
             return DEFAULT_BASE_URL
         try:
-            content = config_path.read_text(encoding="utf-8")
-        except OSError:
+            with config_path.open("rb") as handle:
+                config = tomllib.load(handle)
+        except (OSError, ValueError):
             return DEFAULT_BASE_URL
-        match = re.search(
-            r'^\s*chatgpt_base_url\s*=\s*["\']([^"\']+)["\']',
-            content,
-            flags=re.MULTILINE,
-        )
-        if not match:
+        if not isinstance(config, dict):
             return DEFAULT_BASE_URL
-        normalized = match.group(1).strip().rstrip("/")
-        if normalized.startswith("https://") or normalized.startswith("http://127.0.0.1"):
+        raw = config.get("chatgpt_base_url")
+        if not isinstance(raw, str) or not raw.strip():
+            return DEFAULT_BASE_URL
+        normalized = self._normalize_base_url(raw.strip())
+        return normalized or DEFAULT_BASE_URL
+
+    def _normalize_base_url(self, value: str) -> str | None:
+        normalized = value.rstrip("/")
+        parsed = urlparse(normalized)
+        if parsed.scheme not in {"https", "http"}:
+            return None
+        host = parsed.hostname
+        if host is None:
+            return None
+        host_lower = host.lower()
+        if parsed.scheme == "https" and host_lower in {"chatgpt.com", "www.chatgpt.com"}:
             return normalized
-        if normalized.startswith("http://localhost"):
+        if parsed.scheme == "http" and host_lower in {"127.0.0.1", "localhost"}:
             return normalized
-        return DEFAULT_BASE_URL
+        return None
 
     def _fetch_usage(
         self,

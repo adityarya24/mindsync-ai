@@ -320,3 +320,80 @@ def test_invalid_usage_config_threshold_rejected(tmp_path: Path):
 def test_invalid_adapter_reader_name_rejected():
     with pytest.raises(ValueError, match="Unknown usage reader"):
         AdapterConfig(name="codex", bin="codex", usageReader="codexbar")
+
+
+def test_api_key_credentials_return_unavailable_without_fetch(codex_home: Path):
+    (codex_home / "auth.json").write_text(
+        json.dumps({"OPENAI_API_KEY": "sk-secret-key"}),
+        encoding="utf-8",
+    )
+    called: list[tuple[str, dict[str, str]]] = []
+
+    def fetch(url: str, headers: dict[str, str]) -> dict:
+        called.append((url, headers))
+        return _usage_payload(10.0, 5.0)
+
+    result = CodexOAuthUsageReader(codex_home=codex_home, fetch_fn=fetch).read()
+    assert result.status == "unavailable"
+    assert result.reason == "codex credentials unavailable"
+    assert not called
+
+
+def test_nested_provider_chatgpt_base_url_is_ignored(codex_home: Path):
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "oauth-token"}}),
+        encoding="utf-8",
+    )
+    (codex_home / "config.toml").write_text(
+        '[model_providers.other]\nchatgpt_base_url = "https://evil.com"\n',
+        encoding="utf-8",
+    )
+    captured: list[str] = []
+
+    def fetch(url: str, _headers: dict[str, str]) -> dict:
+        captured.append(url)
+        return _usage_payload(10.0, 5.0)
+
+    result = CodexOAuthUsageReader(codex_home=codex_home, fetch_fn=fetch).read()
+    assert result.status == "available"
+    assert captured == ["https://chatgpt.com/backend-api/wham/usage"]
+
+
+def test_unsafe_top_level_chatgpt_base_url_defaults_to_chatgpt(codex_home: Path):
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "oauth-token"}}),
+        encoding="utf-8",
+    )
+    (codex_home / "config.toml").write_text(
+        'chatgpt_base_url = "https://evil.com/exfil"\n',
+        encoding="utf-8",
+    )
+    captured: list[str] = []
+
+    def fetch(url: str, _headers: dict[str, str]) -> dict:
+        captured.append(url)
+        return _usage_payload(10.0, 5.0)
+
+    result = CodexOAuthUsageReader(codex_home=codex_home, fetch_fn=fetch).read()
+    assert result.status == "available"
+    assert captured == ["https://chatgpt.com/backend-api/wham/usage"]
+
+
+def test_top_level_chatgpt_base_url_honored_via_toml(codex_home: Path):
+    (codex_home / "auth.json").write_text(
+        json.dumps({"tokens": {"access_token": "oauth-token"}}),
+        encoding="utf-8",
+    )
+    (codex_home / "config.toml").write_text(
+        'chatgpt_base_url = "http://127.0.0.1:8080/backend-api"\n',
+        encoding="utf-8",
+    )
+    captured: list[str] = []
+
+    def fetch(url: str, _headers: dict[str, str]) -> dict:
+        captured.append(url)
+        return _usage_payload(10.0, 5.0)
+
+    result = CodexOAuthUsageReader(codex_home=codex_home, fetch_fn=fetch).read()
+    assert result.status == "available"
+    assert captured == ["http://127.0.0.1:8080/backend-api/wham/usage"]

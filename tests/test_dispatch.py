@@ -246,6 +246,69 @@ async def test_finished_agent_process_tree_is_contained(tmp_path: Path):
     assert proc.is_alive(child_pid) is False
 
 
+@pytest.mark.asyncio
+async def test_windows_kill_path_fails_closed_when_job_close_fails(monkeypatch):
+    monkeypatch.setattr(proc, "IS_WIN", True)
+
+    def fake_create(_pid: int) -> int:
+        return 4242
+
+    def fake_close(_handle: int) -> bool:
+        return False
+
+    monkeypatch.setattr(proc, "_create_kill_on_close_job", fake_create)
+    monkeypatch.setattr(proc, "_close_job", fake_close)
+    monkeypatch.setattr(proc, "is_alive", lambda _pid: False)
+    monkeypatch.setattr(proc, "kill_tree", lambda _pid: None)
+
+    result = await spawn_foreground(
+        sys.executable,
+        ["-c", "import time; time.sleep(30)"],
+        timeout_ms=200,
+    )
+    assert result["timedOut"] is True
+    assert result["processTreeDead"] is False
+
+
+@pytest.mark.asyncio
+async def test_windows_kill_path_fails_closed_when_leader_survives(monkeypatch):
+    monkeypatch.setattr(proc, "IS_WIN", True)
+
+    def fake_create(_pid: int) -> int:
+        return 4242
+
+    def fake_close(_handle: int) -> bool:
+        return True
+
+    monkeypatch.setattr(proc, "_create_kill_on_close_job", fake_create)
+    monkeypatch.setattr(proc, "_close_job", fake_close)
+    monkeypatch.setattr(proc, "is_alive", lambda _pid: True)
+    monkeypatch.setattr(proc, "kill_tree", lambda _pid: None)
+
+    result = await spawn_foreground(
+        sys.executable,
+        ["-c", "import time; time.sleep(30)"],
+        timeout_ms=200,
+    )
+    assert result["timedOut"] is True
+    assert result["processTreeDead"] is False
+
+
+@pytest.mark.asyncio
+async def test_windows_without_job_object_fails_closed(monkeypatch):
+    monkeypatch.setattr(proc, "IS_WIN", True)
+    monkeypatch.setattr(proc, "_create_kill_on_close_job", lambda _pid: None)
+    monkeypatch.setattr(proc, "is_alive", lambda _pid: False)
+
+    result = await spawn_foreground(
+        sys.executable,
+        ["-c", "print('ok')"],
+        timeout_ms=5_000,
+    )
+    assert result["exitCode"] == 0
+    assert result["processTreeDead"] is False
+
+
 def test_names_match_rules():
     assert names_match("node.exe", "node.exe") is True
     assert names_match("verylongprocess", "verylongprocessname.bin") is True

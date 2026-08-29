@@ -377,11 +377,19 @@ async def spawn_foreground(
         }
 
     windows_job = _create_kill_on_close_job(proc.pid)
+    windows_job_object_available = IS_WIN and windows_job is not None
+    job_object_tree_dead: bool | None = None
+
+    def _consume_windows_job(handle: int | None) -> None:
+        nonlocal job_object_tree_dead
+        if handle is not None:
+            job_object_tree_dead = _close_job(handle)
+
     if on_spawn is not None:
         try:
             on_spawn(proc.pid)
         except Exception:
-            _close_job(windows_job)
+            _consume_windows_job(windows_job)
             kill_tree(proc.pid)
             try:
                 await asyncio.wait_for(proc.communicate(), timeout=5.0)
@@ -403,7 +411,7 @@ async def spawn_foreground(
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
                     timed_out = True
-                    _close_job(windows_job)
+                    _consume_windows_job(windows_job)
                     windows_job = None
                     if proc.pid:
                         kill_tree(proc.pid)
@@ -428,7 +436,7 @@ async def spawn_foreground(
                 if action in {"handoff", "cancelled"}:
                     if action == "handoff":
                         preemptive_threshold = True
-                    _close_job(windows_job)
+                    _consume_windows_job(windows_job)
                     windows_job = None
                     if proc.pid:
                         kill_tree(proc.pid)
@@ -451,7 +459,7 @@ async def spawn_foreground(
             )
     except asyncio.TimeoutError:
         timed_out = True
-        _close_job(windows_job)
+        _consume_windows_job(windows_job)
         windows_job = None
         if proc.pid:
             kill_tree(proc.pid)
@@ -468,7 +476,7 @@ async def spawn_foreground(
             except (asyncio.TimeoutError, Exception):
                 stdout_b, stderr_b = b"", b""
     except asyncio.CancelledError:
-        _close_job(windows_job)
+        _consume_windows_job(windows_job)
         windows_job = None
         if proc.pid:
             kill_tree(proc.pid)
@@ -494,10 +502,13 @@ async def spawn_foreground(
 
     code = proc.returncode if proc.returncode is not None else -1
     if IS_WIN:
-        if windows_job is not None:
-            process_tree_dead = _close_job(windows_job)
+        _consume_windows_job(windows_job)
+        if windows_job_object_available:
+            process_tree_dead = job_object_tree_dead is True
         else:
-            process_tree_dead = not is_alive(proc.pid)
+            process_tree_dead = False
+        if proc.pid and is_alive(proc.pid):
+            process_tree_dead = False
     else:
         process_tree_dead = _posix_process_group_dead(proc.pid)
         if not process_tree_dead:
