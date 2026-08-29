@@ -189,3 +189,82 @@ def test_stop_warning_refreshes_stale_cache(tmp_path, monkeypatch):
 
     assert warnings
     assert "Codex seat nearing limit" in warnings[0]
+
+
+def test_stop_warning_uses_orchestrator_reserve_not_worker_threshold(
+    tmp_path, monkeypatch
+):
+    _enable_usage(tmp_path, monkeypatch)
+    user_config_path().write_text(
+        json.dumps(
+            {
+                "usage": {
+                    "enabled": True,
+                    "defaultThresholdPercent": 90,
+                    "orchestratorReservePercent": 80,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_cache(
+        UsageReadResult.available(
+            provider="codex",
+            account_scope="openai:test",
+            reader="codex-oauth",
+            source="test",
+            windows=[UsageWindow(id="primary", label="Primary", used_percent=85.0)],
+        )
+    )
+    monkeypatch.setattr(
+        "mindsync.codex_standalone_usage.prefetch_usage",
+        lambda **kwargs: None,
+    )
+    warnings: list[str] = []
+    maybe_append_reserve_warning(
+        f"reserve-{tmp_path.name}",
+        warnings,
+        memory_mode="auto",
+        timeout_seconds=0.2,
+    )
+
+    assert warnings
+    assert "85" in warnings[0]
+
+
+def test_stop_warning_below_orchestrator_reserve(tmp_path, monkeypatch):
+    _enable_usage(tmp_path, monkeypatch)
+    user_config_path().write_text(
+        json.dumps(
+            {
+                "usage": {
+                    "enabled": True,
+                    "defaultThresholdPercent": 90,
+                    "orchestratorReservePercent": 80,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_cache(
+        UsageReadResult.available(
+            provider="codex",
+            account_scope="openai:test",
+            reader="codex-oauth",
+            source="test",
+            windows=[UsageWindow(id="primary", label="Primary", used_percent=70.0)],
+        )
+    )
+    monkeypatch.setattr(
+        "mindsync.codex_standalone_usage.prefetch_usage",
+        lambda **kwargs: None,
+    )
+    warnings: list[str] = []
+    maybe_append_reserve_warning(
+        f"below-{tmp_path.name}",
+        warnings,
+        memory_mode="auto",
+        timeout_seconds=0.2,
+    )
+
+    assert warnings == []

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from mindsync.config import settings
-from mindsync.dispatch.usage.config import load_usage_config
+from mindsync.dispatch.usage.config import effective_reserve_percent, load_usage_config
 from mindsync.dispatch.usage.evaluate import evaluate_threshold
 from mindsync.dispatch.usage.readers.codex import CodexOAuthUsageReader
 from mindsync.dispatch.usage.types import ThresholdEvaluation, UsageReadResult, UsageWindow
@@ -220,7 +220,7 @@ def maybe_append_reserve_warning(
         return
     evaluation = evaluate_threshold(
         cached,
-        threshold_percent=config.defaultThresholdPercent,
+        threshold_percent=effective_reserve_percent(usage_config=config),
     )
     if evaluation.status != "at_threshold":
         return

@@ -22,6 +22,7 @@ class UsageConfig(BaseModel):
 
     enabled: bool = False
     defaultThresholdPercent: int = Field(default=DEFAULT_THRESHOLD_PERCENT, ge=1, le=100)
+    orchestratorReservePercent: int | None = Field(default=None, ge=1, le=100)
     pollingIntervalSeconds: int = Field(
         default=DEFAULT_POLLING_INTERVAL_SECONDS,
         ge=MIN_POLLING_INTERVAL_SECONDS,
@@ -33,6 +34,13 @@ class UsageConfig(BaseModel):
     def _coerce_threshold(cls, value: Any) -> Any:
         if value is None:
             return DEFAULT_THRESHOLD_PERCENT
+        return value
+
+    @field_validator("orchestratorReservePercent", mode="before")
+    @classmethod
+    def _coerce_reserve(cls, value: Any) -> Any:
+        if value is None or value == "":
+            return None
         return value
 
 
@@ -75,4 +83,11 @@ def effective_threshold_percent(
 ) -> int:
     if adapter_threshold is not None:
         return adapter_threshold
+    return usage_config.defaultThresholdPercent
+
+
+def effective_reserve_percent(*, usage_config: UsageConfig) -> int:
+    """Standalone Codex Stop threshold. Unset reserve follows the worker default."""
+    if usage_config.orchestratorReservePercent is not None:
+        return usage_config.orchestratorReservePercent
     return usage_config.defaultThresholdPercent

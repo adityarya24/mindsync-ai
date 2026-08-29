@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Separate opt-in Codex standalone orchestrator reserve (`usage.orchestratorReservePercent`)
+  so the human-facing seat can warn earlier than dispatched worker thresholds (#52).
+- Optional orchestration `completionSinkCmd` argv sink for persisted
+  `job.completed` / `job.failed` events, with allowlisted JSON, idempotent
+  `event_id` delivery, and no effect on job status (#52).
+
 ## [1.7.0] - 2026-08-29
 
 ### Added
