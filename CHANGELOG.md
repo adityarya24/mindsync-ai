@@ -7,27 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-08-29
+
 ### Added
 
-- Pluggable dispatch usage readers with a native Codex OAuth implementation.
-  Readers return a safe unavailable state for missing, malformed, or
+- Opt-in reactive provider-quota handoff for isolated dispatch jobs (#46). With
+  `--on-limit handoff`, a narrowly classified exhaustion failure cools the
+  configured provider/account, records a new attempt, and transfers the same
+  worktree to the next available agent only after process-tree shutdown and an
+  atomic worktree-lease handoff. The default remains `stop` and has no cooldown
+  side effect. `mindsync-dispatch limits` shows or clears active cooldowns.
+- Pluggable dispatch usage readers with a native Codex OAuth implementation
+  (#47). Readers return a safe unavailable state for missing, malformed, or
   unauthenticated sources. Configure global thresholds in `agents.json`
   `usage` (disabled by default) and per-adapter `usageReader`.
-- Opt-in pre-emptive usage polling and checkpoint-gated handoff when
-  `usage.enabled` is true and `--on-limit handoff` is set on a worktree job.
-  Dispatch skips cooling or over-threshold accounts before spawn, polls during a
+- Opt-in pre-emptive usage polling and checkpoint-gated handoff (#47). When
+  `usage.enabled` is true and `--on-limit handoff` is set on a worktree job,
+  dispatch skips cooling or over-threshold accounts before spawn, polls during a
   running attempt, and transfers only when a privacy-safe MindSync checkpoint
   already exists; otherwise it records `preemptiveBlocked` and keeps the
   reactive quota floor. There is no generic CLI control channel and dispatch
   never asks agents to write `HANDOFF.md`. Job status exposes usage
   evaluation, skips, blocks, and handoffs without persisting raw usage, auth, or
   source payloads.
-- Opt-in reactive provider-quota handoff for isolated dispatch jobs. With
-  `--on-limit handoff`, a narrowly classified exhaustion failure cools the
-  configured provider/account, records a new attempt, and transfers the same
-  worktree to the next available agent only after process-tree shutdown and an
-  atomic worktree-lease handoff. The default remains `stop` and has no cooldown
-  side effect. `mindsync-dispatch limits` shows or clears active cooldowns.
+
+### Fixed
+
+- Codex standalone hook bounds remaining seconds to the work budget so float
+  rounding cannot overshoot the deadline (#48).
+- Windows queue writers serialize under contention with a longer bounded lock
+  deadline, exponential backoff, and per-name thread mutexes so burst enqueue
+  workloads no longer time out on `msvcrt` locks (#48).
+- Windows lock tuning env vars (`MINDSYNC_QUEUE_LOCK_TIMEOUT`,
+  `MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE`, `MINDSYNC_LOCK_CONTENTION_BACKOFF_MAX`)
+  are validated at config load; the per-name thread-lock registry uses a
+  weak-value dictionary so ephemeral job lock names do not pin mutexes for the
+  process lifetime (#48).
+- Usage-aware automatic routing evaluates thresholds during initial agent
+  selection via the injectable evaluator seam (#48).
 
 ### Security
 
