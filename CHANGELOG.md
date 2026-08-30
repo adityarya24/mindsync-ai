@@ -20,9 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   token refresh reads `MINDSYNC_ANTIGRAVITY_CLIENT_ID` /
   `MINDSYNC_ANTIGRAVITY_CLIENT_SECRET` from the environment; the official
   installed-app values are not stored in the repo.
-- Dispatch ranking adds a headroom bonus from the hottest usage window when
-  `usage.enabled` is on (#71). Capability match still dominates; unreadable or
-  reactive adapters stay neutral. The same ranking picks `handoffRouting`
+- Dispatch ranking adds a signed headroom term from the hottest usage window
+  when `usage.enabled` is on (#71): 0% used is +50, 50% is 0, 100% is -50.
+  Unreadable or opted-out adapters stay at 0 (neutral, not exhausted).
+  Capability match still dominates. The same ranking picks `handoffRouting`
   successors.
 
 ## [1.8.1] - 2026-08-29
