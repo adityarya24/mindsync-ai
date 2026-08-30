@@ -268,10 +268,10 @@ def test_headroom_picks_fresh_grok_over_hot_codex(tmp_path, monkeypatch):
     )
     assert decision["agent"] == "grok"
     assert decision["usedPercent"] == 4
-    assert decision["headroomBonus"] == 96
+    assert decision["headroomBonus"] == 46
     by_name = {row["agent"]: row for row in decision["candidates"]}
     assert by_name["codex"]["usedPercent"] == 89
-    assert by_name["codex"]["headroomBonus"] == 11
+    assert by_name["codex"]["headroomBonus"] == -39
     assert "4% used vs codex 89%" in decision["reason"]
 
 
@@ -322,7 +322,7 @@ def test_capability_match_still_beats_a_fresher_unqualified_agent(tmp_path, monk
     assert all(row["agent"] != "fresh-coder" for row in decision["candidates"])
 
 
-def test_unavailable_reader_is_neutral_and_keeps_priority_order(tmp_path, monkeypatch):
+def test_unavailable_readers_keep_priority_order_when_all_readers_unavailable(tmp_path, monkeypatch):
     _configure_agents(tmp_path, monkeypatch)
     decision = select_agent(
         "do the work",
@@ -418,3 +418,90 @@ def test_handoff_successor_uses_the_same_headroom_ranking(tmp_path, monkeypatch)
     assert decision["agent"] == "grok"
     assert decision["excludedAgents"] == ["codex"]
     assert decision["usedPercent"] == 4
+
+
+def test_unread_adapter_is_not_penalized_against_a_readable_burned_one(tmp_path, monkeypatch):
+    _configure_agents(tmp_path, monkeypatch)
+    claude = AdapterConfig(
+        name="claude",
+        bin=sys.executable,
+        capabilities=["general"],
+        capabilityWeights={"general": 50},
+        routingPriority=80,
+        usageReader="claude-oauth",
+        quotaScope="anthropic:default",
+    )
+    aider = AdapterConfig(
+        name="aider",
+        bin=sys.executable,
+        capabilities=["general"],
+        capabilityWeights={"general": 50},
+        routingPriority=70,
+    )
+    decision = select_agent(
+        "do the work",
+        required_capabilities=["general"],
+        adapters={"claude": claude, "aider": aider},
+        usage_config=UsageConfig(enabled=True),
+        evaluator=_evaluator(
+            {
+                "claude": _eval("claude", [85]),
+                "aider": _eval("aider", [], status="unavailable"),
+            }
+        ),
+    )
+    assert decision["agent"] == "aider"
+    by_name = {row["agent"]: row for row in decision["candidates"]}
+    assert by_name["aider"]["usedPercent"] is None
+    assert by_name["aider"]["headroomBonus"] == 0
+    assert by_name["claude"]["usedPercent"] == 85
+    assert by_name["claude"]["headroomBonus"] == -35
+
+
+def test_cursor_opt_out_does_not_demote_when_usage_enabled(tmp_path, monkeypatch):
+    _configure_agents(tmp_path, monkeypatch)
+    cursor = AdapterConfig(
+        name="cursor",
+        bin=sys.executable,
+        capabilities=["general"],
+        capabilityWeights={"general": 50},
+        routingPriority=80,
+        usageReader="cursor-oauth",
+        quotaScope="cursor:default",
+    )
+    claude = AdapterConfig(
+        name="claude",
+        bin=sys.executable,
+        capabilities=["general"],
+        capabilityWeights={"general": 50},
+        routingPriority=70,
+        usageReader="claude-oauth",
+        quotaScope="anthropic:default",
+    )
+    adapters = {"cursor": cursor, "claude": claude}
+    evaluator = _evaluator(
+        {
+            "cursor": _eval("cursor", [], status="unavailable"),
+            "claude": _eval("claude", [85]),
+        }
+    )
+    off = select_agent(
+        "do the work",
+        required_capabilities=["general"],
+        adapters=adapters,
+        usage_config=UsageConfig(enabled=False),
+        evaluator=evaluator,
+    )
+    on = select_agent(
+        "do the work",
+        required_capabilities=["general"],
+        adapters=adapters,
+        usage_config=UsageConfig(enabled=True, readers={"cursor": False}),
+        evaluator=evaluator,
+    )
+    assert off["agent"] == "cursor"
+    assert on["agent"] == "cursor"
+    assert [row["agent"] for row in on["candidates"]] == [row["agent"] for row in off["candidates"]]
+    cursor_row = next(row for row in on["candidates"] if row["agent"] == "cursor")
+    assert cursor_row["headroomBonus"] == 0
+    assert cursor_row["usedPercent"] is None

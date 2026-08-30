@@ -14,7 +14,7 @@ from mindsync.dispatch.usage.preemptive import preflight_skip_reason, preemptive
 from mindsync.dispatch.usage.registry import evaluate_adapter_threshold
 from mindsync.dispatch.usage.types import ThresholdEvaluation
 
-HEADROOM_BONUS_MAX = 100.0
+HEADROOM_BONUS_SPAN = 50.0
 
 
 KNOWN_CAPABILITIES = frozenset({
@@ -85,9 +85,14 @@ def _hottest_used_percent(evaluation: ThresholdEvaluation | None) -> float | Non
 
 
 def _headroom_bonus(used_percent: float | None) -> float:
+    """Signed headroom in the same band as routingPriority.
+
+    Unknown/unreadable usage is 0 (neutral), not the same as 100% used.
+    Fresh (0% used) is +50; exhausted (100% used) is -50.
+    """
     if used_percent is None:
         return 0.0
-    return max(0.0, min(HEADROOM_BONUS_MAX, HEADROOM_BONUS_MAX - used_percent))
+    return max(-HEADROOM_BONUS_SPAN, min(HEADROOM_BONUS_SPAN, HEADROOM_BONUS_SPAN - used_percent))
 
 
 def _format_used_percent(value: float) -> str:
