@@ -189,16 +189,41 @@ def test_cursor_reads_plan_usage():
             "billingCycleEnd": "1788606107000",
         }
 
-    result = CursorOAuthUsageReader(token_loader=lambda: "cursor-jwt", fetch_fn=fetch).read()
+    result = CursorOAuthUsageReader(
+        enabled=True, token_loader=lambda: "cursor-jwt", fetch_fn=fetch
+    ).read()
     assert result.status == "available"
     assert result.windows[0].used_percent == 51.66
     assert result.windows[-1].used_percent == 51.66
 
 
 def test_cursor_missing_token_without_db(tmp_path: Path):
-    result = CursorOAuthUsageReader(cursor_db=tmp_path / "missing.vscdb").read()
+    result = CursorOAuthUsageReader(enabled=True, cursor_db=tmp_path / "missing.vscdb").read()
     assert result.status == "unavailable"
     assert result.reason == "cursor auth source missing"
+
+
+def test_cursor_opt_in_default_skips_session_db():
+    def boom() -> str:
+        raise AssertionError("cursor session db must not be opened when opt-in is off")
+
+    result = CursorOAuthUsageReader(enabled=False, token_loader=boom).read()
+    assert result.status == "unavailable"
+    assert result.reason == "cursor reader not enabled (set usage.readers.cursor)"
+
+
+def test_cursor_opt_in_on_reads_like_today():
+    def fetch(url: str, headers: dict[str, str], **_kwargs: object) -> dict:
+        return {
+            "planUsage": {"autoPercentUsed": 12.0, "totalPercentUsed": 12.0},
+            "billingCycleEnd": "1788606107000",
+        }
+
+    result = CursorOAuthUsageReader(
+        enabled=True, token_loader=lambda: "cursor-jwt", fetch_fn=fetch
+    ).read()
+    assert result.status == "available"
+    assert result.windows[0].used_percent == 12.0
 
 
 def test_opencode_go_prefers_hotter_monthly_window(tmp_path: Path):

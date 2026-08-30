@@ -122,6 +122,15 @@ def _print_doctor(report: dict[str, Any]) -> None:
         for family, backends in families.items()
     ]
     print(f"  workers  {', '.join(available) if available else 'none available'}")
+    usage_on = any(worker.get("usage_mode") == "preemptive" for worker in report.get("workers") or [])
+    usage_notes = [
+        f"{worker['name']}: {worker['usage_reason']}"
+        for worker in report.get("workers") or []
+        if worker.get("usage_reason")
+    ]
+    if usage_on or usage_notes:
+        suffix = f" — {'; '.join(usage_notes)}" if usage_notes else ""
+        print(f"  usage    {'on' if usage_on or usage_notes else 'off'}{suffix}")
     memory = report.get("memory") or {}
     if memory.get("db_error"):
         print(f"  memory   FAIL — {memory['db_error']}")

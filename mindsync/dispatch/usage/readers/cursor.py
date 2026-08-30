@@ -18,6 +18,11 @@ from mindsync.dispatch.usage.common import (
     parse_reset_at,
     session_weekly_windows,
 )
+from mindsync.dispatch.usage.config import (
+    CURSOR_READER_DISABLED_REASON,
+    load_usage_config,
+    reader_is_enabled,
+)
 from mindsync.dispatch.usage.types import UsageReadResult
 
 READER_NAME = "cursor-oauth"
@@ -38,18 +43,27 @@ class CursorOAuthUsageReader:
         fetch_fn: FetchFn | None = None,
         token_loader: TokenLoader | None = None,
         request_timeout_seconds: float | None = None,
+        enabled: bool | None = None,
     ) -> None:
         self._cursor_db = cursor_db
         self._account_scope = account_scope
         self._fetch_fn = fetch_fn
         self._token_loader = token_loader
         self._request_timeout_seconds = request_timeout_seconds
+        self._enabled = enabled
 
     @property
     def reader(self) -> str:
         return READER_NAME
 
     def read(self) -> UsageReadResult:
+        if not self._opted_in():
+            return UsageReadResult.unavailable(
+                provider=PROVIDER,
+                account_scope=self._scope(),
+                reason=CURSOR_READER_DISABLED_REASON,
+                reader=READER_NAME,
+            )
         try:
             token = self._token()
             if not token:
@@ -114,6 +128,11 @@ class CursorOAuthUsageReader:
                 reason="cursor usage data malformed",
                 reader=READER_NAME,
             )
+
+    def _opted_in(self) -> bool:
+        if self._enabled is not None:
+            return bool(self._enabled)
+        return reader_is_enabled(READER_NAME, load_usage_config())
 
     def _scope(self) -> str:
         return self._account_scope or "cursor:default"

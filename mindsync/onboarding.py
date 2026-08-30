@@ -710,10 +710,29 @@ def _usage_mode_for_adapter(
 ) -> str:
     config = usage_config or load_usage_config()
     if adapter.usageReader and config.enabled:
+        from mindsync.dispatch.usage.config import reader_is_enabled
+
+        if not reader_is_enabled(adapter.usageReader, config):
+            return "disabled"
         return "preemptive"
     if adapter.quotaErrorPatterns:
         return "reactive-only"
     return "disabled"
+
+
+def _usage_reason_for_adapter(
+    adapter: Any,
+    *,
+    usage_config: UsageConfig | None = None,
+) -> str | None:
+    config = usage_config or load_usage_config()
+    if not (adapter.usageReader and config.enabled):
+        return None
+    from mindsync.dispatch.usage.config import reader_disabled_reason, reader_is_enabled
+
+    if reader_is_enabled(adapter.usageReader, config):
+        return None
+    return reader_disabled_reason(adapter.usageReader)
 
 
 def doctor(
@@ -750,6 +769,7 @@ def doctor(
             "capabilities": adapter.capabilities or ["general"],
             "usage_mode": _usage_mode_for_adapter(adapter, usage_config=usage_config),
             "usage_reader": adapter.usageReader,
+            "usage_reason": _usage_reason_for_adapter(adapter, usage_config=usage_config),
             "reactive_reset": reactive_reset_source(adapter),
             "provider": adapter.family or adapter.name,
         })

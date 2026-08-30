@@ -17,7 +17,10 @@ from mindsync.dispatch.usage import (
     read_usage_for_adapter,
     safe_read,
 )
+from mindsync.dispatch.usage.config import UsageConfig
+from mindsync.dispatch.usage.readers.claude import ClaudeOAuthUsageReader
 from mindsync.dispatch.usage.readers.codex import CodexOAuthUsageReader
+from mindsync.dispatch.usage.readers.cursor import CursorOAuthUsageReader
 from mindsync.dispatch.usage.types import UsageReadResult, UsageWindow
 
 
@@ -231,6 +234,74 @@ def test_percentage_boundaries_reject_out_of_range(codex_home: Path):
     result = CodexOAuthUsageReader(codex_home=codex_home, fetch_fn=fetch).read()
     assert result.status == "unavailable"
     assert result.reason == "codex usage data malformed"
+
+
+def test_default_usage_config_keeps_cursor_opt_in_off():
+    config = UsageConfig()
+    assert config.enabled is False
+    assert config.readers.cursor is False
+    empty = load_usage_config()
+    assert empty.readers.cursor is False
+
+
+def test_cursor_reader_stays_unavailable_until_opted_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    agents = tmp_path / "agents.json"
+    agents.write_text(json.dumps({"usage": {"enabled": True}}), encoding="utf-8")
+    monkeypatch.setattr("mindsync.dispatch.usage.config.user_config_path", lambda: agents)
+    monkeypatch.setattr("mindsync.dispatch.usage.readers.cursor.load_usage_config", load_usage_config)
+
+    def boom() -> str:
+        raise AssertionError("cursor db opened without opt-in")
+
+    adapter = AdapterConfig(
+        name="cursor",
+        bin="cursor-agent",
+        usageReader="cursor-oauth",
+        quotaScope="cursor:default",
+    )
+    result = read_usage_for_adapter(adapter, usage_config=load_usage_config(agents))
+    assert result.status == "unavailable"
+    assert result.reason == "cursor reader not enabled (set usage.readers.cursor)"
+    assert CursorOAuthUsageReader(token_loader=boom).read().reason == (
+        "cursor reader not enabled (set usage.readers.cursor)"
+    )
+
+    opted = UsageConfig(enabled=True, readers={"cursor": True})
+    live = CursorOAuthUsageReader(
+        enabled=True,
+        token_loader=lambda: "cursor-jwt",
+        fetch_fn=lambda *_a, **_k: {
+            "planUsage": {"autoPercentUsed": 3.0, "totalPercentUsed": 3.0},
+            "billingCycleEnd": "1788606107000",
+        },
+    ).read()
+    assert live.status == "available"
+    assert opted.readers.cursor is True
+
+
+def test_non_cursor_readers_stay_on_when_usage_enabled(tmp_path: Path):
+    claude_home = tmp_path / "claude"
+    claude_home.mkdir()
+    (claude_home / ".credentials.json").write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "sk-ant-oat01-test",
+                    "refreshToken": "sk-ant-ort01-test",
+                    "expiresAt": 4102444800000,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = ClaudeOAuthUsageReader(
+        claude_home=claude_home,
+        fetch_fn=lambda *_a, **_k: {
+            "limits": [{"kind": "session", "percent": 8, "resets_at": "2026-08-30T12:00:00Z"}]
+        },
+    ).read()
+    assert result.status == "available"
+    assert result.windows[0].used_percent == 8.0
 
 
 def test_adapter_without_reader_stays_unavailable():

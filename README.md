@@ -143,7 +143,7 @@ MindSync includes pluggable usage readers. Bundled readers use local CLI/IDE ses
 | `claude` | `claude-oauth` | `~/.claude/.credentials.json` + Anthropic OAuth usage |
 | `grok` | `grok-oauth` | Grok CLI session + billing credits |
 | `agy` / `gemini` | `antigravity-oauth` | Official Antigravity CLI vault + quota summary |
-| `cursor` | `cursor-oauth` | Cursor `state.vscdb` session token + period usage |
+| `cursor` | `cursor-oauth` | Cursor IDE session DB (`User/globalStorage/state.vscdb`), read-only. **Opt-in:** `usage.readers.cursor: true`. Off by default — this is not a Cursor CLI auth file. |
 | `opencode` | `opencode-go` | OpenCode **Go** plan key only, not BYOK upstreams |
 
 **Antigravity token refresh.** A still-valid access token is enough to read quota. If the token has expired, refresh needs the official installed-app OAuth client. Set both of these in the environment of the process that runs dispatch/MCP — they are **not** stored in the repo:
@@ -159,13 +159,17 @@ Without them, an expired Antigravity token makes the reader return `unavailable`
     "enabled": false,
     "defaultThresholdPercent": 90,
     "orchestratorReservePercent": 80,
-    "pollingIntervalSeconds": 60
+    "pollingIntervalSeconds": 60,
+    "readers": {
+      "cursor": false
+    }
   }
 }
 ```
 
 * **`defaultThresholdPercent`**: Dispatched worker handoff threshold.
 * **`orchestratorReservePercent`**: Threshold for warning the operator before starting large runs.
+* **`readers.cursor`**: Must be `true` before MindSync opens Cursor's IDE `state.vscdb`. The other bundled readers do not need a per-reader flag.
 * If a provider reaches threshold and a MindSync checkpoint exists, dispatch safely transfers the worktree diff to the successor agent.
 
 ### Automated Pull Request Workflow

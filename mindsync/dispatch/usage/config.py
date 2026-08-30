@@ -26,6 +26,17 @@ KNOWN_READERS = frozenset(
 )
 
 
+CURSOR_READER_NAME = "cursor-oauth"
+CURSOR_READER_OPT_IN_KEY = "usage.readers.cursor"
+CURSOR_READER_DISABLED_REASON = "cursor reader not enabled (set usage.readers.cursor)"
+
+
+class UsageReaderToggles(BaseModel):
+    """Per-reader switches. Only Cursor is opt-in; others stay on with usage.enabled."""
+
+    cursor: bool = False
+
+
 class UsageConfig(BaseModel):
     """Global usage-reader settings from agents.json."""
 
@@ -37,6 +48,7 @@ class UsageConfig(BaseModel):
         ge=MIN_POLLING_INTERVAL_SECONDS,
         le=MAX_POLLING_INTERVAL_SECONDS,
     )
+    readers: UsageReaderToggles = Field(default_factory=UsageReaderToggles)
 
     @field_validator("defaultThresholdPercent", mode="before")
     @classmethod
@@ -83,6 +95,19 @@ def load_usage_config(path: Path | None = None) -> UsageConfig:
     if not isinstance(usage, dict):
         raise ValueError(f"usage in {config_path} must be an object")
     return UsageConfig.model_validate(usage)
+
+
+def reader_is_enabled(reader_name: str | None, usage_config: UsageConfig) -> bool:
+    """Cursor's IDE session DB is opt-in. Every other bundled reader follows usage.enabled."""
+    if reader_name == CURSOR_READER_NAME:
+        return bool(usage_config.readers.cursor)
+    return True
+
+
+def reader_disabled_reason(reader_name: str | None) -> str | None:
+    if reader_name == CURSOR_READER_NAME:
+        return CURSOR_READER_DISABLED_REASON
+    return None
 
 
 def effective_threshold_percent(

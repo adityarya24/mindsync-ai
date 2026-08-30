@@ -10,9 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Preemptive usage readers for Claude Code OAuth, Grok CLI billing, Antigravity
-  quota summary, Cursor period usage, and OpenCode Go (`claude-oauth`,
-  `grok-oauth`, `antigravity-oauth`, `cursor-oauth`, `opencode-go`). Doctor
-  reports these adapters as preemptive when `usage.enabled` is on. Antigravity
+  quota summary, and OpenCode Go (`claude-oauth`, `grok-oauth`,
+  `antigravity-oauth`, `opencode-go`). Those four read that CLI's own auth
+  store. Cursor (`cursor-oauth`) is separate: it opens the Cursor IDE session
+  database (`User/globalStorage/state.vscdb`) read-only, and stays off until
+  `usage.readers.cursor` is true. Doctor reports opted-in readers as
+  preemptive when `usage.enabled` is on; a disabled Cursor reader is
+  `unavailable` with `set usage.readers.cursor` in the reason. Antigravity
   token refresh reads `MINDSYNC_ANTIGRAVITY_CLIENT_ID` /
   `MINDSYNC_ANTIGRAVITY_CLIENT_SECRET` from the environment; the official
   installed-app values are not stored in the repo.
