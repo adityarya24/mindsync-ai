@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-08-31
+
 ### Added
 
 - Preemptive usage readers for Claude Code OAuth, Grok CLI billing, Antigravity
@@ -25,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Unreadable or opted-out adapters stay at 0 (neutral, not exhausted).
   Capability match still dominates. The same ranking picks `handoffRouting`
   successors.
+
+### Fixed
+
+- Usage-aware routing now shares one process-local provider snapshot per reader
+  and quota scope for `usage.pollingIntervalSeconds`, including concurrent route
+  requests. This prevents route preview, preflight, and job start from issuing
+  back-to-back quota API calls that can trigger provider throttling.
 
 ## [1.8.1] - 2026-08-29
 
