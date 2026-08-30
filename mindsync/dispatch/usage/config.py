@@ -14,7 +14,16 @@ DEFAULT_THRESHOLD_PERCENT = 90
 DEFAULT_POLLING_INTERVAL_SECONDS = 60
 MIN_POLLING_INTERVAL_SECONDS = 5
 MAX_POLLING_INTERVAL_SECONDS = 600
-KNOWN_READERS = frozenset({"codex-oauth"})
+KNOWN_READERS = frozenset(
+    {
+        "codex-oauth",
+        "claude-oauth",
+        "grok-oauth",
+        "antigravity-oauth",
+        "cursor-oauth",
+        "opencode-go",
+    }
+)
 
 
 class UsageConfig(BaseModel):

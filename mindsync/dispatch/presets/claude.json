@@ -12,6 +12,7 @@
   "capabilityWeights": {"architecture": 100, "reasoning": 95, "review": 90, "writing": 90, "coding": 75},
   "routingPriority": 75,
   "quotaScope": "anthropic:default",
+  "usageReader": "claude-oauth",
   "quotaCooldownSeconds": 18000,
   "quotaErrorPatterns": [
     "(?im)^Claude AI usage limit reached\\|[0-9]{10}\\s*$",

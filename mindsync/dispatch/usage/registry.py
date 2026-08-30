@@ -13,13 +13,29 @@ from mindsync.dispatch.usage.config import (
     validate_reader_name,
 )
 from mindsync.dispatch.usage.evaluate import evaluate_threshold
+from mindsync.dispatch.usage.readers.antigravity import (
+    AntigravityOAuthUsageReader,
+    READER_NAME as ANTIGRAVITY_OAUTH_READER,
+)
+from mindsync.dispatch.usage.readers.claude import ClaudeOAuthUsageReader, READER_NAME as CLAUDE_OAUTH_READER
 from mindsync.dispatch.usage.readers.codex import CodexOAuthUsageReader, READER_NAME as CODEX_OAUTH_READER
+from mindsync.dispatch.usage.readers.cursor import CursorOAuthUsageReader, READER_NAME as CURSOR_OAUTH_READER
+from mindsync.dispatch.usage.readers.grok import GrokOAuthUsageReader, READER_NAME as GROK_OAUTH_READER
+from mindsync.dispatch.usage.readers.opencode_go import (
+    OpenCodeGoUsageReader,
+    READER_NAME as OPENCODE_GO_READER,
+)
 from mindsync.dispatch.usage.types import ThresholdEvaluation, UsageReadResult
 
 ReaderFactory = Callable[..., Any]
 
 _READERS: dict[str, ReaderFactory] = {
     CODEX_OAUTH_READER: lambda **kwargs: CodexOAuthUsageReader(**kwargs),
+    CLAUDE_OAUTH_READER: lambda **kwargs: ClaudeOAuthUsageReader(**kwargs),
+    GROK_OAUTH_READER: lambda **kwargs: GrokOAuthUsageReader(**kwargs),
+    ANTIGRAVITY_OAUTH_READER: lambda **kwargs: AntigravityOAuthUsageReader(**kwargs),
+    CURSOR_OAUTH_READER: lambda **kwargs: CursorOAuthUsageReader(**kwargs),
+    OPENCODE_GO_READER: lambda **kwargs: OpenCodeGoUsageReader(**kwargs),
 }
 
 
