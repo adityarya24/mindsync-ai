@@ -10,5 +10,7 @@
   "installHint": "See https://cursor.com/cli",
   "capabilities": ["general", "coding", "repository", "debugging", "refactoring"],
   "capabilityWeights": {"repository": 95, "coding": 85, "debugging": 85, "refactoring": 85},
-  "routingPriority": 65
+  "routingPriority": 65,
+  "quotaScope": "cursor:default",
+  "usageReader": "cursor-oauth"
 }

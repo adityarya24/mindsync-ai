@@ -300,6 +300,29 @@ def test_doctor_reports_hosts_policy_and_worker_inventory(tmp_path, monkeypatch)
     assert grok["reactive_reset"] == "quotaCooldownSeconds"
 
 
+def test_doctor_explains_disabled_cursor_reader(tmp_path, monkeypatch):
+    settings = _isolate(tmp_path, monkeypatch)
+    dispatch_home = settings.home / "dispatch"
+    dispatch_home.mkdir(parents=True, exist_ok=True)
+    (dispatch_home / "agents.json").write_text(
+        json.dumps({"usage": {"enabled": True}}),
+        encoding="utf-8",
+    )
+    report = onboarding.doctor(
+        runner=FakeCliRunner(),
+        resolver=_resolver,
+        user_home=tmp_path / "user",
+        policy_file=settings.orchestration_file,
+        probe_hosts=False,
+    )
+    cursor = next(worker for worker in report["workers"] if worker["name"] == "cursor")
+    assert cursor["usage_mode"] == "disabled"
+    assert cursor["usage_reason"] == "cursor reader not enabled (set usage.readers.cursor)"
+    claude = next(worker for worker in report["workers"] if worker["name"] == "claude")
+    assert claude["usage_mode"] == "preemptive"
+    assert claude.get("usage_reason") in (None, "")
+
+
 def test_doctor_fails_when_no_host_is_configured(tmp_path, monkeypatch):
     settings = _isolate(tmp_path, monkeypatch)
     runner = FakeCliRunner()

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Preemptive usage readers for Claude Code OAuth, Grok CLI billing, Antigravity
+  quota summary, and OpenCode Go (`claude-oauth`, `grok-oauth`,
+  `antigravity-oauth`, `opencode-go`). Those four read that CLI's own auth
+  store. Cursor (`cursor-oauth`) is separate: it opens the Cursor IDE session
+  database (`User/globalStorage/state.vscdb`) read-only, and stays off until
+  `usage.readers.cursor` is true. Doctor reports opted-in readers as
+  preemptive when `usage.enabled` is on; a disabled Cursor reader is
+  `unavailable` with `set usage.readers.cursor` in the reason. Antigravity
+  token refresh reads `MINDSYNC_ANTIGRAVITY_CLIENT_ID` /
+  `MINDSYNC_ANTIGRAVITY_CLIENT_SECRET` from the environment; the official
+  installed-app values are not stored in the repo.
+
 ## [1.8.1] - 2026-08-29
 
 ### Fixed
@@ -19,7 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host CLI and everything it loads — on a machine where a host also runs a bound
   chat-channel plugin, that would steal the channel's single-instance lock. This
   extends the same fix already applied to the `list_agents` MCP tool.
-
 
 ## [1.8.0] - 2026-08-29
 

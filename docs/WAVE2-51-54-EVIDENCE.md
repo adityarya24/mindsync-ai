@@ -12,19 +12,20 @@ pasted live tokens. MindSync sees CLI stdout/stderr, not provider HTTP headers.
 | Adapter | Upstream identity | Authoritative usage source MindSync can see | Credential class | Usable fields | Verdict |
 |---|---|---|---|---|---|
 | `codex` | OpenAI / ChatGPT account (`quotaScope` `openai:default`, reader `codex-oauth`) | Local `~/.codex/auth.json` OAuth + `chatgpt.com/backend-api/wham/usage` (already implemented) | Operator-local Codex OAuth file, revocable via `codex logout` | `used_percent`, optional `reset_at` | **implementable** — already in tree |
-| `claude` | Anthropic (`anthropic:default`) | No in-repo CLI usage endpoint. Exhaustion is stderr-classified (`quotaErrorPatterns`). Anthropic API rate-limit *headers* are not visible to MindSync. | Browser/session cookies or undocumented CLI internals would be required for a live % reader | n/a | **reactive-only** |
-| `agy` / `gemini` | Shared `quotaScope` `google:default` — two CLIs, one Google account | No sanitized Gemini CLI usage JSON in-repo. Google AI Studio / Cloud quota APIs need a Cloud credential, not the Gemini CLI login cookie. | Browser cookie import is forbidden; ADC/API keys are a different identity than Antigravity CLI login | n/a | **reactive-only** until an official CLI usage command exists |
-| `grok` | xAI (preset has no `quotaScope`; degrades to `agent:grok`) | `GROK_API_KEY` is a generic key, not a usage document. No CLI `usage` subcommand in the preset. | API key in env is not a documented usage-percentage contract with a denominator | n/a | **reactive-only** |
-| `cursor` | Cursor account (not the model vendor) | Cursor CLI (`cursor-agent`) has no documented usage dump in this repo. Dashboard usage is a browser session. | Cookie/DB harvest forbidden | n/a | **blocked pending explicit security approval** for any dashboard scrape |
-| `opencode` | **Adapter ≠ account.** OpenCode can route many upstreams | No single usage endpoint. A reader keyed to `opencode` would mix providers. | Would need per-upstream credentials, not OpenCode login | n/a | **blocked pending explicit security approval** (identity split) |
+| `claude` | Anthropic (`anthropic:default`, reader `claude-oauth`) | Local `~/.claude/.credentials.json` OAuth + `api.anthropic.com/api/oauth/usage` | Operator-local Claude Code OAuth file, revocable via `claude auth logout` | session + weekly `used_percent`, optional `reset_at` | **implementable** |
+| `agy` / `gemini` | Shared `quotaScope` `google:default`, reader `antigravity-oauth` | Official Antigravity CLI vault (`gemini:antigravity`) + `retrieveUserQuotaSummary` | CLI OAuth store, not Chrome cookies | 5h + weekly remaining fractions | **implementable** |
+| `grok` | xAI (`xai:default`, reader `grok-oauth`) | Local `~/.grok/auth.json` session + `cli-chat-proxy.grok.com/v1/billing?format=credits` | Operator-local Grok CLI OAuth file | weekly `creditUsagePercent`, optional product window | **implementable** |
+| `cursor` | Cursor account (`cursor:default`, reader `cursor-oauth`) | Local Cursor IDE `state.vscdb` `cursorAuth/accessToken` + `GetCurrentPeriodUsage` | IDE session DB, read-only, **opt-in** via `usage.readers.cursor` | plan `autoPercentUsed` / `totalPercentUsed` | **implementable**, default off |
+| `opencode` | OpenCode Go plan (`opencode-go:default`, reader `opencode-go`) | Local `opencode-go` API key + `opencode.ai/zen/go/v1/usage` | Go subscription key only — not BYOK upstreams | rolling + weekly/monthly percent | **implementable** for Go; other OpenCode upstreams stay out of this reader |
 | `aider` | **Adapter ≠ account.** Model chosen by `--model` / env keys | No Aider usage API. Local token counters are not an authoritative denominator | Env API keys are not usage documents | n/a | **blocked pending explicit security approval** (identity split) |
 
 ### #51 conclusion
 
-**Closed as recorded verdict (2026-08-29).** Codex is the only implementable
-CLI-token reader. Other adapters stay `reactive-only` or blocked. MindSync will
-not harvest browser cookies or keychains. An operator-supplied credential path
-is a future product decision, not an open implementation checklist.
+**Updated 2026-08-30.** Codex remains the reference reader. Claude, Grok,
+Antigravity, Cursor, and OpenCode Go now have native readers using local CLI/IDE
+session stores (not Chrome cookie import). OpenCode BYOK upstreams stay out of
+the Go reader. Browser profiles and keychains other than the official
+Antigravity CLI vault are still forbidden.
 
 Doctor reports `usage_mode` and `reactive_reset` per adapter.
 

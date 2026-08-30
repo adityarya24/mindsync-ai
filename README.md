@@ -135,7 +135,23 @@ mindsync-dispatch limits clear
 ```
 
 ### Pre-emptive Usage Evaluation
-MindSync includes pluggable usage readers. For example, the bundled **Codex OAuth Reader** (`codex-oauth`) reads local OAuth tokens from `~/.codex/auth.json` and evaluates primary and weekly usage windows before spawning tasks.
+MindSync includes pluggable usage readers. Bundled readers use local CLI/IDE session stores (not browser cookies). A missing or failed read stays `unavailable` — dispatch does not invent a percent.
+
+| Adapter | Reader | Local source |
+| :--- | :--- | :--- |
+| `codex` | `codex-oauth` | `~/.codex/auth.json` + ChatGPT WHAM usage |
+| `claude` | `claude-oauth` | `~/.claude/.credentials.json` + Anthropic OAuth usage |
+| `grok` | `grok-oauth` | Grok CLI session + billing credits |
+| `agy` / `gemini` | `antigravity-oauth` | Official Antigravity CLI vault + quota summary |
+| `cursor` | `cursor-oauth` | Cursor IDE session DB (`User/globalStorage/state.vscdb`), read-only. **Opt-in:** `usage.readers.cursor: true`. Off by default — this is not a Cursor CLI auth file. |
+| `opencode` | `opencode-go` | OpenCode **Go** plan key only, not BYOK upstreams |
+
+**Antigravity token refresh.** A still-valid access token is enough to read quota. If the token has expired, refresh needs the official installed-app OAuth client. Set both of these in the environment of the process that runs dispatch/MCP — they are **not** stored in the repo:
+
+* `MINDSYNC_ANTIGRAVITY_CLIENT_ID`
+* `MINDSYNC_ANTIGRAVITY_CLIENT_SECRET`
+
+Without them, an expired Antigravity token makes the reader return `unavailable` (neutral, not a fake 0%). `mindsync doctor` reports the adapter as preemptive only when `usage.enabled` is on.
 
 ```json
 {
@@ -143,13 +159,17 @@ MindSync includes pluggable usage readers. For example, the bundled **Codex OAut
     "enabled": false,
     "defaultThresholdPercent": 90,
     "orchestratorReservePercent": 80,
-    "pollingIntervalSeconds": 60
+    "pollingIntervalSeconds": 60,
+    "readers": {
+      "cursor": false
+    }
   }
 }
 ```
 
 * **`defaultThresholdPercent`**: Dispatched worker handoff threshold.
 * **`orchestratorReservePercent`**: Threshold for warning the operator before starting large runs.
+* **`readers.cursor`**: Must be `true` before MindSync opens Cursor's IDE `state.vscdb`. The other bundled readers do not need a per-reader flag.
 * If a provider reaches threshold and a MindSync checkpoint exists, dispatch safely transfers the worktree diff to the successor agent.
 
 ### Automated Pull Request Workflow
@@ -206,6 +226,8 @@ mindsync memory recall --project my-repo --query "database migration decision"
 | `MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE` | Backoff base for Windows lock contention | `0.05` |
 | `MINDSYNC_SSH_HOST` | Remote VPS host for optional sync | — |
 | `MINDSYNC_REMOTE_ROOT` | Remote VPS sync directory | — |
+| `MINDSYNC_ANTIGRAVITY_CLIENT_ID` | Google installed-app client id for Antigravity token refresh | — |
+| `MINDSYNC_ANTIGRAVITY_CLIENT_SECRET` | Matching client secret. Required only when the vault access token is expired; omit both rather than guessing | — |
 
 </details>
 
