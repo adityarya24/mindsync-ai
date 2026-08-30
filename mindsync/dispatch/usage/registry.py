@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from threading import Lock
+from time import monotonic
 from typing import Any
 
 from mindsync.dispatch.adapters import AdapterConfig
@@ -40,12 +42,51 @@ _READERS: dict[str, ReaderFactory] = {
     OPENCODE_GO_READER: lambda **kwargs: OpenCodeGoUsageReader(**kwargs),
 }
 
+_UsageCacheKey = tuple[str, str, bool]
+_USAGE_CACHE: dict[_UsageCacheKey, tuple[float, UsageReadResult]] = {}
+_USAGE_READ_LOCKS: dict[_UsageCacheKey, Lock] = {}
+_USAGE_CACHE_LOCK = Lock()
+
+
+def _clear_usage_cache() -> None:
+    """Reset process-local usage snapshots (primarily for isolated tests)."""
+    with _USAGE_CACHE_LOCK:
+        _USAGE_CACHE.clear()
+
+
+def _cached_usage_result(
+    key: _UsageCacheKey,
+    *,
+    max_age_seconds: float,
+) -> UsageReadResult | None:
+    now = monotonic()
+    with _USAGE_CACHE_LOCK:
+        cached = _USAGE_CACHE.get(key)
+        if cached is None:
+            return None
+        observed_at, result = cached
+        if now - observed_at >= max_age_seconds:
+            _USAGE_CACHE.pop(key, None)
+            return None
+        return result.model_copy(deep=True)
+
+
+def _usage_read_lock(key: _UsageCacheKey) -> Lock:
+    with _USAGE_CACHE_LOCK:
+        return _USAGE_READ_LOCKS.setdefault(key, Lock())
+
+
+def _store_usage_result(key: _UsageCacheKey, result: UsageReadResult) -> None:
+    with _USAGE_CACHE_LOCK:
+        _USAGE_CACHE[key] = (monotonic(), result.model_copy(deep=True))
+
 
 def register_reader(name: str, factory: ReaderFactory) -> None:
     cleaned = validate_reader_name(name)
     if cleaned is None:
         raise ValueError("reader name must not be empty")
     _READERS[cleaned] = factory
+    _clear_usage_cache()
 
 
 def known_readers() -> list[str]:
@@ -120,11 +161,27 @@ def read_usage_for_adapter(
             reason="usage reader not configured",
         )
     scope = adapter.quotaScope or f"agent:{adapter.name}"
-    return safe_read(
-        adapter.usageReader,
-        account_scope=scope,
-        usage_config=usage_config or load_usage_config(),
-    )
+    config = usage_config or load_usage_config()
+    reader_name = adapter.usageReader.strip().lower()
+    key = (reader_name, scope, reader_is_enabled(reader_name, config))
+    max_age_seconds = float(config.pollingIntervalSeconds)
+    cached = _cached_usage_result(key, max_age_seconds=max_age_seconds)
+    if cached is not None:
+        return cached
+
+    # A route preview, preflight, and job start may converge on the same account.
+    # Serialize only that reader/scope so one provider request refreshes the snapshot.
+    with _usage_read_lock(key):
+        cached = _cached_usage_result(key, max_age_seconds=max_age_seconds)
+        if cached is not None:
+            return cached
+        result = safe_read(
+            reader_name,
+            account_scope=scope,
+            usage_config=config,
+        )
+        _store_usage_result(key, result)
+        return result
 
 
 def evaluate_adapter_threshold(

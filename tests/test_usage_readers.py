@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event
 from urllib.error import HTTPError
 
 import pytest
 
+import mindsync.dispatch.usage.registry as usage_registry
 from mindsync.dispatch.adapters import AdapterConfig, load_adapters
 from mindsync.dispatch.usage import (
     evaluate_adapter_threshold,
@@ -22,6 +25,13 @@ from mindsync.dispatch.usage.readers.claude import ClaudeOAuthUsageReader
 from mindsync.dispatch.usage.readers.codex import CodexOAuthUsageReader
 from mindsync.dispatch.usage.readers.cursor import CursorOAuthUsageReader
 from mindsync.dispatch.usage.types import UsageReadResult, UsageWindow
+
+
+@pytest.fixture(autouse=True)
+def _clear_usage_snapshot_cache():
+    usage_registry._clear_usage_cache()
+    yield
+    usage_registry._clear_usage_cache()
 
 
 def _usage_payload(
@@ -309,6 +319,121 @@ def test_adapter_without_reader_stays_unavailable():
     result = read_usage_for_adapter(adapter)
     assert result.status == "unavailable"
     assert result.reason == "usage reader not configured"
+
+
+def test_adapter_usage_snapshot_is_shared_by_scope_and_refreshes_on_interval(monkeypatch):
+    clock = [100.0]
+    calls: list[str] = []
+
+    def fake_safe_read(_reader_name: str, **kwargs) -> UsageReadResult:
+        calls.append(kwargs["account_scope"])
+        return UsageReadResult.available(
+            provider="codex",
+            account_scope=kwargs["account_scope"],
+            reader="codex-oauth",
+            source="test",
+            windows=[
+                UsageWindow(
+                    id="primary",
+                    label="Primary",
+                    used_percent=float(len(calls)),
+                )
+            ],
+        )
+
+    monkeypatch.setattr(usage_registry, "safe_read", fake_safe_read)
+    monkeypatch.setattr(usage_registry, "monotonic", lambda: clock[0])
+    config = UsageConfig(enabled=True, pollingIntervalSeconds=5)
+    primary = AdapterConfig(
+        name="codex",
+        bin="codex",
+        usageReader="codex-oauth",
+        quotaScope="openai:shared",
+    )
+    alias = AdapterConfig(
+        name="codex-backup",
+        bin="codex",
+        usageReader="codex-oauth",
+        quotaScope="openai:shared",
+    )
+
+    first = read_usage_for_adapter(primary, usage_config=config)
+    clock[0] = 104.999
+    cached = read_usage_for_adapter(alias, usage_config=config)
+    clock[0] = 105.0
+    refreshed = read_usage_for_adapter(primary, usage_config=config)
+
+    assert calls == ["openai:shared", "openai:shared"]
+    assert first.windows[0].used_percent == cached.windows[0].used_percent == 1.0
+    assert refreshed.windows[0].used_percent == 2.0
+
+
+def test_adapter_usage_snapshot_deduplicates_concurrent_reads(monkeypatch):
+    entered = Event()
+    release = Event()
+    calls = 0
+
+    def fake_safe_read(_reader_name: str, **kwargs) -> UsageReadResult:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        assert release.wait(timeout=2)
+        return UsageReadResult.available(
+            provider="claude",
+            account_scope=kwargs["account_scope"],
+            reader="claude-oauth",
+            source="test",
+            windows=[UsageWindow(id="session", label="Session", used_percent=12.0)],
+        )
+
+    monkeypatch.setattr(usage_registry, "safe_read", fake_safe_read)
+    adapter = AdapterConfig(
+        name="claude",
+        bin="claude",
+        usageReader="claude-oauth",
+        quotaScope="anthropic:shared",
+    )
+    config = UsageConfig(enabled=True, pollingIntervalSeconds=60)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(read_usage_for_adapter, adapter, usage_config=config)
+        assert entered.wait(timeout=2)
+        second = pool.submit(read_usage_for_adapter, adapter, usage_config=config)
+        release.set()
+        results = [first.result(timeout=2), second.result(timeout=2)]
+
+    assert calls == 1
+    assert [result.windows[0].used_percent for result in results] == [12.0, 12.0]
+
+
+def test_unavailable_usage_snapshot_avoids_immediate_retry_storm(monkeypatch):
+    calls = 0
+
+    def fake_safe_read(_reader_name: str, **kwargs) -> UsageReadResult:
+        nonlocal calls
+        calls += 1
+        return UsageReadResult.unavailable(
+            provider="claude",
+            account_scope=kwargs["account_scope"],
+            reader="claude-oauth",
+            reason="claude provider request failed",
+        )
+
+    monkeypatch.setattr(usage_registry, "safe_read", fake_safe_read)
+    adapter = AdapterConfig(
+        name="claude",
+        bin="claude",
+        usageReader="claude-oauth",
+        quotaScope="anthropic:shared",
+    )
+    config = UsageConfig(enabled=True, pollingIntervalSeconds=60)
+
+    first = read_usage_for_adapter(adapter, usage_config=config)
+    second = read_usage_for_adapter(adapter, usage_config=config)
+
+    assert calls == 1
+    assert first.status == second.status == "unavailable"
+    assert first.reason == second.reason == "claude provider request failed"
 
 
 def test_adapter_scope_is_explicit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
