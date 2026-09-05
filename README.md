@@ -8,6 +8,7 @@
 
 [![CI](https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
+[![PyPI downloads](https://img.shields.io/badge/PyPI%20Downloads-5.5k-brightgreen)](https://pypi.org/project/mindsync-ai/)
 [![Python versions](https://img.shields.io/pypi/pyversions/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Protocol%201.27+-purple.svg)](https://modelcontextprotocol.io/)
