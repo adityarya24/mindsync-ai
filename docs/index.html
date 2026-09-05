@@ -610,7 +610,7 @@
         </p>
         <div class="trust">
           <div><b id="stat-downloads">…</b><span>PyPI downloads · last 30 days</span></div>
-          <div><b id="stat-total">1k+</b><span>downloads · all time</span></div>
+          <div><b id="stat-total">5.5k+</b><span>downloads · all time</span></div>
           <div><b>0</b><span>servers · runs on your machine</span></div>
         </div>
         <div class="cta">
@@ -935,19 +935,16 @@ my-repo      47         2         12
       .then(function (d) {
         if (d && d.data && d.data.last_month != null) setText("stat-downloads", fmt(d.data.last_month));
       })
-      .catch(function () { setText("stat-downloads", "500+"); });
-    Promise.all([
-      fetch("https://pypistats.org/api/packages/mindsync-ai/overall").then(function (r) { return r.json(); }),
-      fetch("https://pypistats.org/api/packages/mindsync-mcp/overall").then(function (r) { return r.json(); })
-    ]).then(function (results) {
-      var total = 0;
-      results.forEach(function (payload) {
-        (payload.data || []).forEach(function (row) {
-          if (row.category === "without_mirrors") total += row.downloads || 0;
+      .catch(function () { setText("stat-downloads", "1.2k+"); });
+    fetch("https://pypistats.org/api/packages/mindsync-ai/overall?mirrors=true")
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var total = 0;
+        (d.data || []).forEach(function (row) {
+          if (row.category === "with_mirrors") total += row.downloads || 0;
         });
-      });
-      if (total > 0) setText("stat-total", fmt(total));
-    }).catch(function () {});
+        if (total > 0) setText("stat-total", fmt(total) + "+");
+      }).catch(function () {});
   })();
 
   // ── copy buttons ─────────────────────────────────────
