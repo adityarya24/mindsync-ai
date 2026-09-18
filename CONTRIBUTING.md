@@ -1,6 +1,12 @@
 # Contributing to MindSync AI
 
-Thank you for your interest in contributing!
+MindSync Community v1.9 is feature-frozen. Existing releases remain available
+under the MIT License, but this repository no longer accepts feature requests
+or feature pull requests. See [COMMUNITY_STATUS.md](COMMUNITY_STATUS.md) for the
+maintenance boundary.
+
+The development instructions below are retained for people evaluating or
+maintaining their own forks.
 
 ## Development Setup
 
@@ -30,6 +36,8 @@ MindSync uses modern Python packaging via `pyproject.toml`.
    ```
 
 ## Pull Request Guidelines
+
+The upstream repository is not accepting new feature work.
 
 1. **GitHub `master` is Canonical:** Branch from the latest `master`.
 2. **Surgical Changes:** Keep PRs focused. Do not mix unrelated refactors with bug fixes.

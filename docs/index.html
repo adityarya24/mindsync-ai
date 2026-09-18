@@ -117,6 +117,17 @@
     .nav-links .nav-cta:hover { filter: brightness(1.08); color: #052318; text-decoration: none; }
     .nav-links { display: flex; gap: 1.5rem; font-size: 0.9rem; flex-wrap: wrap; align-items: center; }
 
+    .status-banner {
+      border-bottom: 1px solid rgba(251, 191, 36, .28);
+      background: rgba(251, 191, 36, .08);
+      color: #fde68a;
+      font-size: .9rem;
+      line-height: 1.5;
+      padding: .8rem 0;
+      text-align: center;
+    }
+    .status-banner a { color: #fef3c7; font-weight: 700; }
+
     /* ── section rhythm ──────────────────────────────── */
     section { padding: 5rem 0; border-bottom: 1px solid var(--border); }
     section:last-of-type { border-bottom: 0; }
@@ -591,6 +602,13 @@
   </div>
 </nav>
 
+<div class="status-banner" role="status">
+  <div class="wrap">
+    MindSync Community v1.9 is feature-frozen. Existing releases remain MIT licensed.
+    <a href="https://github.com/adityarya24/mindsync-ai/blob/master/COMMUNITY_STATUS.md">Read the status notice →</a>
+  </div>
+</div>
+
 <header class="hero" id="top">
   <div class="wrap">
     <div class="badges">
@@ -599,6 +617,7 @@
       <span class="badge">no account required</span>
       <span class="badge">Python 3.10+</span>
       <span class="badge">v1.9.0</span>
+      <span class="badge">feature-frozen</span>
     </div>
     <div class="hero-grid">
       <div>
