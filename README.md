@@ -19,6 +19,11 @@
 
 ---
 
+> [!IMPORTANT]
+> **MindSync Community v1.9 is feature-frozen.** Existing releases remain available under the MIT License, but this repository is no longer accepting feature development. See [COMMUNITY_STATUS.md](COMMUNITY_STATUS.md) for the maintenance boundary. A commercial successor is under private development.
+
+---
+
 ## 💡 What is MindSync?
 
 MindSync connects disparate AI coding agents (**Codex, Claude Code, Gemini CLI, Antigravity, Grok, Cursor, OpenCode, Aider**) into a single, coordinated local ecosystem without requiring a cloud SaaS account or third-party servers.
