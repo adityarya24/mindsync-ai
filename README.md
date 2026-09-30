@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/adityarya24/mindsync-ai/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
-[![PyPI downloads](https://img.shields.io/badge/PyPI%20Downloads-5.5k-brightgreen)](https://pypi.org/project/mindsync-ai/)
+[![PyPI downloads](https://static.pepy.tech/badge/mindsync-ai)](https://pepy.tech/project/mindsync-ai)
 [![Python versions](https://img.shields.io/pypi/pyversions/mindsync-ai.svg)](https://pypi.org/project/mindsync-ai/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Protocol%201.27+-purple.svg)](https://modelcontextprotocol.io/)
@@ -19,8 +19,8 @@
 
 ---
 
-> [!IMPORTANT]
-> **MindSync Community v1.9 is feature-frozen.** Existing releases remain available under the MIT License, but this repository is no longer accepting feature development. See [COMMUNITY_STATUS.md](COMMUNITY_STATUS.md) for the maintenance boundary. A commercial successor is under private development.
+> [!NOTE]
+> **This is the open core of MindSync.** It stays MIT-licensed and keeps getting bug fixes, security fixes and small improvements. MindSync Platform, a commercial product for coordinating many agents, is built on it and is in private development. See [COMMUNITY_STATUS.md](COMMUNITY_STATUS.md) for what lands where.
 
 ---
 
