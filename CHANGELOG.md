@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Usage-threshold handoffs now checkpoint observable worktree changes before
+  transferring to a successor. A transient provider request failure may use a
+  real usage observation for up to 120 seconds, provided its window has not
+  reset; unavailable authentication or stale observations still block the
+  handoff.
+
 ## [1.9.0] - 2026-08-31
 
 ### Added

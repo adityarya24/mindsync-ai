@@ -29,6 +29,7 @@ from mindsync.dispatch import store
 from mindsync.dispatch.memory_lifecycle import (
     DEFAULT_MEMORY_MODE,
     append_warnings,
+    ensure_in_progress_checkpoint,
     finalize_dispatch_memory,
     prepare_dispatch_memory,
     resolve_dispatch_memory_project,
@@ -351,6 +352,12 @@ def _evaluate_and_check_usage(
     if evaluation.status != "at_threshold":
         return "continue"
     usable, block_reason = has_usable_checkpoint(current)
+    if not usable:
+        try:
+            if ensure_in_progress_checkpoint(current):
+                usable, block_reason = has_usable_checkpoint(current)
+        except Exception:
+            block_reason = "in-progress checkpoint unavailable"
     if not usable:
         store.update_job(
             job_id,

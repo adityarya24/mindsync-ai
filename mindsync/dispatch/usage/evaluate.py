@@ -17,6 +17,8 @@ def evaluate_threshold(
         "threshold_percent": threshold_percent,
         "provider": result.provider,
         "account_scope": result.account_scope,
+        "source": result.source,
+        "observed_at": result.observed_at,
         "windows": list(result.windows),
     }
     if result.status != "available":

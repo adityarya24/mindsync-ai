@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
 from urllib.error import HTTPError
@@ -434,6 +434,117 @@ def test_unavailable_usage_snapshot_avoids_immediate_retry_storm(monkeypatch):
     assert calls == 1
     assert first.status == second.status == "unavailable"
     assert first.reason == second.reason == "claude provider request failed"
+
+
+def test_transient_reader_failure_uses_recent_real_snapshot_until_expiry(monkeypatch):
+    clock = [100.0]
+    calls = 0
+
+    def fake_safe_read(_reader_name: str, **kwargs) -> UsageReadResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return UsageReadResult.available(
+                provider="claude",
+                account_scope=kwargs["account_scope"],
+                reader="claude-oauth",
+                source="claude-oauth-usage",
+                windows=[UsageWindow(
+                    id="weekly", label="Weekly", used_percent=92.0,
+                    reset_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                )],
+            )
+        return UsageReadResult.unavailable(
+            provider="claude", account_scope=kwargs["account_scope"],
+            reader="claude-oauth", reason="claude provider request failed",
+        )
+
+    monkeypatch.setattr(usage_registry, "safe_read", fake_safe_read)
+    monkeypatch.setattr(usage_registry, "monotonic", lambda: clock[0])
+    adapter = AdapterConfig(
+        name="claude", bin="claude", usageReader="claude-oauth",
+        quotaScope="anthropic:shared",
+    )
+    config = UsageConfig(enabled=True, pollingIntervalSeconds=5)
+    assert read_usage_for_adapter(adapter, usage_config=config).source == "claude-oauth-usage"
+    clock[0] = 105.0
+    recent = read_usage_for_adapter(adapter, usage_config=config)
+    assert recent.status == "available"
+    assert recent.source == "claude-oauth-usage-recent-cache"
+    assert evaluate_threshold(recent, threshold_percent=89).to_public_dict()["source"] == recent.source
+    clock[0] = 221.0
+    assert read_usage_for_adapter(adapter, usage_config=config).status == "unavailable"
+
+
+@pytest.mark.parametrize("failure_reason", [
+    "claude credentials unauthenticated", "claude usage data malformed",
+])
+def test_recent_snapshot_does_not_hide_auth_or_data_failure(monkeypatch, failure_reason):
+    clock = [100.0]
+    calls = 0
+
+    def fake_safe_read(_reader_name: str, **kwargs) -> UsageReadResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return UsageReadResult.available(
+                provider="claude", account_scope=kwargs["account_scope"],
+                reader="claude-oauth", source="claude-oauth-usage",
+                windows=[UsageWindow(
+                    id="weekly", label="Weekly", used_percent=92.0,
+                    reset_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                )],
+            )
+        return UsageReadResult.unavailable(
+            provider="claude", account_scope=kwargs["account_scope"],
+            reader="claude-oauth", reason=failure_reason,
+        )
+
+    monkeypatch.setattr(usage_registry, "safe_read", fake_safe_read)
+    monkeypatch.setattr(usage_registry, "monotonic", lambda: clock[0])
+    adapter = AdapterConfig(
+        name="claude", bin="claude", usageReader="claude-oauth",
+        quotaScope="anthropic:shared",
+    )
+    config = UsageConfig(enabled=True, pollingIntervalSeconds=5)
+    assert read_usage_for_adapter(adapter, usage_config=config).status == "available"
+    clock[0] = 105.0
+    failed = read_usage_for_adapter(adapter, usage_config=config)
+    assert failed.status == "unavailable"
+    assert failed.reason == failure_reason
+
+
+def test_recent_snapshot_is_rejected_after_its_window_reset(monkeypatch):
+    clock = [100.0]
+    calls = 0
+
+    def fake_safe_read(_reader_name: str, **kwargs) -> UsageReadResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return UsageReadResult.available(
+                provider="claude", account_scope=kwargs["account_scope"],
+                reader="claude-oauth", source="claude-oauth-usage",
+                windows=[UsageWindow(
+                    id="weekly", label="Weekly", used_percent=92.0,
+                    reset_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+                )],
+            )
+        return UsageReadResult.unavailable(
+            provider="claude", account_scope=kwargs["account_scope"],
+            reader="claude-oauth", reason="claude provider request failed",
+        )
+
+    monkeypatch.setattr(usage_registry, "safe_read", fake_safe_read)
+    monkeypatch.setattr(usage_registry, "monotonic", lambda: clock[0])
+    adapter = AdapterConfig(
+        name="claude", bin="claude", usageReader="claude-oauth",
+        quotaScope="anthropic:shared",
+    )
+    config = UsageConfig(enabled=True, pollingIntervalSeconds=5)
+    assert read_usage_for_adapter(adapter, usage_config=config).status == "available"
+    clock[0] = 105.0
+    assert read_usage_for_adapter(adapter, usage_config=config).status == "unavailable"
 
 
 def test_adapter_scope_is_explicit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
