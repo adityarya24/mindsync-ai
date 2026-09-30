@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 from threading import Lock
 from time import monotonic
 from typing import Any
@@ -44,6 +45,8 @@ _READERS: dict[str, ReaderFactory] = {
 
 _UsageCacheKey = tuple[str, str, bool]
 _USAGE_CACHE: dict[_UsageCacheKey, tuple[float, UsageReadResult]] = {}
+_LAST_GOOD_USAGE: dict[_UsageCacheKey, tuple[float, UsageReadResult]] = {}
+_LAST_GOOD_MAX_AGE_SECONDS = 120.0
 _USAGE_READ_LOCKS: dict[_UsageCacheKey, Lock] = {}
 _USAGE_CACHE_LOCK = Lock()
 
@@ -52,6 +55,7 @@ def _clear_usage_cache() -> None:
     """Reset process-local usage snapshots (primarily for isolated tests)."""
     with _USAGE_CACHE_LOCK:
         _USAGE_CACHE.clear()
+        _LAST_GOOD_USAGE.clear()
 
 
 def _cached_usage_result(
@@ -79,6 +83,25 @@ def _usage_read_lock(key: _UsageCacheKey) -> Lock:
 def _store_usage_result(key: _UsageCacheKey, result: UsageReadResult) -> None:
     with _USAGE_CACHE_LOCK:
         _USAGE_CACHE[key] = (monotonic(), result.model_copy(deep=True))
+
+
+def _recent_good_result(key: _UsageCacheKey) -> UsageReadResult | None:
+    """Use a brief real observation only for a transient provider request failure."""
+    now = datetime.now(timezone.utc)
+    with _USAGE_CACHE_LOCK:
+        cached = _LAST_GOOD_USAGE.get(key)
+        if cached is None:
+            return None
+        observed_at, result = cached
+        if monotonic() - observed_at > _LAST_GOOD_MAX_AGE_SECONDS or not result.windows:
+            _LAST_GOOD_USAGE.pop(key, None)
+            return None
+        if any(window.reset_at is None or window.reset_at <= now for window in result.windows):
+            _LAST_GOOD_USAGE.pop(key, None)
+            return None
+        return result.model_copy(
+            deep=True, update={"source": f"{result.source}-recent-cache"}
+        )
 
 
 def register_reader(name: str, factory: ReaderFactory) -> None:
@@ -180,6 +203,11 @@ def read_usage_for_adapter(
             account_scope=scope,
             usage_config=config,
         )
+        if result.status == "available":
+            with _USAGE_CACHE_LOCK:
+                _LAST_GOOD_USAGE[key] = (monotonic(), result.model_copy(deep=True))
+        elif result.reason and "provider request failed" in result.reason:
+            result = _recent_good_result(key) or result
         _store_usage_result(key, result)
         return result
 
