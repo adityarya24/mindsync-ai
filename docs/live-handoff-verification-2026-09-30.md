@@ -15,7 +15,8 @@ Claude-to-Codex-family dispatch transfer. This was not a quota fixture.
   `tests/test_organizer.py` was created at 20:57:23 IST during the successor
   attempt. This is file-level evidence that Codex continued Claude's work.
 - Dispatched `unittest discover -s tests -v` check: passed, exit 0
-- Job metadata: `C:\Users\ADITYA\.mindsync\dispatch\jobs\20260930152250-fcfe6e\meta.json`
+- Job metadata (local to the test machine):
+  `$MINDSYNC_HOME/dispatch/jobs/20260930152250-fcfe6e/meta.json`
 
 The first usage observation came from the live `claude-oauth-usage` reader.
 During Claude's run the endpoint intermittently failed; the threshold poll used

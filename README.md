@@ -176,7 +176,7 @@ Without them, an expired Antigravity token makes the reader return `unavailable`
 * **`defaultThresholdPercent`**: Dispatched worker handoff threshold.
 * **`orchestratorReservePercent`**: Threshold for warning the operator before starting large runs.
 * **`readers.cursor`**: Must be `true` before MindSync opens Cursor's IDE `state.vscdb`. The other bundled readers do not need a per-reader flag.
-* If a provider reaches threshold and a MindSync checkpoint exists, dispatch safely transfers the worktree diff to the successor agent.
+* If a provider reaches threshold during a worktree job, MindSync checkpoints observable file changes before transferring them to the successor agent. If no usable checkpoint is available, the handoff stays blocked.
 
 ### Automated Pull Request Workflow
 Configure MindSync to automatically publish branches and open PRs upon successful task completion:
