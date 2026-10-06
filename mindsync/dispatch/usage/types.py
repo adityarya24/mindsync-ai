@@ -81,6 +81,8 @@ class ThresholdEvaluation(BaseModel):
     threshold_percent: float = Field(ge=0.0, le=100.0)
     provider: str
     account_scope: str
+    source: str | None = None
+    observed_at: datetime | None = None
     windows: list[UsageWindow] = Field(default_factory=list)
     triggering_window: UsageWindow | None = None
     earliest_reset_at: datetime | None = None

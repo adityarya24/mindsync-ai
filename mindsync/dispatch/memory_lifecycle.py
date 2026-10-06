@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from mindsync.dispatch import store
+from mindsync.dispatch.review import diff_summary
 from mindsync.memory import (
     memory_bootstrap,
     memory_checkpoint,
@@ -165,6 +166,27 @@ def _dispatch_checkpoint_id(job_id: str, memory_session_id: str) -> str:
         f"dispatch-terminal\0{job_id}\0{memory_session_id}".encode("utf-8")
     )
     return hashlib.sha256(material).hexdigest()[:32]
+
+
+def ensure_in_progress_checkpoint(meta: dict[str, Any]) -> bool:
+    """Checkpoint observable worktree changes before a usage-triggered transfer."""
+    session_id = meta.get("memorySessionId")
+    worktree = meta.get("worktreePath")
+    base_commit = meta.get("baseCommit")
+    if not session_id or not worktree or not base_commit:
+        return False
+    files = _bounded_files(diff_summary(str(worktree), str(base_commit)))
+    if not files:
+        return False
+    material = f"dispatch-progress\0{meta['id']}\0{session_id}".encode("utf-8")
+    checkpoint_id = hashlib.sha256(material).hexdigest()[:32]
+    memory_checkpoint(
+        str(session_id),
+        status="in_progress",
+        files_changed=files,
+        checkpoint_id=checkpoint_id,
+    )
+    return True
 
 
 def _bounded_files(diff: dict[str, Any] | None) -> list[str] | None:

@@ -17,10 +17,12 @@ import mindsync.dispatch.runner as runner_mod
 from mindsync.dispatch.adapters import AdapterConfig, user_config_path
 from mindsync.dispatch.cli import fmt_job
 from mindsync.dispatch.limits import clear_cooldowns, list_cooldowns, mark_cooling_until
+from mindsync.dispatch.memory_lifecycle import ensure_in_progress_checkpoint
 from mindsync.dispatch.routing import select_agent
-from mindsync.dispatch.usage.preemptive import preflight_skip_reason
+from mindsync.dispatch.usage.preemptive import has_usable_checkpoint, preflight_skip_reason
 from mindsync.dispatch.usage.registry import evaluate_adapter_threshold
 from mindsync.dispatch.usage.types import UsageReadResult, UsageWindow
+from mindsync.memory import memory_show, session_start
 import mindsync.config as config_mod
 import mindsync.orchestration as orchestration
 from mindsync.dispatch import store
@@ -108,6 +110,35 @@ def _write_usage_agents(
 
     monkeypatch.setattr(runner_mod, "resolve_bin", only_python)
     monkeypatch.setattr(routing_mod, "resolve_bin", only_python)
+
+
+def test_real_worktree_change_creates_one_usable_progress_checkpoint(
+    fake_repo: Path, tmp_path: Path, monkeypatch
+):
+    _write_usage_agents(tmp_path, monkeypatch)
+    base = subprocess.run(
+        ["git", "-C", str(fake_repo), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    job = store.create_job(agent="primary", prompt="implement", cwd=str(fake_repo))
+    session_id = session_start(project_key="progress-test", agent="primary")
+    job = store.update_job(job["id"], {
+        "status": "running",
+        "worktreePath": str(fake_repo),
+        "baseCommit": base,
+        "memorySessionId": session_id,
+    })
+
+    assert not ensure_in_progress_checkpoint(job)
+    assert not has_usable_checkpoint(job)[0]
+    (fake_repo / "file.txt").write_text("actual partial work", encoding="utf-8")
+    assert ensure_in_progress_checkpoint(job)
+    assert ensure_in_progress_checkpoint(job)
+    assert has_usable_checkpoint(job)[0]
+    checkpoints = memory_show(session_id)["checkpoints"]
+    assert len(checkpoints) == 1
+    assert checkpoints[0]["files_changed"] == ["file.txt"]
+    assert checkpoints[0]["status"] == "in_progress"
 
 
 def _at_threshold_result(adapter_name: str, scope: str) -> UsageReadResult:
@@ -378,11 +409,6 @@ async def test_running_threshold_with_checkpoint_transfers_once(
 
     monkeypatch.setattr(
         runner_mod,
-        "has_usable_checkpoint",
-        lambda meta: (True, None),
-    )
-    monkeypatch.setattr(
-        runner_mod,
         "evaluate_adapter_threshold",
         _sequenced_evaluator(
             agents={
@@ -397,6 +423,8 @@ async def test_running_threshold_with_checkpoint_transfers_once(
         nonlocal handoff_triggered
         callback = kwargs.get("poll_callback")
         assert callback is not None
+        if not handoff_triggered:
+            (Path(kwargs["cwd"]) / "file.txt").write_text("partial work", encoding="utf-8")
         action = await callback()
         if action == "handoff":
             handoff_triggered = True
@@ -425,7 +453,7 @@ async def test_running_threshold_with_checkpoint_transfers_once(
         cwd=str(fake_repo),
         worktree=True,
         on_limit="handoff",
-        memory_mode="off",
+        memory_mode="auto",
     )
 
     job = result["job"]
