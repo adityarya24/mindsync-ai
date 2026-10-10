@@ -7,13 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+### Removed
 
-- Usage-threshold handoffs now checkpoint observable worktree changes before
-  transferring to a successor. A transient provider request failure may use a
-  real usage observation for up to 120 seconds, provided its window has not
-  reset; unavailable authentication or stale observations still block the
-  handoff.
+- Worker quota handoff (`--on-limit handoff`), successor transfer, and handoff
+  checkpointing.
+- Pre-emptive usage evaluation and provider usage readers.
+- Codex standalone reserve warnings.
+- Automated pull requests on completion.
+- Remote queue sync and the `submit` and `worker` CLI commands.
+
+v1.9.0 remains available under MIT
 
 ## [1.9.0] - 2026-08-31
 

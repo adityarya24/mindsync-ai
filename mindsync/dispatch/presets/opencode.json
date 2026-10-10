@@ -8,6 +8,5 @@
   "capabilities": ["general", "coding", "review", "repository"],
   "capabilityWeights": {"coding": 80, "review": 70, "repository": 70},
   "routingPriority": 55,
-  "quotaScope": "opencode-go:default",
-  "usageReader": "opencode-go"
+  "quotaScope": "opencode-go:default"
 }

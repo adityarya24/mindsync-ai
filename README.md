@@ -28,7 +28,7 @@
 
 MindSync connects disparate AI coding agents (**Codex, Claude Code, Gemini CLI, Antigravity, Grok, Cursor, OpenCode, Aider**) into a single, coordinated local ecosystem without requiring a cloud SaaS account or third-party servers.
 
-The human-facing CLI session you are talking to **remains in charge as the orchestrator**. MindSync routes subtasks by domain capability, enforces file locks to prevent multi-agent collisions, tracks rate limits for seamless quota handoff across providers, and preserves long-term factual memory across sessions.
+The human-facing CLI session you are talking to **remains in charge as the orchestrator**. MindSync routes subtasks by domain capability, enforces file locks to prevent multi-agent collisions, skips providers that are temporarily cooling down, and preserves long-term factual memory across sessions.
 
 ```
                     ┌────────────────────────┐
@@ -47,7 +47,7 @@ The human-facing CLI session you are talking to **remains in charge as the orche
   │  ┌───────────────────────┬───────────────────────────────┐  │
   │  │  Capability Router    │  Conflict Prevention Shield   │  │
   │  ├───────────────────────┼───────────────────────────────┤  │
-  │  │  Quota & Handoff Tier │  Vector Memory (`sqlite-vec`) │  │
+  │  │  Reactive Cooldowns   │  Vector Memory (`sqlite-vec`) │  │
   │  └───────────────────────┴───────────────────────────────┘  │
   └─────────────────────────────┬───────────────────────────────┘
                                 │ (Isolated Worktrees)
@@ -126,65 +126,25 @@ mindsync-dispatch run auto "implement and test the auth fix" --capability coding
 mindsync-dispatch status
 ```
 
-### Automatic Provider Quota Handoff
-MindSync prevents blocked workflows when an LLM provider's quota exhausts mid-task. When enabled with an isolated worktree, MindSync transfers the working state, task prompt, and latest checkpoint to a ranked successor agent:
+### Reactive Provider Cooldowns
+When a provider reports quota exhaustion, MindSync marks it cooling down so routing skips it temporarily. `--on-limit` defaults to `stop`; the open core does not transfer work to another worker.
 
 ```bash
-# Run with worktree isolation and automatic quota handoff
-mindsync-dispatch run auto "refactor database schema" --write --worktree --on-limit handoff
-
-# Inspect provider and account cooldowns
+# Inspect provider cooldowns
 mindsync-dispatch limits
 
 # Clear cooldowns manually after operator verification
 mindsync-dispatch limits clear
 ```
 
-### Pre-emptive Usage Evaluation
-MindSync includes pluggable usage readers. Bundled readers use local CLI/IDE session stores (not browser cookies). A missing or failed read stays `unavailable` — dispatch does not invent a percent.
+### MindSync Pro
+MindSync Pro is coming soon. The following capabilities are reserved for the private platform:
 
-| Adapter | Reader | Local source |
-| :--- | :--- | :--- |
-| `codex` | `codex-oauth` | `~/.codex/auth.json` + ChatGPT WHAM usage |
-| `claude` | `claude-oauth` | `~/.claude/.credentials.json` + Anthropic OAuth usage |
-| `grok` | `grok-oauth` | Grok CLI session + billing credits |
-| `agy` / `gemini` | `antigravity-oauth` | Official Antigravity CLI vault + quota summary |
-| `cursor` | `cursor-oauth` | Cursor IDE session DB (`User/globalStorage/state.vscdb`), read-only. **Opt-in:** `usage.readers.cursor: true`. Off by default — this is not a Cursor CLI auth file. |
-| `opencode` | `opencode-go` | OpenCode **Go** plan key only, not BYOK upstreams |
-
-**Antigravity token refresh.** A still-valid access token is enough to read quota. If the token has expired, refresh needs the official installed-app OAuth client. Set both of these in the environment of the process that runs dispatch/MCP — they are **not** stored in the repo:
-
-* `MINDSYNC_ANTIGRAVITY_CLIENT_ID`
-* `MINDSYNC_ANTIGRAVITY_CLIENT_SECRET`
-
-Without them, an expired Antigravity token makes the reader return `unavailable` (neutral, not a fake 0%). `mindsync doctor` reports the adapter as preemptive only when `usage.enabled` is on.
-
-```json
-{
-  "usage": {
-    "enabled": false,
-    "defaultThresholdPercent": 90,
-    "orchestratorReservePercent": 80,
-    "pollingIntervalSeconds": 60,
-    "readers": {
-      "cursor": false
-    }
-  }
-}
-```
-
-* **`defaultThresholdPercent`**: Dispatched worker handoff threshold.
-* **`orchestratorReservePercent`**: Threshold for warning the operator before starting large runs.
-* **`readers.cursor`**: Must be `true` before MindSync opens Cursor's IDE `state.vscdb`. The other bundled readers do not need a per-reader flag.
-* If a provider reaches threshold during a worktree job, MindSync checkpoints observable file changes before transferring them to the successor agent. If no usable checkpoint is available, the handoff stays blocked.
-
-### Automated Pull Request Workflow
-Configure MindSync to automatically publish branches and open PRs upon successful task completion:
-```bash
-# Enable PR creation upon successful completion for current repository
-mindsync config onComplete pr --project .
-```
-*(MindSync never auto-merges PRs and strictly declines to publish if checks fail or if secrets/sensitive tokens are detected in diffs).*
+- Worker quota handoff with `--on-limit handoff`, successor transfer, and handoff checkpoints.
+- Pre-emptive provider usage evaluation and usage readers.
+- Codex standalone reserve warnings.
+- Automated pull requests on completion.
+- Remote sync, including the `submit` and `worker` CLI commands.
 
 ---
 
@@ -214,7 +174,7 @@ mindsync memory recall --project my-repo --query "database migration decision"
 1. **Human-in-the-Loop Authority**: The human-facing orchestrator CLI always retains final approval and verification.
 2. **Explicit Binary Execution**: `mindsync setup` only configures known recipes. Unknown binaries are suggested, never executed blindly.
 3. **Crash-Safe Locking**: State updates use atomic writes and file locks. On Windows, lock contention timeouts are configurable via environment variables.
-4. **Secret-Safe Serialization**: Job status, telemetry, and handoff payloads strictly strip access tokens, auth headers, and raw credential structures before logging.
+4. **Secret-Safe Serialization**: Job status and telemetry strictly strip access tokens, auth headers, and raw credential structures before logging.
 
 ---
 
@@ -230,10 +190,6 @@ mindsync memory recall --project my-repo --query "database migration decision"
 | `MINDSYNC_CALLER_CLI` | Declares calling CLI engine identity | Auto-detected |
 | `MINDSYNC_QUEUE_LOCK_TIMEOUT` | Max wait time for file locks (seconds) | `10.0` |
 | `MINDSYNC_LOCK_CONTENTION_BACKOFF_BASE` | Backoff base for Windows lock contention | `0.05` |
-| `MINDSYNC_SSH_HOST` | Remote VPS host for optional sync | — |
-| `MINDSYNC_REMOTE_ROOT` | Remote VPS sync directory | — |
-| `MINDSYNC_ANTIGRAVITY_CLIENT_ID` | Google installed-app client id for Antigravity token refresh | — |
-| `MINDSYNC_ANTIGRAVITY_CLIENT_SECRET` | Matching client secret. Required only when the vault access token is expired; omit both rather than guessing | — |
 
 </details>
 

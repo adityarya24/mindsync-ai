@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from mindsync.bus.models import Event, EventType
-from mindsync.dispatch.publish import public_task
 from mindsync.orchestration import load_policy
 from mindsync.storage import atomic_private_write, file_lock
 
@@ -138,6 +137,26 @@ def _bounded(value: Any, limit: int) -> str | None:
     if not cleaned:
         return None
     return cleaned[:limit]
+
+
+def public_task(prompt: str | None) -> str | None:
+    """Strip private dispatch context before exposing a completion summary."""
+    from mindsync.dispatch.memory_lifecycle import _CONTEXT_START, _CONTEXT_END
+    from mindsync.dispatch.runner import _WORKTREE_PROMPT_NOTE
+
+    if not prompt:
+        return None
+    text = prompt
+    while _CONTEXT_START in text:
+        start = text.index(_CONTEXT_START)
+        end = text.find(_CONTEXT_END, start)
+        if end == -1:
+            return None
+        text = text[:start] + text[end + len(_CONTEXT_END):]
+    if _CONTEXT_END in text:
+        return None
+    text = text.replace(_WORKTREE_PROMPT_NOTE, "").strip()
+    return text[:4_000] or None
 
 
 def public_completion_projection(event: Event, meta: dict[str, Any] | None) -> dict[str, str]:

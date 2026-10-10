@@ -87,8 +87,8 @@ def create_worktree(root: str, job_id: str) -> dict[str, str]:
     if base_commit is None:
         raise WorktreeError(f"Could not resolve HEAD in '{root}'")
 
-    # Recorded so a pull request opened later targets the branch this job was
-    # cut from, rather than whatever the repository's default happens to be.
+    # Recorded so later review targets the branch this job was cut from, rather
+    # than whatever the repository's default happens to be.
     base_branch = _git(root, "symbolic-ref", "--quiet", "--short", "HEAD")
 
     try:

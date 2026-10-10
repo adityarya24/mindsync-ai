@@ -22,6 +22,7 @@ _CLAUDE_RESET_PATTERN = r"(?im)^Claude AI usage limit reached\|[0-9]{10}\s*$"
 _CLAUDE_RESET_LINE = re.compile(
     r"(?im)^Claude AI usage limit reached\|([0-9]{10})\s*$"
 )
+QUOTA_HANDOFF_PRO_MESSAGE = "quota handoff is part of MindSync Pro"
 
 
 def _cooldown_path() -> Path:
@@ -195,7 +196,7 @@ def mark_cooling_until(
     adapter: AdapterConfig,
     until: datetime,
     *,
-    reason: str = "usage threshold reached",
+    reason: str = "provider quota exhausted",
 ) -> dict[str, str]:
     if until.tzinfo is None:
         until = until.replace(tzinfo=timezone.utc)

@@ -6,6 +6,7 @@ import asyncio
 import sys
 
 from mindsync.dispatch.adapters import load_adapters, user_config_path
+from mindsync.dispatch.limits import QUOTA_HANDOFF_PRO_MESSAGE
 from mindsync.dispatch.memory_lifecycle import DEFAULT_MEMORY_MODE
 from mindsync.dispatch.review import format_review, verdict
 from mindsync.dispatch.runner import (
@@ -44,7 +45,7 @@ def parse_run_args(argv: list[str]) -> dict:
         "[--worktree] [--cwd <path>] [--check <command>]... "
         "[--capability <name>]... [--exclude-agent <name>]... "
         "[--memory-project <key>] [--memory-mode <auto|explicit|off>]"
-        " [--on-limit <stop|handoff>]"
+        " [--on-limit stop]"
     )
     while i < len(argv):
         a = argv[i]
@@ -88,7 +89,9 @@ def parse_run_args(argv: list[str]) -> dict:
             if i >= len(argv):
                 raise SystemExit(usage_str)
             flags["on_limit"] = argv[i]
-            if flags["on_limit"] not in {"stop", "handoff"}:
+            if flags["on_limit"] == "handoff":
+                raise SystemExit(QUOTA_HANDOFF_PRO_MESSAGE)
+            if flags["on_limit"] != "stop":
                 raise SystemExit(usage_str)
         elif a == "--write":
             flags["write"] = True
@@ -147,11 +150,6 @@ def fmt_job(m: dict) -> str:
     ]
     if m.get("worktreePath") and m.get("worktreeKept"):
         lines.append(f"  worktree kept: {m['worktreePath']} (branch {m['branch']})")
-    pr = m.get("pullRequest") or {}
-    if pr.get("opened"):
-        lines.append(f"  pull request: {pr.get('url') or '(opened)'}")
-    elif pr.get("reason"):
-        lines.append(f"  pull request skipped: {pr['reason']}")
     if m.get("routing"):
         lines.append(f"  route: {m['routing']['reason']}")
     attempts = m.get("attempts") or []
@@ -160,26 +158,6 @@ def fmt_job(m: dict) -> str:
             f"{row.get('agent')}:{row.get('status')}" for row in attempts
         )
         lines.append(f"  attempts: {summary}")
-    for handoff in m.get("handoffs") or []:
-        lines.append(
-            f"  handoff: {handoff.get('from')} -> {handoff.get('to')} "
-            f"({handoff.get('reason')})"
-        )
-    if m.get("handoffBlocked"):
-        lines.append(f"  handoff stopped: {m['handoffBlocked']}")
-    if m.get("preemptiveBlocked"):
-        lines.append(f"  pre-emptive blocked: {m['preemptiveBlocked']}")
-    for skip in m.get("usageSkips") or []:
-        lines.append(
-            f"  usage skip: {skip.get('agent')} ({skip.get('reason')})"
-        )
-    usage_eval = m.get("usageEvaluation") or {}
-    if usage_eval:
-        status_text = usage_eval.get("status", "unknown")
-        scope = usage_eval.get("account_scope") or "unknown"
-        threshold = usage_eval.get("threshold_percent")
-        threshold_bit = f" @ {threshold}%" if threshold is not None else ""
-        lines.append(f"  usage: {status_text} ({scope}{threshold_bit})")
     if m.get("quotaFailure"):
         scope = m["quotaFailure"].get("scope") or "unknown"
         until = m["quotaFailure"].get("cooldownUntil")

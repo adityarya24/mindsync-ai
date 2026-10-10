@@ -17,7 +17,6 @@ from mindsync import __version__
 from mindsync.dispatch.adapters import load_adapters
 from mindsync.dispatch.limits import reactive_reset_source
 from mindsync.dispatch.proc import resolve_bin, spawn_spec
-from mindsync.dispatch.usage.config import UsageConfig, load_usage_config
 from mindsync.orchestration import OrchestrationPolicy, load_policy, policy_path, save_policy
 from mindsync.storage import atomic_private_write
 
@@ -613,6 +612,11 @@ def setup(
     python_exe: str | None = None,
     path_bins: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    target_policy = policy_file or policy_path()
+    if target_policy.is_file():
+        # Validate the stored policy before setup can replace it. This keeps
+        # removed paid settings visible in both normal and dry-run setup.
+        load_policy(target_policy)
     policy = OrchestrationPolicy(mode=mode)
     if not dry_run:
         save_policy(policy, policy_file)
@@ -703,38 +707,6 @@ def setup(
     }
 
 
-def _usage_mode_for_adapter(
-    adapter: Any,
-    *,
-    usage_config: UsageConfig | None = None,
-) -> str:
-    config = usage_config or load_usage_config()
-    if adapter.usageReader and config.enabled:
-        from mindsync.dispatch.usage.config import reader_is_enabled
-
-        if not reader_is_enabled(adapter.usageReader, config):
-            return "disabled"
-        return "preemptive"
-    if adapter.quotaErrorPatterns:
-        return "reactive-only"
-    return "disabled"
-
-
-def _usage_reason_for_adapter(
-    adapter: Any,
-    *,
-    usage_config: UsageConfig | None = None,
-) -> str | None:
-    config = usage_config or load_usage_config()
-    if not (adapter.usageReader and config.enabled):
-        return None
-    from mindsync.dispatch.usage.config import reader_disabled_reason, reader_is_enabled
-
-    if reader_is_enabled(adapter.usageReader, config):
-        return None
-    return reader_disabled_reason(adapter.usageReader)
-
-
 def doctor(
     *,
     runner: CommandRunner = _run_command,
@@ -759,7 +731,6 @@ def doctor(
         for name in CLI_SPECS
     ]
     workers = []
-    usage_config = load_usage_config()
     for adapter in load_adapters().values():
         workers.append({
             "name": adapter.name,
@@ -767,9 +738,6 @@ def doctor(
             "family": adapter.family or adapter.name,
             "available": bool(resolver(adapter.bin)),
             "capabilities": adapter.capabilities or ["general"],
-            "usage_mode": _usage_mode_for_adapter(adapter, usage_config=usage_config),
-            "usage_reader": adapter.usageReader,
-            "usage_reason": _usage_reason_for_adapter(adapter, usage_config=usage_config),
             "reactive_reset": reactive_reset_source(adapter),
             "provider": adapter.family or adapter.name,
         })

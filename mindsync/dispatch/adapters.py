@@ -40,9 +40,9 @@ _DEFAULTS: dict[str, Any] = {
     "quotaScope": None,
     "quotaErrorPatterns": [],
     "quotaCooldownSeconds": 18_000,
-    "usageReader": None,
-    "usageThresholdPercent": None,
 }
+
+_PAID_CONFIG_KEYS = frozenset({"usage", "usageReader", "usageThresholdPercent"})
 
 
 class UnknownAgentError(KeyError):
@@ -106,8 +106,6 @@ class AdapterConfig(BaseModel):
     quotaScope: str | None = None
     quotaErrorPatterns: list[str] = Field(default_factory=list)
     quotaCooldownSeconds: int = Field(default=18_000, ge=60, le=604_800)
-    usageReader: str | None = None
-    usageThresholdPercent: int | None = Field(default=None, ge=1, le=100)
 
     @model_validator(mode="after")
     def _require_prompt_placeholder(self) -> AdapterConfig:
@@ -131,10 +129,6 @@ class AdapterConfig(BaseModel):
             self.family = self.family.strip().lower() or None
         if self.quotaScope is not None:
             self.quotaScope = self.quotaScope.strip().lower() or None
-        if self.usageReader is not None:
-            from mindsync.dispatch.usage.config import validate_reader_name
-
-            self.usageReader = validate_reader_name(self.usageReader)
         for pattern in self.quotaErrorPatterns:
             try:
                 re.compile(pattern)
@@ -178,6 +172,9 @@ def _read_user_config(path: Path) -> dict[str, Any]:
         raise ValueError(f"Your agents.json at {path} is invalid: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"Your agents.json at {path} is not an object")
+    removed = sorted(_PAID_CONFIG_KEYS.intersection(data))
+    if removed:
+        raise ValueError(f"{removed[0]} is part of MindSync Pro")
     agents = data.get("agents")
     if agents is None:
         data["agents"] = []
@@ -210,6 +207,8 @@ def upsert_user_agent(
         None,
     )
     existing = agents[index] if index is not None else None
+    merged = {**(existing or {}), **entry, "name": name}
+    _validate_raw(merged)
     if existing is not None and not force:
         same_bin = existing.get("bin") == entry.get("bin")
         same_caps = list(existing.get("capabilities") or []) == list(entry.get("capabilities") or [])
@@ -229,8 +228,6 @@ def upsert_user_agent(
             "agent": {**(existing or {}), **entry},
         }
 
-    merged = {**(existing or {}), **entry, "name": name}
-    _validate_raw(merged)
     if index is None:
         agents.append(merged)
         action = "configured"
@@ -260,6 +257,9 @@ def presets_dir() -> Path:
 def _validate_raw(data: dict[str, Any]) -> AdapterConfig:
     if not data.get("name") or not data.get("bin"):
         raise ValueError(f"Adapter missing name/bin: {data!r}")
+    removed = sorted(_PAID_CONFIG_KEYS.intersection(data))
+    if removed:
+        raise ValueError(f"{removed[0]} is part of MindSync Pro")
     merged = {**_DEFAULTS, **data}
     return AdapterConfig.model_validate(merged)
 
@@ -276,10 +276,7 @@ def load_adapters() -> dict[str, AdapterConfig]:
 
     user_path = user_config_path()
     if user_path.is_file():
-        try:
-            user = json.loads(user_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Your agents.json at {user_path} is invalid: {exc}") from exc
+        user = _read_user_config(user_path)
         for entry in user.get("agents") or []:
             if not isinstance(entry, dict):
                 continue
@@ -309,10 +306,7 @@ def load_roles() -> dict[str, RoleConfig]:
     if not user_path.is_file():
         return {}
 
-    try:
-        user = json.loads(user_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Your agents.json at {user_path} is invalid: {exc}") from exc
+    user = _read_user_config(user_path)
 
     raw_roles = user.get("roles")
     if not raw_roles or not isinstance(raw_roles, dict):

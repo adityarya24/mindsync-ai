@@ -14,6 +14,5 @@
   "capabilities": ["general", "review", "security", "research", "reasoning"],
   "capabilityWeights": {"review": 100, "security": 100, "research": 85, "reasoning": 85},
   "routingPriority": 70,
-  "quotaScope": "xai:default",
-  "usageReader": "grok-oauth"
+  "quotaScope": "xai:default"
 }

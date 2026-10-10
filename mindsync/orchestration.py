@@ -7,13 +7,16 @@ import os
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from mindsync.config import settings
 from mindsync.storage import atomic_private_write, file_lock
 
 
 ExecutionMode = Literal["worker", "orchestrator"]
+OnComplete = Literal["branch", "none"]
+PRO_PR_MESSAGE = "Automated pull request workflow is part of MindSync Pro."
+PRO_USAGE_MESSAGE = "usage is part of MindSync Pro."
 
 
 def validate_execution_mode(value: Any) -> ExecutionMode:
@@ -27,7 +30,15 @@ def validate_execution_mode(value: Any) -> ExecutionMode:
     return value
 
 
-OnComplete = Literal["pr", "branch", "none"]
+def _validate_on_complete(value: Any) -> Any:
+    if isinstance(value, str) and value.strip().lower() == "pr":
+        raise ValueError(PRO_PR_MESSAGE)
+    return value
+
+
+def validate_on_complete_environment() -> None:
+    """Reject the removed PR completion mode before a dispatch can start."""
+    _validate_on_complete(os.environ.get("MINDSYNC_ON_COMPLETE", ""))
 
 
 class ProjectPolicy(BaseModel):
@@ -35,10 +46,15 @@ class ProjectPolicy(BaseModel):
 
     These live in MindSync's own policy file rather than inside the repository.
     A dispatched agent writes to the repository, so a config file kept there
-    would be one an agent could edit to turn its own publishing on.
+    would be one an agent could edit to alter its own completion handling.
     """
 
     onComplete: OnComplete | None = None
+
+    @field_validator("onComplete", mode="before")
+    @classmethod
+    def _reject_pro_pr(cls, value: Any) -> Any:
+        return _validate_on_complete(value)
 
 
 class OrchestrationPolicy(BaseModel):
@@ -49,6 +65,18 @@ class OrchestrationPolicy(BaseModel):
     onComplete: OnComplete = "branch"
     completionSinkCmd: list[str] = Field(default_factory=list)
     projects: dict[str, ProjectPolicy] = Field(default_factory=dict)
+
+    @field_validator("onComplete", mode="before")
+    @classmethod
+    def _reject_pro_pr(cls, value: Any) -> Any:
+        return _validate_on_complete(value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_pro_usage(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "usage" in value:
+            raise ValueError(PRO_USAGE_MESSAGE)
+        return value
 
     @field_validator("completionSinkCmd", mode="before")
     @classmethod
@@ -135,8 +163,17 @@ _POLICY_ALIASES = {
 _PROJECT_FIELDS = {"onComplete"}
 
 
+def is_removed_paid_policy_key(key: str) -> bool:
+    normalized = key.strip()
+    if normalized.startswith("orchestration."):
+        normalized = normalized[len("orchestration.") :]
+    return normalized == "usage" or normalized.startswith("usage.")
+
+
 def resolve_policy_key(key: str) -> str:
     """The policy field a CLI key names, accepting the 'orchestration.' prefix."""
+    if is_removed_paid_policy_key(key):
+        raise ValueError(PRO_USAGE_MESSAGE)
     field = _POLICY_ALIASES.get(key) or _POLICY_ALIASES.get(
         key[len("orchestration."):] if key.startswith("orchestration.") else ""
     )

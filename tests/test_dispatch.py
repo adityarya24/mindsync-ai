@@ -313,7 +313,8 @@ def test_names_match_rules():
     assert names_match("nodemon", "node") is False
 
 
-def test_presets_load():
+def test_presets_load(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
     adapters = load_adapters()
     for name in ("codex", "claude", "gemini", "agy", "cursor", "aider", "grok"):
         assert name in adapters
@@ -605,13 +606,15 @@ async def test_successful_job_result_has_no_diagnostic_block(tmp_path, monkeypat
     assert res["result"].strip() == "OK"
 
 
-def test_gemini_preset_runs_headless():
+def test_gemini_preset_runs_headless(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
     """Gemini CLI aborts in an untrusted directory unless trust is waived."""
     gemini = load_adapters()["gemini"]
     assert "--skip-trust" in gemini.runArgs
 
 
-def test_cursor_preset_runs_headless_in_new_workspaces():
+def test_cursor_preset_runs_headless_in_new_workspaces(tmp_path, monkeypatch):
+    _isolate_dispatch(tmp_path, monkeypatch)
     """Cursor otherwise exits before launch with a Workspace Trust prompt."""
     cursor = load_adapters()["cursor"]
     assert "--trust" in cursor.runArgs

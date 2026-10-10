@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import math
 import os
-import re
 import shutil
 import threading
 from pathlib import Path
+from typing import Mapping
 
 
 def _env(name: str, default: str = "") -> str:
@@ -31,18 +31,6 @@ def _positive_float_env(name: str, default: str) -> float:
     return value
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = _env(name)
-    if not value:
-        return default
-    normalized = value.lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"{name} must be true or false")
-
-
 def _default_home() -> Path:
     override = _env("MINDSYNC_HOME")
     if override:
@@ -57,6 +45,34 @@ def legacy_dispatch_home() -> Path:
 _LEGACY_MIGRATION_MARKER = ".legacy-migration-complete"
 _LEGACY_MIGRATION_LOCK = "dispatch-legacy-migration"
 _LEGACY_MIGRATION_THREAD_LOCK = threading.Lock()
+
+REMOVED_PRO_ENV_VARS = frozenset(
+    {
+        "MINDSYNC_WORKER_ID",
+        "MINDSYNC_WORKER_POLL_SECS",
+        "MINDSYNC_WORKER_CLAIM_STALE_SECS",
+        "MINDSYNC_WORKER_ALLOW_ORCHESTRATOR",
+        "MINDSYNC_WORKER_ALLOWED_ROOTS",
+        "MINDSYNC_WORKER_ALLOWED_REPOS",
+        "MINDSYNC_ALLOWED_REPOS",
+    }
+)
+
+
+def validate_removed_pro_environment(environ: Mapping[str, str] | None = None) -> None:
+    """Reject legacy remote-worker settings at a user-facing boundary.
+
+    Settings construction stays side-effect free so an old environment cannot
+    crash module import. Callers that actually start MindSync should invoke this
+    check and report the clear paid-feature message to the operator.
+    """
+    values = os.environ if environ is None else environ
+    removed_names = REMOVED_PRO_ENV_VARS | {
+        name for name in values if name.startswith("MINDSYNC_WORKER_")
+    }
+    for name in sorted(removed_names):
+        if name in values:
+            raise ValueError(f"{name} is part of MindSync Pro.")
 
 
 def _copy_missing(src: Path, dest: Path) -> None:
@@ -241,29 +257,6 @@ class Settings:
         self.lock_stale_seconds: float = float(
             _env("MINDSYNC_LOCK_STALE_SECS", "60") or "60"
         )
-
-        self.worker_id: str = _env("MINDSYNC_WORKER_ID") or os.environ.get(
-            "COMPUTERNAME", os.environ.get("HOSTNAME", "laptop-worker")
-        )
-        self.worker_poll_seconds: int = int(_env("MINDSYNC_WORKER_POLL_SECS", "30") or "30")
-        self.worker_claim_stale_seconds: int = int(
-            _env("MINDSYNC_WORKER_CLAIM_STALE_SECS", "300") or "300"
-        )
-        # Remote orchestrator execution is a privileged local opt-in. A remote
-        # payload can request it, but the laptop owner must enable the mode too.
-        self.worker_allow_orchestrator: bool = _env_bool(
-            "MINDSYNC_WORKER_ALLOW_ORCHESTRATOR", False
-        )
-        if self.worker_poll_seconds < 1 or self.worker_claim_stale_seconds < 1:
-            raise ValueError("Worker poll and stale intervals must be at least 1 second.")
-        allowed_str = (
-            _env("MINDSYNC_WORKER_ALLOWED_ROOTS")
-            or _env("MINDSYNC_WORKER_ALLOWED_REPOS")
-            or _env("MINDSYNC_ALLOWED_REPOS")
-        )
-        self.allowed_repos: list[str] = [
-            p.strip() for p in re.split(r"[,;]", allowed_str) if p.strip()
-        ]
 
     @property
     def remote_enabled(self) -> bool:

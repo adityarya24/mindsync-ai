@@ -292,35 +292,49 @@ def test_doctor_reports_hosts_policy_and_worker_inventory(tmp_path, monkeypatch)
     assert "codex" in report["configured_hosts"]
     assert any(worker["available"] for worker in report["workers"])
     assert report["available_worker_families"]["gemini-antigravity"] == ["agy", "gemini"]
-    codex = next(worker for worker in report["workers"] if worker["name"] == "codex")
-    assert codex["usage_mode"] in {"preemptive", "reactive-only", "disabled"}
     claude = next(worker for worker in report["workers"] if worker["name"] == "claude")
     assert claude["reactive_reset"] == "claude-stderr-epoch"
     grok = next(worker for worker in report["workers"] if worker["name"] == "grok")
     assert grok["reactive_reset"] == "quotaCooldownSeconds"
 
 
-def test_doctor_explains_disabled_cursor_reader(tmp_path, monkeypatch):
+def test_doctor_rejects_removed_usage_config(tmp_path, monkeypatch):
     settings = _isolate(tmp_path, monkeypatch)
-    dispatch_home = settings.home / "dispatch"
+    dispatch_home = tmp_path / "dispatch-home"
+    monkeypatch.setenv("AGENT_DISPATCH_HOME", str(dispatch_home))
     dispatch_home.mkdir(parents=True, exist_ok=True)
     (dispatch_home / "agents.json").write_text(
         json.dumps({"usage": {"enabled": True}}),
         encoding="utf-8",
     )
-    report = onboarding.doctor(
-        runner=FakeCliRunner(),
-        resolver=_resolver,
-        user_home=tmp_path / "user",
-        policy_file=settings.orchestration_file,
-        probe_hosts=False,
-    )
-    cursor = next(worker for worker in report["workers"] if worker["name"] == "cursor")
-    assert cursor["usage_mode"] == "disabled"
-    assert cursor["usage_reason"] == "cursor reader not enabled (set usage.readers.cursor)"
-    claude = next(worker for worker in report["workers"] if worker["name"] == "claude")
-    assert claude["usage_mode"] == "preemptive"
-    assert claude.get("usage_reason") in (None, "")
+    with pytest.raises(ValueError, match="usage is part of MindSync Pro"):
+        onboarding.doctor(
+            runner=FakeCliRunner(),
+            resolver=_resolver,
+            user_home=tmp_path / "user",
+            policy_file=settings.orchestration_file,
+            probe_hosts=False,
+        )
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_setup_rejects_existing_paid_policy_without_overwriting(tmp_path, monkeypatch, dry_run):
+    settings = _isolate(tmp_path, monkeypatch)
+    policy_file = settings.orchestration_file
+    policy_file.parent.mkdir(parents=True, exist_ok=True)
+    original = json.dumps({"mode": "auto", "onComplete": "pr"}, indent=2) + "\n"
+    policy_file.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Automated pull request workflow is part of MindSync Pro"):
+        onboarding.setup(
+            cli_names=[],
+            dry_run=dry_run,
+            install_hooks=False,
+            discover=False,
+            policy_file=policy_file,
+        )
+
+    assert policy_file.read_text(encoding="utf-8") == original
 
 
 def test_doctor_fails_when_no_host_is_configured(tmp_path, monkeypatch):
@@ -467,7 +481,7 @@ def test_doctor_sees_user_level_codex_hooks(tmp_path, monkeypatch):
     )
 
 
-def test_doctor_no_probe_never_starts_a_host_cli():
+def test_doctor_no_probe_never_starts_a_host_cli(tmp_path, monkeypatch):
     """`mindsync doctor --no-probe` must not run `<cli> mcp list`.
 
     Probing registration starts the host CLI and everything it loads. On a
@@ -475,6 +489,7 @@ def test_doctor_no_probe_never_starts_a_host_cli():
     channel's single-instance lock — so the diagnostic must be skippable without
     spawning anything.
     """
+    _isolate(tmp_path, monkeypatch)
     calls: list[tuple[str, list[str]]] = []
 
     def spy(resolved: str, args: list[str]) -> onboarding.CommandResult:
@@ -497,7 +512,8 @@ def test_doctor_no_probe_never_starts_a_host_cli():
     assert all(c.get("configured") is False for c in command_hosts)
 
 
-def test_doctor_default_still_probes():
+def test_doctor_default_still_probes(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
     calls: list[tuple[str, list[str]]] = []
 
     def spy(resolved: str, args: list[str]) -> onboarding.CommandResult:

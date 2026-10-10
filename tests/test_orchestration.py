@@ -20,6 +20,7 @@ from mindsync.dispatch.runner import (
     _create_job_with_auto_limit,
     run_task,
 )
+from mindsync.manage import main as manage_main
 from mindsync.server import delegate_task
 
 
@@ -174,6 +175,15 @@ def test_invalid_policy_snapshot_fails_closed(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_removed_pr_environment_mode_is_rejected_before_dispatch(tmp_path, monkeypatch):
+    _isolate(tmp_path, monkeypatch)
+    monkeypatch.setenv("MINDSYNC_ON_COMPLETE", "pr")
+
+    with pytest.raises(ValueError, match="Automated pull request workflow is part of MindSync Pro"):
+        await run_task(agent="builder", prompt="should not start")
+
+
+@pytest.mark.asyncio
 async def test_suggest_mode_returns_route_without_launching(tmp_path, monkeypatch):
     _isolate(tmp_path, monkeypatch)
     orchestration.save_policy(orchestration.OrchestrationPolicy(mode="suggest"))
@@ -243,11 +253,7 @@ async def test_auto_mode_excludes_caller_and_enforces_parallel_limit(tmp_path, m
 
 
 def test_on_complete_is_settable_and_scoped_to_one_project(tmp_path, monkeypatch):
-    """Issue #41 promised per-project on_complete, and the field had no setter.
-
-    A global default plus one project that opts in has to be expressible, or
-    turning publishing on for a single repository means turning it on for all.
-    """
+    """Branch and no-op completion modes remain available per project."""
     _isolate(tmp_path, monkeypatch)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -260,11 +266,42 @@ def test_on_complete_is_settable_and_scoped_to_one_project(tmp_path, monkeypatch
         == "branch"
     )
 
-    policy = orchestration.update_policy("onComplete", "pr", project=repo)
+    policy = orchestration.update_policy("onComplete", "none", project=repo)
     assert policy.onComplete == "branch"  # the global default is untouched
-    assert orchestration.project_on_complete(repo) == "pr"
+    assert orchestration.project_on_complete(repo) == "none"
     assert orchestration.project_on_complete(other) == "branch"
     assert orchestration.project_on_complete(None) == "branch"
+
+    with pytest.raises(ValueError, match="part of MindSync Pro"):
+        orchestration.update_policy("onComplete", "pr", project=repo)
+
+
+def test_removed_remote_commands_are_rejected_as_pro_features(capsys):
+    for argv in (
+        ["submit", "--repo", "repo", "--prompt", "task"],
+        ["worker", "--once"],
+        ["status", "job-id"],
+    ):
+        assert manage_main(argv) == 2
+        assert "part of MindSync Pro" in capsys.readouterr().err
+
+
+def test_config_cli_rejects_removed_pr_mode(tmp_path, monkeypatch, capsys):
+    _isolate(tmp_path, monkeypatch)
+
+    assert manage_main(["config", "onComplete", "pr"]) == 2
+    assert "Automated pull request workflow is part of MindSync Pro" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("key", ["usage.enabled", "usage.orchestratorReservePercent"])
+def test_config_cli_rejects_removed_usage_keys(tmp_path, monkeypatch, capsys, key):
+    _isolate(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="usage is part of MindSync Pro"):
+        orchestration.update_policy(key, "true")
+
+    assert manage_main(["config", key, "true"]) == 2
+    assert capsys.readouterr().err == "usage is part of MindSync Pro.\n"
 
 
 def test_a_project_override_survives_a_reload(tmp_path, monkeypatch):
@@ -272,9 +309,9 @@ def test_a_project_override_survives_a_reload(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
 
-    orchestration.update_policy("onComplete", "pr", project=repo)
+    orchestration.update_policy("onComplete", "none", project=repo)
 
-    assert orchestration.project_on_complete(repo, orchestration.load_policy()) == "pr"
+    assert orchestration.project_on_complete(repo, orchestration.load_policy()) == "none"
 
 
 def test_one_repository_cannot_become_two_entries(tmp_path, monkeypatch):
@@ -288,9 +325,9 @@ def test_one_repository_cannot_become_two_entries(tmp_path, monkeypatch):
     except (OSError, NotImplementedError):
         pytest.skip("symlinks unavailable")
 
-    orchestration.update_policy("onComplete", "pr", project=link)
+    orchestration.update_policy("onComplete", "none", project=link)
 
-    assert orchestration.project_on_complete(repo) == "pr"
+    assert orchestration.project_on_complete(repo) == "none"
     assert len(orchestration.load_policy().projects) == 1
 
 

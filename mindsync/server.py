@@ -674,12 +674,9 @@ def _fmt_dispatch_job(m: dict[str, Any]) -> str:
         attempt_line = "\n  attempts: " + " -> ".join(
             f"{row.get('agent')}:{row.get('status')}" for row in m["attempts"]
         )
-    blocked_line = (
-        f"\n  handoff stopped: {m['handoffBlocked']}" if m.get("handoffBlocked") else ""
-    )
     return (
         f"[{m['id']}] {agent_str} — {m['status']}{exit_bit}\n"
-        f"  prompt: {prompt}{route_line}{attempt_line}{blocked_line}"
+        f"  prompt: {prompt}{route_line}{attempt_line}"
     )
 
 
@@ -716,9 +713,10 @@ async def delegate_task(
     Git checkout identity when no project is supplied, explicit requires
     memory_project, and off disables memory. An explicit project overrides
     inference. Raw prompts are never stored in memory.
-    on_limit='handoff' is opt-in and requires worktree=True; only a configured,
-    provider-specific quota signature can rotate to another available agent.
+    on_limit supports only 'stop'; quota handoff is part of MindSync Pro.
     """
+    if on_limit != "stop":
+        return "Error: quota handoff is part of MindSync Pro"
     settings.ensure_dirs()
     if is_worker_process():
         return (

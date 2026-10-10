@@ -9,7 +9,7 @@ from pathlib import Path
 
 from mindsync.bus.models import Event, EventType
 from mindsync.dispatch import store
-from mindsync.dispatch.publish import _CONTEXT_END, _CONTEXT_START
+from mindsync.dispatch.memory_lifecycle import _CONTEXT_END, _CONTEXT_START
 from mindsync.dispatch.sink import (
     _delivered_path,
     _outbox_path,

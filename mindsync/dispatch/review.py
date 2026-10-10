@@ -199,8 +199,8 @@ def diff_summary(cwd: str, base_commit: str | None) -> dict[str, Any]:
 def check_reasons(meta: dict[str, Any]) -> list[str]:
     """Why a job's mechanical checks do not count as passing. Empty means they do.
 
-    Kept separate from :func:`verdict` because publishing needs exactly this
-    question and nothing else about the job, and two copies of it would drift —
+    Kept separate from :func:`verdict` because completion review needs exactly
+    this question and nothing else about the job, and two copies would drift —
     the first one already did, and passed a job whose checks never reported.
     """
     reasons: list[str] = []

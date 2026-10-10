@@ -724,8 +724,8 @@ keeps its own state.</span></pre>
         <div class="feat"><span class="n">03</span><div><h3>Conflict prevention</h3><p>Active file and project focus is visible before work begins, so two agents don't edit the same file blind.</p></div></div>
         <div class="feat"><span class="n">04</span><div><h3>Session memory</h3><p>Decisions, blockers, and durable facts persist per project and replay into the next run instead of being re-explained.</p></div></div>
         <div class="feat"><span class="n">05</span><div><h3>Safe process control</h3><p>Tracked jobs, timeouts, cancellation, and process-tree cleanup — plus optional git worktree isolation per job.</p></div></div>
-        <div class="feat"><span class="n">06</span><div><h3>Yours, locally</h3><p>No hosted control plane, no MindSync account. Remote sync is optional and runs through your own SSH host.</p></div></div>
-        <div class="feat"><span class="n">07</span><div><h3>Quota-aware handoff</h3><p>Opt-in <code>--on-limit handoff</code> or MCP <code>on_limit</code> rotates exhausted worktree jobs to the next agent. Pluggable usage readers support checkpoint-gated preemptive transfer when polling is enabled; default is <code>stop</code> with no forced checkpoint and no raw usage or auth persistence. Cooldowns: <code>mindsync-dispatch limits</code>.</p></div></div>
+        <div class="feat"><span class="n">06</span><div><h3>Yours, locally</h3><p>No hosted control plane, no MindSync account. Routing, focus, and memory stay on your machine.</p></div></div>
+        <div class="feat"><span class="n">07</span><div><h3>Provider cooldowns</h3><p>When a provider reports exhaustion, MindSync temporarily cools it down so routing can skip it. The default <code>--on-limit</code> behavior is <code>stop</code>.</p></div></div>
       </div>
     </div>
   </div>
@@ -748,6 +748,25 @@ keeps its own state.</span></pre>
           <span class="chip">Codex</span><span class="chip">Claude</span><span class="chip">Gemini CLI</span><span class="chip">Antigravity (agy)</span><span class="chip">Grok</span><span class="chip">Cursor Agent</span><span class="chip">OpenCode</span><span class="chip">Aider</span>
         </div>
       </div>
+    </div>
+  </div>
+</section>
+
+<section id="pro">
+  <div class="wrap">
+    <div class="label">// MindSync Pro</div>
+    <div class="mem-grid">
+      <div>
+        <h2>Advanced transfer, coming soon.</h2>
+        <p class="lede">The MIT core stays focused on local orchestration. MindSync Pro will add the private platform capabilities below.</p>
+      </div>
+      <ul class="plain">
+        <li>Worker quota handoff with successor transfer and handoff checkpoints.</li>
+        <li>Pre-emptive provider usage evaluation and usage readers.</li>
+        <li>Codex standalone reserve warnings.</li>
+        <li>Automated pull requests on completion.</li>
+        <li>Remote queue sync, including the <code>submit</code> and <code>worker</code> commands.</li>
+      </ul>
     </div>
   </div>
 </section>
@@ -882,7 +901,7 @@ my-repo      47         2         12
     <h2>Fair questions.</h2>
     <details>
       <summary>Is my code sent anywhere?<span class="pm">+</span></summary>
-      <p>No. MindSync runs entirely on your machine — routing, focus tracking, and memory are all local files and local SQLite. The only network calls are the ones your own CLIs already make to their model providers. Optional remote sync goes through <em>your own</em> SSH host.</p>
+      <p>No. MindSync runs entirely on your machine — routing, focus tracking, and memory are all local files and local SQLite. The only network calls are the ones your own CLIs already make to their model providers.</p>
     </details>
     <details>
       <summary>How is this different from just running multiple CLIs myself?<span class="pm">+</span></summary>

@@ -139,6 +139,8 @@ def create_job(
     on_limit: str = "stop",
     task_prompt: str | None = None,
 ) -> dict[str, Any]:
+    if on_limit != "stop":
+        raise ValueError("quota handoff is part of MindSync Pro")
     if execution_mode not in {"worker", "orchestrator"}:
         raise ValueError("execution_mode must be exactly 'worker' or 'orchestrator'")
     expected_depth = 0 if execution_mode == "orchestrator" else 1
@@ -197,7 +199,6 @@ def create_job(
             "onLimit": on_limit,
             "taskPrompt": task_prompt if task_prompt is not None else prompt,
             "attempts": [],
-            "handoffs": [],
         }
         if routing:
             _register_active_auto_job(job_id)
@@ -292,42 +293,6 @@ def release_worktree_lease(job_id: str, *, agent: str, attempt: int) -> dict[str
             **existing,
             "worktreeLease": {**lease, "state": "released", "releasedAt": utc_now()},
         }
-        _write_meta(job_id, meta)
-        return meta
-
-
-def transfer_worktree_lease(
-    job_id: str,
-    *,
-    from_agent: str,
-    to_agent: str,
-    next_attempt: int,
-    prompt: str,
-    patch: dict[str, Any],
-) -> dict[str, Any]:
-    """Atomically transfer a released lease and its successor prompt."""
-    job_paths(job_id)
-    with file_lock(f"dispatch-job-{job_id}"):
-        existing = get_job(job_id)
-        if existing is None:
-            raise ValueError(f"No such job: {job_id}")
-        if existing.get("status") != "running":
-            return existing
-        lease = existing.get("worktreeLease") or {}
-        if lease.get("agent") != from_agent or lease.get("state") != "released":
-            raise RuntimeError("worktree lease was not released by the outgoing attempt")
-        meta = {
-            **existing,
-            **patch,
-            "prompt": prompt,
-            "worktreeLease": {
-                "attempt": next_attempt,
-                "agent": to_agent,
-                "state": "owned",
-                "transferredAt": utc_now(),
-            },
-        }
-        _private_write(job_paths(job_id)["prompt"], prompt)
         _write_meta(job_id, meta)
         return meta
 

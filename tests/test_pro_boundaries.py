@@ -1,0 +1,38 @@
+"""Public MCP and persistence boundaries reject removed paid features."""
+
+import pytest
+
+from mindsync import server
+from mindsync.dispatch import store
+
+
+@pytest.mark.asyncio
+async def test_mcp_handoff_rejection_does_not_launch(monkeypatch):
+    async def unexpected_launch(**kwargs):
+        pytest.fail("paid handoff must be rejected before dispatch")
+
+    monkeypatch.setattr(server, "dispatch_run_task", unexpected_launch)
+    result = await server.delegate_task(prompt="test", on_limit="handoff")
+    assert result == "Error: quota handoff is part of MindSync Pro"
+
+
+def test_store_rejects_handoff_before_creating_job(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_DISPATCH_HOME", str(tmp_path))
+    with pytest.raises(ValueError, match="quota handoff is part of MindSync Pro"):
+        store.create_job(agent="codex", prompt="test", cwd=str(tmp_path), on_limit="handoff")
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_dispatch_rejects_stored_pr_mode(tmp_path, monkeypatch):
+    import json
+    from mindsync.dispatch.runner import run_task
+    from tests.isolation_helpers import isolate_mindsync_home
+
+    home = isolate_mindsync_home(tmp_path, monkeypatch)
+    (home / "orchestration.json").write_text(
+        json.dumps({"onComplete": "pr"}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="part of MindSync Pro"):
+        await run_task(agent="unused", prompt="test")
+    assert store.list_jobs() == []

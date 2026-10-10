@@ -10,12 +10,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Callable
 
 IS_WIN = sys.platform == "win32"
-
-PollAction = Literal["continue", "handoff", "blocked", "cancelled"]
-
 
 def _create_kill_on_close_job(pid: int) -> int | None:
     """Contain a Windows process tree so closing the handle kills descendants."""
@@ -346,12 +343,9 @@ async def spawn_foreground(
     input_text: str | None = None,
     env: dict[str, str] | None = None,
     on_spawn: Callable[[int], None] | None = None,
-    poll_interval_seconds: float | None = None,
-    poll_callback: Callable[[], Awaitable[PollAction | None]] | None = None,
 ) -> dict[str, Any]:
     spec = spawn_spec(resolved_bin, args)
     timed_out = False
-    preemptive_threshold = False
     try:
         proc = await asyncio.create_subprocess_exec(
             spec["bin"],
@@ -373,7 +367,6 @@ async def spawn_foreground(
             "stderr": str(exc),
             "timedOut": False,
             "processTreeDead": False,
-            "preemptiveThreshold": False,
         }
 
     windows_job = _create_kill_on_close_job(proc.pid)
@@ -399,64 +392,15 @@ async def spawn_foreground(
 
     communicate_task: asyncio.Task[tuple[bytes, bytes]] | None = None
     try:
-        communicate_coro = proc.communicate(
-            input=input_text.encode("utf-8") if input_text is not None else None
-        )
-        if poll_interval_seconds and poll_callback:
-            communicate_task = asyncio.create_task(communicate_coro)
-            preemptive_threshold = False
-            deadline = asyncio.get_running_loop().time() + max(timeout_ms, 1) / 1000.0
-            stdout_b, stderr_b = b"", b""
-            while not communicate_task.done():
-                remaining = deadline - asyncio.get_running_loop().time()
-                if remaining <= 0:
-                    timed_out = True
-                    _consume_windows_job(windows_job)
-                    windows_job = None
-                    if proc.pid:
-                        kill_tree(proc.pid)
-                    try:
-                        stdout_b, stderr_b = await asyncio.wait_for(
-                            asyncio.shield(communicate_task), timeout=2.0
-                        )
-                    except (asyncio.TimeoutError, Exception):
-                        stdout_b, stderr_b = b"", b""
-                    break
-                wait_for = min(poll_interval_seconds, remaining)
-                done, _pending = await asyncio.wait(
-                    {communicate_task}, timeout=wait_for
-                )
-                if communicate_task in done:
-                    stdout_b, stderr_b = communicate_task.result()
-                    break
-                try:
-                    action = await poll_callback()
-                except Exception:
-                    action = "continue"
-                if action in {"handoff", "cancelled"}:
-                    if action == "handoff":
-                        preemptive_threshold = True
-                    _consume_windows_job(windows_job)
-                    windows_job = None
-                    if proc.pid:
-                        kill_tree(proc.pid)
-                    try:
-                        stdout_b, stderr_b = await asyncio.wait_for(
-                            asyncio.shield(communicate_task), timeout=2.0
-                        )
-                    except (asyncio.TimeoutError, Exception):
-                        stdout_b, stderr_b = b"", b""
-                    break
-                if action == "blocked":
-                    continue
-            else:
-                stdout_b, stderr_b = communicate_task.result()
-        else:
-            preemptive_threshold = False
-            stdout_b, stderr_b = await asyncio.wait_for(
-                communicate_coro,
-                timeout=max(timeout_ms, 1) / 1000.0,
+        communicate_task = asyncio.create_task(
+            proc.communicate(
+                input=input_text.encode("utf-8") if input_text is not None else None
             )
+        )
+        stdout_b, stderr_b = await asyncio.wait_for(
+            asyncio.shield(communicate_task),
+            timeout=max(timeout_ms, 1) / 1000.0,
+        )
     except asyncio.TimeoutError:
         timed_out = True
         _consume_windows_job(windows_job)
@@ -524,5 +468,4 @@ async def spawn_foreground(
         "stderr": (stderr_b or b"").decode("utf-8", errors="replace"),
         "timedOut": timed_out,
         "processTreeDead": process_tree_dead,
-        "preemptiveThreshold": preemptive_threshold,
     }
