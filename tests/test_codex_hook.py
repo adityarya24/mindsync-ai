@@ -882,13 +882,23 @@ def test_stop_emits_one_bounded_reserve_warning_from_cache(
         lambda **kwargs: None,
     )
 
+    # A fixed fleet, so the successor does not depend on what the runner installed.
+    from mindsync.dispatch.adapters import AdapterConfig
+
+    fleet = {
+        name: AdapterConfig(name=name, bin=name, capabilities=["general"])
+        for name in ("codex", "grok")
+    }
+    monkeypatch.setattr("mindsync.dispatch.routing.load_adapters", lambda: fleet)
+    monkeypatch.setattr("mindsync.dispatch.routing.resolve_bin", lambda value: value)
+
     code, out, err = run_hook(monkeypatch, capsys, payload_for("Stop"))
 
     assert code == 0
     decision = json.loads(out)
     assert decision["decision"] == "block"
     assert "95%" in decision["reason"]
-    assert "Hand off the rest of this task" in decision["reason"]
+    assert "Hand off the rest of this task to grok?" in decision["reason"]
     assert "user's yes" in decision["reason"]
     assert_no_canaries(out)
     assert "Codex seat nearing limit" in err
