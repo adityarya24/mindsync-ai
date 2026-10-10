@@ -175,12 +175,17 @@ def test_invalid_policy_snapshot_fails_closed(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_removed_pr_environment_mode_is_rejected_before_dispatch(tmp_path, monkeypatch):
+async def test_legacy_paid_environment_does_not_block_dispatch(tmp_path, monkeypatch, capsys):
     _isolate(tmp_path, monkeypatch)
+    monkeypatch.setattr(config_mod, "_IGNORED_PRO_KEYS", set())
     monkeypatch.setenv("MINDSYNC_ON_COMPLETE", "pr")
+    monkeypatch.setenv("MINDSYNC_WORKER_ID", "legacy")
 
-    with pytest.raises(ValueError, match="Automated pull request workflow is part of MindSync Pro"):
-        await run_task(agent="builder", prompt="should not start")
+    result = await run_task(agent="builder", prompt="free dispatch")
+    assert result["job"]["status"] == "done"
+    warnings = capsys.readouterr().err
+    assert "ignoring MINDSYNC_WORKER_ID:" in warnings
+    assert "ignoring MINDSYNC_ON_COMPLETE:" in warnings
 
 
 @pytest.mark.asyncio

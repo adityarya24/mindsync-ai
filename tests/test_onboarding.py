@@ -298,7 +298,7 @@ def test_doctor_reports_hosts_policy_and_worker_inventory(tmp_path, monkeypatch)
     assert grok["reactive_reset"] == "quotaCooldownSeconds"
 
 
-def test_doctor_rejects_removed_usage_config(tmp_path, monkeypatch):
+def test_doctor_ignores_removed_usage_config(tmp_path, monkeypatch):
     settings = _isolate(tmp_path, monkeypatch)
     dispatch_home = tmp_path / "dispatch-home"
     monkeypatch.setenv("AGENT_DISPATCH_HOME", str(dispatch_home))
@@ -307,34 +307,35 @@ def test_doctor_rejects_removed_usage_config(tmp_path, monkeypatch):
         json.dumps({"usage": {"enabled": True}}),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="usage is part of MindSync Pro"):
-        onboarding.doctor(
-            runner=FakeCliRunner(),
-            resolver=_resolver,
-            user_home=tmp_path / "user",
-            policy_file=settings.orchestration_file,
-            probe_hosts=False,
-        )
+    onboarding.doctor(
+        runner=FakeCliRunner(),
+        resolver=_resolver,
+        user_home=tmp_path / "user",
+        policy_file=settings.orchestration_file,
+        probe_hosts=False,
+    )
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_setup_rejects_existing_paid_policy_without_overwriting(tmp_path, monkeypatch, dry_run):
+def test_setup_ignores_existing_paid_policy(tmp_path, monkeypatch, dry_run):
     settings = _isolate(tmp_path, monkeypatch)
     policy_file = settings.orchestration_file
     policy_file.parent.mkdir(parents=True, exist_ok=True)
     original = json.dumps({"mode": "auto", "onComplete": "pr"}, indent=2) + "\n"
     policy_file.write_text(original, encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Automated pull request workflow is part of MindSync Pro"):
-        onboarding.setup(
-            cli_names=[],
-            dry_run=dry_run,
-            install_hooks=False,
-            discover=False,
-            policy_file=policy_file,
-        )
+    onboarding.setup(
+        cli_names=[],
+        dry_run=dry_run,
+        install_hooks=False,
+        discover=False,
+        policy_file=policy_file,
+    )
 
-    assert policy_file.read_text(encoding="utf-8") == original
+    if dry_run:
+        assert policy_file.read_text(encoding="utf-8") == original
+    else:
+        assert json.loads(policy_file.read_text(encoding="utf-8"))["onComplete"] == "branch"
 
 
 def test_doctor_fails_when_no_host_is_configured(tmp_path, monkeypatch):

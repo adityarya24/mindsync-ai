@@ -93,12 +93,18 @@ def test_remote_worker_settings_are_not_part_of_settings(monkeypatch):
         }
     ),
 )
-def test_removed_remote_worker_environment_is_mindsync_pro(monkeypatch, env_name):
+def test_removed_remote_worker_environment_warns(monkeypatch, env_name, capsys):
     _clear_mindsync_env(monkeypatch)
     monkeypatch.setenv(env_name, "removed")
 
-    with pytest.raises(ValueError, match=f"{env_name} is part of MindSync Pro"):
-        validate_removed_pro_environment()
+    from mindsync import config
+
+    monkeypatch.setattr(config, "_IGNORED_PRO_KEYS", set())
+    validate_removed_pro_environment()
+    validate_removed_pro_environment()
+    assert capsys.readouterr().err == (
+        f"ignoring {env_name}: remote workers is part of MindSync Pro\n"
+    )
 
 
 def test_worker_recursion_environment_remains_free(monkeypatch):

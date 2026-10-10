@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Mapping
@@ -59,20 +60,28 @@ REMOVED_PRO_ENV_VARS = frozenset(
 )
 
 
-def validate_removed_pro_environment(environ: Mapping[str, str] | None = None) -> None:
-    """Reject legacy remote-worker settings at a user-facing boundary.
+_IGNORED_PRO_KEYS: set[str] = set()
+_IGNORED_PRO_LOCK = threading.Lock()
 
-    Settings construction stays side-effect free so an old environment cannot
-    crash module import. Callers that actually start MindSync should invoke this
-    check and report the clear paid-feature message to the operator.
-    """
+
+def warn_ignored_pro_key(key: str, feature: str) -> None:
+    """Warn once per process and key about a legacy paid setting."""
+    with _IGNORED_PRO_LOCK:
+        if key in _IGNORED_PRO_KEYS:
+            return
+        _IGNORED_PRO_KEYS.add(key)
+        print(f"ignoring {key}: {feature} is part of MindSync Pro", file=sys.stderr)
+
+
+def validate_removed_pro_environment(environ: Mapping[str, str] | None = None) -> None:
+    """Ignore legacy remote-worker settings without blocking free commands."""
     values = os.environ if environ is None else environ
     removed_names = REMOVED_PRO_ENV_VARS | {
         name for name in values if name.startswith("MINDSYNC_WORKER_")
     }
     for name in sorted(removed_names):
         if name in values:
-            raise ValueError(f"{name} is part of MindSync Pro.")
+            warn_ignored_pro_key(name, "remote workers")
 
 
 def _copy_missing(src: Path, dest: Path) -> None:

@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from mindsync.config import settings
+from mindsync.config import settings, warn_ignored_pro_key
 from mindsync.storage import atomic_private_write, file_lock
 
 
@@ -37,8 +37,9 @@ def _validate_on_complete(value: Any) -> Any:
 
 
 def validate_on_complete_environment() -> None:
-    """Reject the removed PR completion mode before a dispatch can start."""
-    _validate_on_complete(os.environ.get("MINDSYNC_ON_COMPLETE", ""))
+    """Ignore the legacy PR completion environment setting."""
+    if os.environ.get("MINDSYNC_ON_COMPLETE", "").strip().lower() == "pr":
+        warn_ignored_pro_key("MINDSYNC_ON_COMPLETE", "Automated pull request workflow")
 
 
 class ProjectPolicy(BaseModel):
@@ -54,7 +55,10 @@ class ProjectPolicy(BaseModel):
     @field_validator("onComplete", mode="before")
     @classmethod
     def _reject_pro_pr(cls, value: Any) -> Any:
-        return _validate_on_complete(value)
+        if isinstance(value, str) and value.strip().lower() == "pr":
+            warn_ignored_pro_key("onComplete", "Automated pull request workflow")
+            return "none"
+        return value
 
 
 class OrchestrationPolicy(BaseModel):
@@ -69,13 +73,17 @@ class OrchestrationPolicy(BaseModel):
     @field_validator("onComplete", mode="before")
     @classmethod
     def _reject_pro_pr(cls, value: Any) -> Any:
-        return _validate_on_complete(value)
+        if isinstance(value, str) and value.strip().lower() == "pr":
+            warn_ignored_pro_key("onComplete", "Automated pull request workflow")
+            return "none"
+        return value
 
     @model_validator(mode="before")
     @classmethod
     def _reject_pro_usage(cls, value: Any) -> Any:
         if isinstance(value, dict) and "usage" in value:
-            raise ValueError(PRO_USAGE_MESSAGE)
+            warn_ignored_pro_key("usage", "usage tracking")
+            return {key: item for key, item in value.items() if key != "usage"}
         return value
 
     @field_validator("completionSinkCmd", mode="before")
@@ -187,6 +195,8 @@ def update_policy(
     key: str, value: Any, path: Path | None = None, project: str | Path | None = None
 ) -> OrchestrationPolicy:
     field = resolve_policy_key(key)
+    if field == "onComplete":
+        _validate_on_complete(value)
     current = load_policy(path).model_dump()
 
     if project is not None:

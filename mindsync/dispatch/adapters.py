@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from mindsync.config import dispatch_home
+from mindsync.config import dispatch_home, warn_ignored_pro_key
 from mindsync.storage import atomic_private_write
 
 SAFE_MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]*$")
@@ -173,8 +173,9 @@ def _read_user_config(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Your agents.json at {path} is not an object")
     removed = sorted(_PAID_CONFIG_KEYS.intersection(data))
-    if removed:
-        raise ValueError(f"{removed[0]} is part of MindSync Pro")
+    for key in removed:
+        warn_ignored_pro_key(key, "usage tracking")
+    data = {key: value for key, value in data.items() if key not in _PAID_CONFIG_KEYS}
     agents = data.get("agents")
     if agents is None:
         data["agents"] = []
@@ -258,8 +259,9 @@ def _validate_raw(data: dict[str, Any]) -> AdapterConfig:
     if not data.get("name") or not data.get("bin"):
         raise ValueError(f"Adapter missing name/bin: {data!r}")
     removed = sorted(_PAID_CONFIG_KEYS.intersection(data))
-    if removed:
-        raise ValueError(f"{removed[0]} is part of MindSync Pro")
+    for key in removed:
+        warn_ignored_pro_key(key, "usage tracking")
+    data = {key: value for key, value in data.items() if key not in _PAID_CONFIG_KEYS}
     merged = {**_DEFAULTS, **data}
     return AdapterConfig.model_validate(merged)
 

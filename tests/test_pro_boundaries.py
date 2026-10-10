@@ -23,16 +23,31 @@ def test_store_rejects_handoff_before_creating_job(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.asyncio
-async def test_explicit_dispatch_rejects_stored_pr_mode(tmp_path, monkeypatch):
+def test_stored_pr_mode_falls_back_and_warns_once(tmp_path, monkeypatch, capsys):
     import json
-    from mindsync.dispatch.runner import run_task
+    from mindsync import config, orchestration
     from tests.isolation_helpers import isolate_mindsync_home
 
     home = isolate_mindsync_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "_IGNORED_PRO_KEYS", set())
     (home / "orchestration.json").write_text(
-        json.dumps({"onComplete": "pr"}), encoding="utf-8"
+        json.dumps({"onComplete": "pr", "projects": {"repo": {"onComplete": "pr"}}}),
+        encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="part of MindSync Pro"):
-        await run_task(agent="unused", prompt="test")
-    assert store.list_jobs() == []
+    for _ in range(2):
+        policy = orchestration.load_policy()
+        assert policy.onComplete == "none"
+        assert policy.projects["repo"].onComplete == "none"
+    assert capsys.readouterr().err == (
+        "ignoring onComplete: Automated pull request workflow is part of MindSync Pro\n"
+    )
+
+
+def test_worker_environment_does_not_block_doctor(monkeypatch, capsys):
+    from mindsync import config, manage
+
+    monkeypatch.setattr(config, "_IGNORED_PRO_KEYS", set())
+    monkeypatch.setenv("MINDSYNC_WORKER_ID", "legacy")
+    monkeypatch.setattr(manage, "doctor", lambda **kwargs: {"ok": True})
+    assert manage.main(["doctor", "--json", "--no-probe"]) == 0
+    assert "ignoring MINDSYNC_WORKER_ID:" in capsys.readouterr().err

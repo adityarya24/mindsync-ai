@@ -235,7 +235,7 @@ def test_select_agent_keeps_headroom_neutral(tmp_path, monkeypatch):
         ("usageThresholdPercent", 90),
     ],
 )
-def test_removed_adapter_usage_keys_fail_as_mindsync_pro(
+def test_removed_adapter_usage_keys_are_ignored(
     tmp_path, monkeypatch, paid_key, value,
 ):
     from tests.isolation_helpers import isolate_mindsync_home
@@ -246,11 +246,10 @@ def test_removed_adapter_usage_keys_fail_as_mindsync_pro(
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match=rf"{paid_key} is part of MindSync Pro"):
-        load_adapters()
+    assert "custom" in load_adapters()
 
 
-def test_removed_usage_config_fails_as_mindsync_pro(tmp_path, monkeypatch):
+def test_removed_usage_config_is_ignored(tmp_path, monkeypatch):
     from tests.isolation_helpers import isolate_mindsync_home
 
     isolate_mindsync_home(tmp_path, monkeypatch)
@@ -259,11 +258,10 @@ def test_removed_usage_config_fails_as_mindsync_pro(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="usage is part of MindSync Pro"):
-        load_adapters()
+    assert load_adapters()
 
 
-def test_upsert_rejects_paid_nested_key_before_already_configured_return(tmp_path, monkeypatch):
+def test_upsert_ignores_paid_nested_key_before_already_configured_return(tmp_path, monkeypatch):
     from tests.isolation_helpers import isolate_mindsync_home
 
     isolate_mindsync_home(tmp_path, monkeypatch)
@@ -283,13 +281,13 @@ def test_upsert_rejects_paid_nested_key_before_already_configured_return(tmp_pat
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="usageReader is part of MindSync Pro"):
-        upsert_user_agent(
-            {"name": "custom", "bin": sys.executable, "capabilities": ["general"]}
-        )
+    result = upsert_user_agent(
+        {"name": "custom", "bin": sys.executable, "capabilities": ["general"]}
+    )
+    assert result["action"] == "already_configured"
 
 
-def test_upsert_rejects_paid_nested_key_before_dry_run_return(tmp_path, monkeypatch):
+def test_upsert_ignores_paid_nested_key_before_dry_run_return(tmp_path, monkeypatch):
     from tests.isolation_helpers import isolate_mindsync_home
 
     isolate_mindsync_home(tmp_path, monkeypatch)
@@ -309,8 +307,28 @@ def test_upsert_rejects_paid_nested_key_before_dry_run_return(tmp_path, monkeypa
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="usageReader is part of MindSync Pro"):
-        upsert_user_agent(
-            {"name": "custom", "bin": sys.executable, "capabilities": ["coding"]},
-            dry_run=True,
-        )
+    result = upsert_user_agent(
+        {"name": "custom", "bin": sys.executable, "capabilities": ["coding"]},
+        dry_run=True,
+        force=True,
+    )
+    assert result["action"] == "would_update"
+
+
+def test_legacy_usage_config_loads_and_routes(tmp_path, monkeypatch, capsys):
+    from mindsync import config
+
+    _configure_agents(tmp_path, monkeypatch)
+    monkeypatch.setattr(config, "_IGNORED_PRO_KEYS", set())
+    path = user_config_path()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["usage"] = {"enabled": True}
+    raw["usageReader"] = "legacy"
+    for entry in raw["agents"]:
+        entry.update(usage={}, usageReader="legacy", usageThresholdPercent=90)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert "builder" in load_adapters()
+    assert select_agent("audit auth", required_capabilities=["security", "review"])["agent"] == "auditor"
+    warnings = capsys.readouterr().err
+    for key in ("usage", "usageReader", "usageThresholdPercent"):
+        assert warnings.count(f"ignoring {key}:") == 1
