@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Quota handoff in human-facing CLIs. When a Codex or Claude Code seat crosses
+  `orchestratorReservePercent`, the Stop hook returns a block decision whose
+  reason makes the running agent tell the user the usage and reset time and ask
+  whether to hand the rest of the task to a named successor through
+  `delegate_task`. It asks once per usage window per session and never hands off
+  without the user's yes. Shared core in `mindsync/quota_handoff.py`; new
+  `mindsync-claude-hook` entry point, installed into `~/.claude/settings.json`
+  (hooks.Stop only, with a backup) when MindSync configures Claude Code.
+
 ### Fixed
+
+- The Codex Stop hook no longer overruns Codex's 3 second hook timeout at the
+  reserve. The successor sort used to read every agent's usage live from its
+  provider; it now ranks from cached usage files only (about 80 ms).
+- Reserve notices no longer repeat as the percentage climbs within one window
+  (91%, 92%, ...), and tolerate providers reporting the same reset a few seconds
+  apart.
 
 - Usage-threshold handoffs now checkpoint observable worktree changes before
   transferring to a successor. A transient provider request failure may use a

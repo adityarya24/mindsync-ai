@@ -397,6 +397,7 @@ def _handle_stop(
     if _resolve_memory_mode([]) == "off":
         return _STOP_OUTPUT
 
+    checkpoint_saved = False
     try:
         files_changed = _changed_files(fields["cwd"], warnings, deadline=deadline)
         result = _lifecycle().checkpoint_standalone_session(
@@ -407,28 +408,39 @@ def _handle_stop(
             timeout_seconds=_remaining_seconds(deadline),
         )
         _collect_warnings(result, warnings)
+        checkpoint_saved = True
     except Exception as exc:
         warnings.append(
             f"session memory checkpoint degraded: {type(exc).__name__}: {exc}"
         )
-    _maybe_warn_codex_reserve(session_id, warnings, deadline)
-    return _STOP_OUTPUT
+    return _maybe_ask_codex_handoff(session_id, warnings, deadline, checkpoint_saved)
 
 
-def _maybe_warn_codex_reserve(
-    session_id: str, warnings: list[str], deadline: float
-) -> None:
+def _maybe_ask_codex_handoff(
+    session_id: str, warnings: list[str], deadline: float, checkpoint_saved: bool
+) -> str:
+    """At the reserve, make the running agent tell the user and ask about a handoff.
+
+    A block decision is how a Codex Stop hook speaks to the model: its reason
+    becomes the next prompt. The core asks once per usage window per session, so
+    the following Stop answers plain continue and the turn ends normally.
+    """
     try:
         from mindsync.codex_standalone_usage import maybe_append_reserve_warning
+        from mindsync.quota_handoff import stop_block_output
 
-        maybe_append_reserve_warning(
+        notice = maybe_append_reserve_warning(
             session_id,
             warnings,
             memory_mode=_resolve_memory_mode([]),
             timeout_seconds=_remaining_seconds(deadline),
+            checkpoint_saved=checkpoint_saved,
         )
+        if notice is not None:
+            return stop_block_output(notice)
     except Exception:
-        return
+        pass
+    return _STOP_OUTPUT
 
 
 def _handle_session_end(

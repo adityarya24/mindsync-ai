@@ -135,7 +135,7 @@ def test_prefetch_uses_bounded_reader_timeout(tmp_path, monkeypatch):
             )
 
     monkeypatch.setattr(
-        "mindsync.codex_standalone_usage.CodexOAuthUsageReader",
+        "mindsync.quota_handoff.CodexOAuthUsageReader",
         TrackingReader,
     )
     prefetch_usage(timeout_seconds=0.2)
@@ -227,7 +227,7 @@ def test_stop_warning_names_ranked_successor(tmp_path, monkeypatch):
     )
 
     assert warnings
-    assert "Ranked dispatch successor: claude" in warnings[0]
+    assert "Suggested successor: claude" in warnings[0]
     assert "will not auto-start" in warnings[0]
 
 

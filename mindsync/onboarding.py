@@ -542,6 +542,65 @@ def _write_codex_hooks(
     }
 
 
+CLAUDE_HOOK_COMMAND = "mindsync-claude-hook"
+
+
+def claude_settings_path(user_home: Path | None = None) -> Path:
+    return (user_home or Path.home()) / ".claude" / "settings.json"
+
+
+def _claude_stop_hook_block() -> dict[str, Any]:
+    return {"hooks": [{"type": "command", "command": CLAUDE_HOOK_COMMAND, "timeout": 5}]}
+
+
+def _write_claude_hooks(
+    *,
+    user_home: Path,
+    force: bool,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Merge the quota handoff Stop hook into ~/.claude/settings.json.
+
+    Only hooks.Stop is touched; every other setting is carried over as-is, and
+    the previous file is backed up beside it before the atomic rewrite.
+    """
+    path = claude_settings_path(user_home)
+    original_text: str | None = None
+    data: dict[str, Any] = {}
+    if path.is_file():
+        try:
+            original_text = path.read_text(encoding="utf-8")
+            parsed = json.loads(original_text)
+        except json.JSONDecodeError as exc:
+            return {"cli": "claude-hook", "action": "error", "detail": f"Invalid JSON at {path}: {exc}"}
+        if not isinstance(parsed, dict):
+            return {"cli": "claude-hook", "action": "error", "detail": f"settings file {path} is not an object"}
+        data = parsed
+    hooks = data.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        return {"cli": "claude-hook", "action": "error", "detail": f"{path}: hooks is not an object"}
+    stop = hooks.setdefault("Stop", [])
+    if not isinstance(stop, list):
+        return {"cli": "claude-hook", "action": "error", "detail": f"{path}: hooks.Stop is not an array"}
+    # Re-running with force must not stack a second copy of the same hook.
+    del force
+    if CLAUDE_HOOK_COMMAND in json.dumps(stop):
+        return {"cli": "claude-hook", "action": "already_configured", "path": str(path)}
+    if dry_run:
+        return {"cli": "claude-hook", "action": "would_configure", "path": str(path)}
+    stop.append(_claude_stop_hook_block())
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    backup = None
+    if original_text is not None:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        backup_path = path.with_name(f"settings.{stamp}.{secrets.token_hex(3)}.json.bak")
+        atomic_private_write(backup_path, original_text)
+        backup = str(backup_path)
+    atomic_private_write(path, json.dumps(data, indent=2) + "\n")
+    return {"cli": "claude-hook", "action": "configured", "path": str(path), "backup": backup}
+
+
 def _codex_hooks_status(
     user_home: Path | None = None,
     cwd: Path | None = None,
@@ -674,6 +733,14 @@ def setup(
         if codex_touched:
             actions.append(
                 _write_codex_hooks(user_home=home, force=force, dry_run=dry_run)
+            )
+        claude_touched = any(
+            item.get("cli") == "claude" and item.get("action") != "not_installed"
+            for item in actions
+        )
+        if claude_touched:
+            actions.append(
+                _write_claude_hooks(user_home=home, force=force, dry_run=dry_run)
             )
 
     if discover is None:

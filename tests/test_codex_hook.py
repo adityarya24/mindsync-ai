@@ -885,15 +885,38 @@ def test_stop_emits_one_bounded_reserve_warning_from_cache(
     code, out, err = run_hook(monkeypatch, capsys, payload_for("Stop"))
 
     assert code == 0
-    assert json.loads(out) == {"continue": True}
+    decision = json.loads(out)
+    assert decision["decision"] == "block"
+    assert "95%" in decision["reason"]
+    assert "Hand off the rest of this task" in decision["reason"]
+    assert "user's yes" in decision["reason"]
+    assert_no_canaries(out)
     assert "Codex seat nearing limit" in err
     assert "Primary" in err
     assert "95" in err
     assert_no_canaries(err)
     assert len(lifecycle.named("checkpoint")) == 1
 
-    code2, _, err2 = run_hook(monkeypatch, capsys, payload_for("Stop"))
+    # Same window, higher reading: asked once, so the agent may stop normally.
+    write_cache(
+        UsageReadResult.available(
+            provider="codex",
+            account_scope="openai:test",
+            reader="codex-oauth",
+            source="test",
+            windows=[
+                UsageWindow(
+                    id="primary",
+                    label="Primary",
+                    used_percent=97.0,
+                    reset_at=reset_at,
+                )
+            ],
+        )
+    )
+    code2, out2, err2 = run_hook(monkeypatch, capsys, payload_for("Stop"))
     assert code2 == 0
+    assert json.loads(out2) == {"continue": True}
     assert "Codex seat nearing limit" not in err2
 
 
@@ -974,7 +997,7 @@ def test_stop_refreshes_stale_cache_before_warning(
     code, out, err = run_hook(monkeypatch, capsys, payload_for("Stop"))
 
     assert code == 0
-    assert json.loads(out) == {"continue": True}
+    assert json.loads(out)["decision"] == "block"
     assert "Codex seat nearing limit" in err
     assert len(lifecycle.named("checkpoint")) == 1
 
