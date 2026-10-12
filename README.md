@@ -19,8 +19,8 @@
 
 ---
 
-> [!NOTE]
-> **This is the open core of MindSync.** It stays MIT-licensed and keeps getting bug fixes, security fixes and small improvements. MindSync Platform, a commercial product for coordinating many agents, is built on it and is in private development. See [COMMUNITY_STATUS.md](COMMUNITY_STATUS.md) for what lands where.
+> [!IMPORTANT]
+> **MindSync Community is no longer maintained.** v1.9 is the final release and this repository is archived (read-only). Existing installs keep working, but there will be no further fixes or releases. Its successor is being built by [Yuvaan Labs](https://yuvaanlabs.com).
 
 ---
 
