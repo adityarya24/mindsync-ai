@@ -20,7 +20,7 @@
 ---
 
 > [!IMPORTANT]
-> **MindSync Community is no longer maintained.** v1.9 is the final release and this repository is archived (read-only). Existing installs keep working, but there will be no further fixes or releases. Its successor is being built by [Yuvaan Labs](https://yuvaanlabs.com).
+> **MindSync Community is no longer maintained.** v1.9 is the final release and this repository is archived (read-only). Existing installs keep working, but there will be no further fixes or releases. Its successor is **[Hivelane](https://yuvaanlabs.com/hivelane)** by [Yuvaan Labs](https://yuvaanlabs.com): routing, git worktrees per agent, handoff when a seat runs low, and shared memory. 7-day trial, no card.
 
 ---
 
